@@ -32,7 +32,7 @@
 | HTTP 客户端 | requests 2.31+ |
 | 音频元数据 | mutagen 1.47+ |
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
-| 网易云 API | [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi)（Node.js 本地服务） |
+| 网易云 API | [NeteaseCloudMusicApi]([https://github.com/Binaryify/NeteaseCloudMusicApi](https://github.com/neteasecloudmusicapienhanced/api-enhanced))（Node.js 本地服务） |
 
 ## 目录结构
 
