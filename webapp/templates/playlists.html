@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}歌单管理 - 网易云音乐下载器{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h4 class="mb-0"><i class="bi bi-list-music"></i> 歌单管理</h4>
+</div>
+
+<!-- 标签页切换 -->
+<ul class="nav nav-tabs mb-3" id="playlist-tabs">
+    <li class="nav-item">
+        <a class="nav-link active" href="#" data-tab="mine">
+            <i class="bi bi-bookmark-star"></i> 我的歌单
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" href="#" data-tab="discover">
+            <i class="bi bi-compass"></i> 发现
+        </a>
+    </li>
+</ul>
+
+<!-- Tab 1: 我的歌单 -->
+<div id="tab-mine">
+    <div class="d-flex justify-content-end mb-3">
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add-modal">
+            <i class="bi bi-plus-circle"></i> 添加歌单
+        </button>
+    </div>
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th width="50">启用</th>
+                            <th>歌单名称</th>
+                            <th width="80">类型</th>
+                            <th width="100">下载数量</th>
+                            <th width="110">歌曲总数</th>
+                            <th width="160">上次同步</th>
+                            <th width="200">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="playlist-tbody">
+                        <tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Tab 2: 发现 -->
+<div id="tab-discover" class="d-none">
+    <!-- 子标签切换 -->
+    <ul class="nav nav-pills mb-3" id="discover-subtabs">
+        <li class="nav-item">
+            <a class="nav-link active" href="#" data-subtab="toplists">
+                <i class="bi bi-trophy"></i> 官方排行榜
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="#" data-subtab="hot">
+                <i class="bi bi-fire"></i> 热门歌单
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="#" data-subtab="search">
+                <i class="bi bi-search"></i> 搜索歌手
+            </a>
+        </li>
+    </ul>
+
+    <!-- 子标签1：官方排行榜 -->
+    <div id="subtab-toplists">
+        <div class="row g-3" id="toplist-grid">
+            <div class="col-12 text-center text-muted">加载中...</div>
+        </div>
+    </div>
+
+    <!-- 子标签2：热门歌单 -->
+    <div id="subtab-hot" class="d-none">
+        <!-- 筛选栏 -->
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label small">分类</label>
+                        <select class="form-select form-select-sm" id="discover-cat">
+                            <option value="全部">全部</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small">排序</label>
+                        <select class="form-select form-select-sm" id="discover-order">
+                            <option value="hot">热门</option>
+                            <option value="new">最新</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small">每页数量</label>
+                        <select class="form-select form-select-sm" id="discover-limit">
+                            <option value="10">10</option>
+                            <option value="20" selected>20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button class="btn btn-primary btn-sm" id="btn-discover-search">
+                            <i class="bi bi-search"></i> 查询
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 歌单网格 -->
+        <h6 class="mb-3" id="hot-title">热门歌单</h6>
+        <div class="row g-3" id="hot-grid">
+            <div class="col-12 text-center text-muted">请选择分类后查询</div>
+        </div>
+
+        <!-- 翻页控件 -->
+        <div class="d-flex justify-content-between align-items-center mt-4" id="hot-pagination">
+            <small class="text-muted" id="hot-page-info">第 1 页 / 共 0 页（总 0 个）</small>
+            <div class="btn-group">
+                <button class="btn btn-outline-secondary btn-sm" id="btn-hot-prev" disabled>
+                    <i class="bi bi-chevron-left"></i> 上一页
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" id="btn-hot-next" disabled>
+                    下一页 <i class="bi bi-chevron-right"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 子标签3：搜索歌手 -->
+    <div id="subtab-search" class="d-none">
+        <!-- 搜索栏 -->
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-4">
+                        <label class="form-label small">关键词</label>
+                        <input type="text" class="form-control form-control-sm" id="search-keyword" placeholder="如：周杰伦 / 晴天 / 范特西">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small">类型</label>
+                        <select class="form-select form-select-sm" id="search-type">
+                            <option value="song">歌曲名</option>
+                            <option value="artist">歌手</option>
+                            <option value="album">专辑</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small">每页</label>
+                        <select class="form-select form-select-sm" id="search-limit">
+                            <option value="30">30</option>
+                            <option value="50" selected>50</option>
+                            <option value="100">100</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button class="btn btn-primary btn-sm" id="btn-search">
+                            <i class="bi bi-search"></i> 搜索
+                        </button>
+                    </div>
+                    <div class="col-md-2 d-grid">
+                        <button class="btn btn-success btn-sm" id="btn-search-download-all">
+                            <i class="bi bi-cloud-arrow-down"></i> 全部下载
+                        </button>
+                    </div>
+                </div>
+                <div class="form-text mt-2">
+                    <i class="bi bi-info-circle"></i>
+                    "全部下载"应用排除关键字过滤（仅歌曲模式显示）；专辑模式点击行内"下载专辑"按钮直接下载整张专辑
+                </div>
+            </div>
+        </div>
+
+        <!-- 搜索结果 - 歌曲模式 -->
+        <div id="search-result-song">
+            <h6 class="mb-3" id="search-title">搜索结果</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th width="60">#</th>
+                            <th>歌曲</th>
+                            <th>歌手</th>
+                            <th>专辑</th>
+                            <th width="80">类型</th>
+                            <th width="80">状态</th>
+                            <th width="100">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="search-tbody-song">
+                        <tr><td colspan="7" class="text-center text-muted">输入关键词后点击搜索</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 搜索结果 - 专辑模式 -->
+        <div id="search-result-album" class="d-none">
+            <h6 class="mb-3" id="search-title-album">搜索结果</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th width="60">#</th>
+                            <th>歌手</th>
+                            <th>专辑名</th>
+                            <th width="100">歌曲数</th>
+                            <th width="120">发行时间</th>
+                            <th width="120">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="search-tbody-album">
+                        <tr><td colspan="6" class="text-center text-muted">输入关键词后点击搜索</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 分页控件 -->
+        <div class="d-flex justify-content-between align-items-center mt-3" id="search-pagination">
+            <small class="text-muted" id="search-page-info">第 1 页 / 共 0 页（总 0 个）</small>
+            <div class="btn-group">
+                <button class="btn btn-outline-secondary btn-sm" id="btn-search-prev" disabled>
+                    <i class="bi bi-chevron-left"></i> 上一页
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" id="btn-search-next" disabled>
+                    下一页 <i class="bi bi-chevron-right"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加歌单弹窗 -->
+<div class="modal fade" id="add-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 添加歌单</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">歌单 ID 或分享链接</label>
+                    <input type="text" class="form-control" id="add-source" placeholder="粘贴网易云歌单链接或输入 ID">
+                    <div class="form-text">支持格式：纯数字 ID、分享链接、短链接</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">类型</label>
+                    <select class="form-select" id="add-type">
+                        <option value="user">自定义歌单</option>
+                        <option value="official">官方榜单</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">下载前 N 首</label>
+                    <input type="number" class="form-control" id="add-limit" value="100" min="1" max="1000">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" id="btn-add-confirm">添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/playlists.js') }}"></script>
+{% endblock %}

@@ -1,0 +1,13 @@
+﻿# 网易云音乐下载器 Web 版 - Python 依赖
+# weapi 加密由本地 NeteaseCloudMusicApi (Node.js) 服务处理，无需 pycryptodome
+
+# Web 框架
+Flask>=3.0.0
+Flask-SQLAlchemy>=3.1.1
+
+# 定时调度
+APScheduler>=3.10.4
+
+# 下载与元数据
+requests>=2.31.0
+mutagen>=1.47.0           # ID3/FLAC 标签写入

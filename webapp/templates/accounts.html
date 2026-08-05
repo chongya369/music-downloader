@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}账号管理 - 网易云音乐下载器{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h4 class="mb-0"><i class="bi bi-people"></i> 账号管理</h4>
+    <div>
+        <button class="btn btn-outline-secondary btn-sm" id="btn-import-accounts">
+            <i class="bi bi-upload"></i> 导入
+        </button>
+        <button class="btn btn-outline-secondary btn-sm" id="btn-export-accounts">
+            <i class="bi bi-download"></i> 导出
+        </button>
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add-account-modal">
+            <i class="bi bi-plus-circle"></i> 添加账号
+        </button>
+        <input type="file" id="import-file-input" accept=".json" hidden>
+    </div>
+</div>
+
+<!-- 下载模式提示 -->
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    下载模式在「设置」页配置：
+    <strong>接力模式</strong>（账号1达额度或失败后切换账号2） /
+    <strong>轮询模式</strong>（多账号循环下载）。
+    会员到期时间在添加/编辑/测试账号时自动刷新。
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th width="70">排序</th>
+                        <th width="50">启用</th>
+                        <th>别名</th>
+                        <th>网易云昵称</th>
+                        <th width="100">会员类型</th>
+                        <th width="160">会员到期</th>
+                        <th width="180">本月已下载</th>
+                        <th width="150">上次校验</th>
+                        <th width="200">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="account-tbody">
+                    <tr><td colspan="9" class="text-center text-muted">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 添加账号弹窗 -->
+<div class="modal fade" id="add-account-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 添加账号</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">账号别名</label>
+                    <input type="text" class="form-control" id="add-name" placeholder="如：主账号">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Cookie（含 MUSIC_U）</label>
+                    <textarea class="form-control" id="add-cookie" rows="3" placeholder="MUSIC_U=xxxx; os=pc"></textarea>
+                    <div class="form-text">浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">月度总额度（0=不限制）</label>
+                    <input type="number" class="form-control" id="add-quota" value="0" min="0">
+                    <div class="form-text">设为 0 表示不限制；设置后达到额度会自动切换下一个账号</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" id="btn-add-account">添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 编辑账号弹窗 -->
+<div class="modal fade" id="edit-account-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil"></i> 编辑账号</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-id">
+                <div class="mb-3">
+                    <label class="form-label">账号别名</label>
+                    <input type="text" class="form-control" id="edit-name">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Cookie（留空不修改）</label>
+                    <textarea class="form-control" id="edit-cookie" rows="3" placeholder="留空表示不修改 Cookie"></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">月度总额度（0=不限制）</label>
+                    <input type="number" class="form-control" id="edit-quota" min="0">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" id="btn-edit-account">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/accounts.js') }}"></script>
+{% endblock %}

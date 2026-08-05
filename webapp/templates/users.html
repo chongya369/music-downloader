@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}用户管理 - 网易云音乐下载器{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h4 class="mb-0"><i class="bi bi-people"></i> 用户管理</h4>
+    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add-user-modal">
+        <i class="bi bi-plus-circle"></i> 添加用户
+    </button>
+</div>
+
+<div class="alert alert-info">
+    <i class="bi bi-info-circle"></i>
+    <strong>管理员</strong>可管理所有用户（创建、重置密码、启用/禁用、删除）。
+    <strong>普通用户</strong>仅能登录使用。初始账号 admin / admin123，建议尽快修改默认密码。
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th width="50">ID</th>
+                        <th>用户名</th>
+                        <th width="100">角色</th>
+                        <th width="80">状态</th>
+                        <th width="160">创建时间</th>
+                        <th width="160">最近登录</th>
+                        <th width="280">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="user-tbody">
+                    <tr><td colspan="7" class="text-center text-muted">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 添加用户弹窗 -->
+<div class="modal fade" id="add-user-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 添加用户</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">用户名</label>
+                    <input type="text" class="form-control" id="add-username" placeholder="登录用户名">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">密码</label>
+                    <input type="password" class="form-control" id="add-password" placeholder="至少 6 位">
+                </div>
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="add-is-admin">
+                        <label class="form-check-label" for="add-is-admin">设为管理员</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" id="btn-add-user">添加</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 重置密码弹窗 -->
+<div class="modal fade" id="reset-pwd-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-key"></i> 重置密码</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">用户名</label>
+                    <input type="text" class="form-control" id="reset-username" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">新密码</label>
+                    <input type="password" class="form-control" id="reset-password" placeholder="至少 6 位">
+                </div>
+                <div class="form-text">重置后，该用户下次需用新密码登录</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-warning" id="btn-reset-pwd">确认重置</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/users.js') }}"></script>
+{% endblock %}

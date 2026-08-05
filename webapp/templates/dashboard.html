@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}总览 - 网易云音乐下载器{% endblock %}
+{% block content %}
+<h4 class="mb-4"><i class="bi bi-speedometer2"></i> 总览</h4>
+
+<!-- 统计卡片 -->
+<div class="row g-3 mb-4" id="stats-cards">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-music-note-list"></i> 已下载总数</h6>
+                <h2 id="stat-total">-</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-check-circle"></i> 下载成功</h6>
+                <h2 id="stat-success">-</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-danger">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-x-circle"></i> 下载失败</h6>
+                <h2 id="stat-failed">-</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-calendar-day"></i> 今日新增</h6>
+                <h2 id="stat-today">-</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 歌单统计 + 账号状态 -->
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-list-music"></i> 关注歌单</h6>
+                <p class="mb-0">已启用 <strong id="stat-active-playlists">-</strong> / 共 <strong id="stat-total-playlists">-</strong> 个</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body d-flex justify-content-between align-items-center">
+                <div>
+                    <h6 class="card-title"><i class="bi bi-arrow-repeat"></i> 快速操作</h6>
+                    <p class="mb-0 text-muted">同步所有已启用的歌单</p>
+                </div>
+                <button class="btn btn-primary" id="btn-sync-all">
+                    <i class="bi bi-cloud-arrow-down"></i> 立即同步
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 账号状态卡片 -->
+<div class="card mb-4">
+    <div class="card-header">
+        <i class="bi bi-people"></i> 账号状态（本月已下载）
+    </div>
+    <div class="card-body">
+        <div class="row g-3" id="accounts-stats">
+            <div class="col-12 text-center text-muted">加载中...</div>
+        </div>
+    </div>
+</div>
+
+<!-- 当前任务 -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-activity"></i> 下载任务</span>
+        <span class="badge bg-secondary" id="task-count">0 个任务</span>
+    </div>
+    <div class="card-body">
+        <div id="task-list">
+            <p class="text-muted text-center mb-0" id="no-task">暂无下载任务</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

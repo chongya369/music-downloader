@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 网易云音乐下载器</title>
+    <link href="{{ url_for('static', filename='vendor/bootstrap/5.3.2/bootstrap.min.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='vendor/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css') }}" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            width: 380px;
+            max-width: 90vw;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            border: none;
+            border-radius: 12px;
+        }
+        .login-header {
+            text-align: center;
+            padding: 24px 16px 8px;
+        }
+        .login-header i {
+            font-size: 48px;
+            color: #667eea;
+        }
+        .login-header h4 {
+            margin: 12px 0 4px;
+            color: #333;
+        }
+        .login-header small {
+            color: #999;
+        }
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102,126,234,0.2);
+        }
+        .btn-primary {
+            background-color: #667eea;
+            border-color: #667eea;
+        }
+        .btn-primary:hover {
+            background-color: #5568d3;
+            border-color: #5568d3;
+        }
+    </style>
+</head>
+<body>
+    <div class="card login-card">
+        <div class="login-header">
+            <i class="bi bi-music-note-beamed"></i>
+            <h4>网易云音乐下载器</h4>
+            <small>v{{ version }}</small>
+        </div>
+        <div class="card-body p-4">
+            {% if error %}
+            <div class="alert alert-danger py-2" role="alert">
+                <i class="bi bi-exclamation-triangle"></i> {{ error }}
+            </div>
+            {% endif %}
+            <form method="POST" action="/login">
+                <div class="mb-3">
+                    <label class="form-label">用户名</label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-person"></i></span>
+                        <input type="text" class="form-control" name="username" autofocus required
+                               placeholder="请输入用户名" value="{{ request.form.username }}">
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <label class="form-label">密码</label>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="bi bi-lock"></i></span>
+                        <input type="password" class="form-control" name="password" required
+                               placeholder="请输入密码">
+                        <button class="btn btn-outline-secondary" type="button" id="toggle-pwd" tabindex="-1">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary w-100 py-2">
+                    <i class="bi bi-box-arrow-in-right"></i> 登录
+                </button>
+            </form>
+            <hr class="my-3">
+            <div class="text-center text-muted small">
+                <i class="bi bi-info-circle"></i>
+                初始账号：admin / admin123
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.2/bootstrap.bundle.min.js') }}"></script>
+    <script>
+        // 密码显示/隐藏切换
+        document.getElementById("toggle-pwd").addEventListener("click", function() {
+            const pwd = document.querySelector("input[name='password']");
+            const icon = this.querySelector("i");
+            if (pwd.type === "password") {
+                pwd.type = "text";
+                icon.className = "bi bi-eye-slash";
+            } else {
+                pwd.type = "password";
+                icon.className = "bi bi-eye";
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}设置 - 网易云音乐下载器{% endblock %}
+{% block content %}
+<h4 class="mb-4"><i class="bi bi-gear"></i> 设置</h4>
+
+<form id="settings-form" class="needs-validation" novalidate>
+<div class="row g-3">
+    <!-- API 服务 -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-hdd-network"></i> API 服务</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-8">
+                        <label class="form-label">NeteaseCloudMusicApi 服务地址</label>
+                        <input type="text" class="form-control" name="api_url" placeholder="http://localhost:3000">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Web 服务端口</label>
+                        <input type="number" class="form-control" name="web_port" min="1024" max="65535" value="56700">
+                        <div class="form-text">修改后需重启服务生效</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 下载设置 -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-download"></i> 下载设置</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">下载目录</label>
+                        <input type="text" class="form-control" name="output_dir" placeholder="downloads">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">音质等级</label>
+                        <select class="form-select" name="level">
+                            <option value="standard">标准 128kbps MP3</option>
+                            <option value="exhigh">极高 320kbps MP3（需会员）</option>
+                            <option value="lossless">无损 FLAC（需黑胶VIP）</option>
+                            <option value="hires">Hi-Res（需豪华会员）</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="write_metadata" value="true">
+                            <label class="form-check-label">写入元数据（标题/艺术家/专辑/封面）</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="write_lyric" value="true">
+                            <label class="form-check-label">嵌入歌词（LRC 带时间轴）</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">单文件重试次数</label>
+                        <input type="number" class="form-control" name="max_retries" min="1" max="10" value="3">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">添加歌单默认下载数量</label>
+                        <input type="number" class="form-control" name="default_playlist_limit" min="1" max="1000" value="50">
+                        <div class="form-text">添加新歌单时默认的下载前 N 首</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">排除歌曲关键字</label>
+                        <input type="text" class="form-control" name="exclude_keywords" placeholder="live,伴奏,remix">
+                        <div class="form-text">包含这些词的歌曲不下载，多个关键字用英文逗号分隔（同时匹配歌名和歌手名）</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">过滤应用范围</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="scope_playlist" id="scope-playlist" value="playlist">
+                            <label class="form-check-label" for="scope-playlist">歌单同步</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" name="scope_search" id="scope-search" value="search">
+                            <label class="form-check-label" for="scope-search">搜索下载</label>
+                        </div>
+                        <div class="form-text">单首下载不受此限制（尊重用户主动选择）</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">单账号每小时下载上限</label>
+                        <input type="number" class="form-control" name="hourly_limit_per_account" min="0" max="10000" value="50">
+                        <div class="form-text">0=不限制；自然小时内单账号成功达上限后切换账号，全部达上限则暂停 30 分钟</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 多账号下载模式 -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-people"></i> 多账号下载模式</div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">下载模式</label>
+                    <select class="form-select" name="download_mode">
+                        <option value="fallback">接力模式（账号1达额度或失败后切换账号2）</option>
+                        <option value="round_robin">轮询模式（多账号循环下载）</option>
+                    </select>
+                    <div class="form-text mt-1">
+                        <i class="bi bi-info-circle"></i>
+                        接力模式：优先用账号1，达额度或失败才切换；轮询模式：每个任务轮流分配账号。账号顺序在「账号管理」页调整。
+                    </div>
+                </div>
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input" name="prefer_non_vip" value="true">
+                    <label class="form-check-label">优先使用非VIP账号下载</label>
+                    <div class="form-text">开启后：非VIP歌曲优先用非VIP账号，仅 VIP 歌曲（fee=1）才用 VIP 账号；无可用账号时回退到全部账号</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 自动同步 -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-arrow-repeat"></i> 自动同步</div>
+            <div class="card-body">
+                <div class="row g-3 align-items-center">
+                    <div class="col-md-6">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="auto_sync_enabled" value="true">
+                            <label class="form-check-label">启用定时自动同步</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">抖动延迟（秒）</label>
+                        <input type="number" class="form-control" name="sync_jitter" min="0" max="3600" value="600">
+                        <div class="form-text">触发后随机延迟 0~N 秒再执行，避免精准时刻请求</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">同步时间点</label>
+                        <input type="text" class="form-control" name="sync_times" placeholder="03:00,09:00,21:00">
+                        <div class="form-text">多个时间用逗号分隔，格式 HH:MM，每天在这些时间点触发同步</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 保存按钮 -->
+    <div class="col-12">
+        <button type="submit" class="btn btn-primary">
+            <i class="bi bi-save"></i> 保存设置
+        </button>
+    </div>
+</div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+{% endblock %}

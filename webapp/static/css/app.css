@@ -1,0 +1,114 @@
+/* 全局样式 */
+body {
+    background-color: #f5f5f5;
+    font-family: "Microsoft YaHei", "微软雅黑", sans-serif;
+}
+
+.card {
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    border: none;
+}
+
+.card-title {
+    margin-bottom: 0.5rem;
+}
+
+.navbar-brand {
+    font-weight: 600;
+}
+
+/* 统计卡片 */
+#stats-cards .card-body {
+    padding: 1rem 1.25rem;
+}
+
+#stats-cards h2 {
+    margin: 0;
+    font-weight: 700;
+}
+
+/* 任务进度条 */
+.task-item {
+    padding: 0.75rem;
+    border: 1px solid #eee;
+    border-radius: 0.375rem;
+    margin-bottom: 0.5rem;
+    background: #fff;
+}
+
+.task-item .progress {
+    height: 8px;
+}
+
+/* 表格 */
+.table td {
+    vertical-align: middle;
+}
+
+.badge-status {
+    font-size: 0.8em;
+}
+
+/* 加载动画 */
+.loading-spinner {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid #ddd;
+    border-top-color: #666;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* 同步指示器闪烁 */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.sync-active {
+    animation: pulse 1.5s infinite;
+}
+
+/* 发现页卡片网格 */
+.discover-card {
+    cursor: default;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.discover-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+
+.discover-cover {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    background: #eee;
+}
+
+.discover-cover-placeholder {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+    color: #adb5bd;
+    font-size: 2.5rem;
+}
+
+.discover-card .card-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.discover-card .card-footer {
+    background: transparent;
+    border-top: 1px solid #f0f0f0;
+}
