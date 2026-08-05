@@ -32,7 +32,7 @@
 | HTTP 客户端 | requests 2.31+ |
 | 音频元数据 | mutagen 1.47+ |
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
-| 网易云 API | [NeteaseCloudMusicApi]([https://github.com/Binaryify/NeteaseCloudMusicApi](https://github.com/neteasecloudmusicapienhanced/api-enhanced))（Node.js 本地服务） |
+| 网易云 API | [NeteaseCloudMusicApi](https://github.com/neteasecloudmusicapienhanced/api-enhanced)（Node.js 本地服务） |
 
 ## 目录结构
 
@@ -59,8 +59,8 @@ source/
 ├── downloads.db                   # SQLite 数据库文件
 ├── requirements.txt               # Python 依赖
 ├── VERSION                        # 版本号
-├── CHANGELOG.md                   # 版本变更记录
-└── run_web.bat                    # Windows 一键启动脚本
+├── run_web.bat                    # Windows 一键启动脚本
+└── run_web.sh                     # Linux 一键启动脚本
 ```
 
 ## 环境依赖
@@ -85,6 +85,8 @@ Windows 用户直接双击 `run_web.bat`，脚本会自动：
 
 手动启动方式：
 
+**Windows：**
+
 ```bash
 # 创建虚拟环境
 python -m venv .venv
@@ -94,6 +96,29 @@ python -m venv .venv
 
 # 启动服务
 .venv\Scripts\python webapp\app.py
+```
+
+**Linux / macOS：**
+
+```bash
+# 添加执行权限（首次运行）
+chmod +x run_web.sh
+
+# 一键启动
+./run_web.sh
+```
+
+或手动启动：
+
+```bash
+# 创建虚拟环境
+python3 -m venv .venv
+
+# 安装依赖
+.venv/bin/pip install -r requirements.txt
+
+# 启动服务
+.venv/bin/python webapp/app.py
 ```
 
 ### 3. 访问 Web 界面
@@ -370,7 +395,7 @@ A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_li
 A: 「发现页」相关功能会失败；榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）；下载功能因需要获取歌曲链接会失败。建议先确保 Node 服务正常运行。
 
 ### Q: 修改 Web 端口后无法访问？
-A: `web_port` 修改后需重启 Flask 服务才生效（通过 `run_web.bat` 重启或手动重启 `python webapp/app.py`）。
+A: `web_port` 修改后需重启 Flask 服务才生效（Windows 通过 `run_web.bat`、Linux 通过 `./run_web.sh` 重启，或手动重启 `python webapp/app.py`）。
 
 ### Q: 下载的文件名包含特殊字符导致问题？
 A: 下载器已自动清洗 `\/:*?"<>|\r\n\t` 等非法字符为 `_`，并处理 Windows 保留名（CON/PRN 等）。如仍有问题请检查输出目录路径长度是否超过 Windows MAX_PATH（260 字符），系统会自动截断过长的文件名。
@@ -398,5 +423,3 @@ A: 系统对路径长度有保护机制：超过 240 字符自动截断文件名
 ## 版本
 
 当前版本：**0.1.0**（见 [VERSION](VERSION)）
-
-版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
