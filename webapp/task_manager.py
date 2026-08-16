@@ -16,6 +16,7 @@ import logging
 import queue
 import random
 import re
+import sys
 import threading
 import time
 from datetime import datetime
@@ -32,7 +33,11 @@ from core.netease_client import NeteaseClient
 logger = logging.getLogger(__name__)
 
 # 项目根目录（code/client），用于解析相对路径的 output_dir
-_ROOT = Path(__file__).resolve().parent.parent
+# frozen: PyInstaller 打包后用 exe 同级目录作为根目录
+if getattr(sys, "frozen", False):
+    _ROOT = Path(sys.executable).resolve().parent
+else:
+    _ROOT = Path(__file__).resolve().parent.parent
 
 # 所有账号达每小时限额时，暂停下载的时长（秒）
 _HOURLY_PAUSE_SECONDS = 1800
@@ -385,21 +390,20 @@ class TaskManager:
     # 客户端构建
     # ------------------------------------------------------------------
     def _get_client_for_account(self, account: Account) -> NeteaseClient:
-        """用指定账号的 cookie 创建客户端"""
-        with self.app.app_context():
-            base_url = Setting.get("api_url", "http://localhost:3000")
-        return NeteaseClient(base_url=base_url, cookie=account.cookie or "")
+        """用指定账号的 cookie 创建客户端（仅用已传入 cookie，不查库）"""
+        return NeteaseClient(cookie=account.cookie or "")
 
     def _get_client_default(self) -> NeteaseClient:
         """用第一个启用账号的 cookie 创建客户端
 
         用于同步歌单等公开接口。无启用账号时用空 cookie。
+        此函数被调度线程调用（_sync_all_playlists 等），后台线程无 request
+        context，Account.query 必须包 app_context。
         """
         with self.app.app_context():
-            base_url = Setting.get("api_url", "http://localhost:3000")
             acc = Account.query.filter_by(enabled=True).order_by(Account.id).first()
             cookie = acc.cookie if acc else ""
-        return NeteaseClient(base_url=base_url, cookie=cookie or "")
+        return NeteaseClient(cookie=cookie or "")
 
     def _get_downloader(self) -> Downloader:
         with self.app.app_context():

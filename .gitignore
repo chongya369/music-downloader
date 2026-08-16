@@ -69,3 +69,16 @@ downloads.db
 downloads/
 log/
 *.log
+
+# SQLite 附属文件（journal/WAL 日志）
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Windows 系统文件
+Thumbs.db
+Desktop.ini
+
+# 内置 NeteaseCloudMusicApi 二进制（体积大，不入库）
+api/
+ncm-api-*

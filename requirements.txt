@@ -1,5 +1,5 @@
-﻿# 网易云音乐下载器 Web 版 - Python 依赖
-# weapi 加密由本地 NeteaseCloudMusicApi (Node.js) 服务处理，无需 pycryptodome
+# 网易云音乐下载器 Web 版 - Python 依赖
+# weapi 加密由内置 NeteaseCloudMusicApi-enhanced 二进制处理，无需 pycryptodome
 
 # Web 框架
 Flask>=3.0.0

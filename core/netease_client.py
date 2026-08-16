@@ -1,7 +1,7 @@
-"""网易云音乐 API 客户端 - 调用本地 NeteaseCloudMusicApi (Node.js) 服务
+"""网易云音乐 API 客户端 - 调用内置 NeteaseCloudMusicApi-enhanced 服务
 
-依赖：需先启动 NeteaseCloudMusicApi 服务（默认 http://localhost:3000）
-项目地址：https://github.com/Binaryify/NeteaseCloudMusicApi
+服务二进制由 core.node_bridge 管理（自动拉起，监听 127.0.0.1 随机端口），
+API 地址每次请求时经 base_url 属性动态解析，无需手动指定。
 
 会员鉴权通过 Cookie 中的 MUSIC_U 实现，所有需要会员权限的接口会自动带上 Cookie。
 """
@@ -80,21 +80,41 @@ def parse_playlist_id(text: str) -> int | None:
 class NeteaseClient:
     """网易云音乐 API 客户端
 
-    通过本地部署的 NeteaseCloudMusicApi Node 服务调用网易云接口。
+    通过内置 NeteaseCloudMusicApi-enhanced 服务调用网易云接口。
     Cookie 用于会员鉴权，需包含 MUSIC_U。
     """
 
-    def __init__(self, base_url: str = "http://localhost:3000", cookie: str = ""):
-        """
+    def __init__(self, cookie: str = "", custom_base_url: str = ""):
+        """持有 bridge 引用；API 地址经 base_url 属性动态解析
+
         Args:
-            base_url: NeteaseCloudMusicApi 服务地址
             cookie: Cookie 字符串，必须包含 MUSIC_U（会员鉴权）
+            custom_base_url: 自定义API服务URL（设置后直接使用，不通过内置bridge）
         """
-        self.base_url = base_url.rstrip("/")
+        from core import node_bridge
+        self._bridge = node_bridge.get_bridge()
+        self._custom_base_url = custom_base_url.rstrip("/") if custom_base_url else ""
         self.session = requests.Session()
+        # session 默认 trust_env=True 会读主进程 http_proxy/https_proxy，
+        # 目标 http://127.0.0.1:port 在内网直连，显式关闭避免业务请求全走代理
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": _UA})
         if cookie:
             self.set_cookie(cookie)
+
+    @property
+    def base_url(self) -> str:
+        """API 服务地址（动态解析，每次请求重新取值）
+
+        - 自定义URL优先：设置后直接返回自定义地址
+        - 内置服务：Web 停止→重启后端口会变（随机空闲端口），缓存旧地址会导致请求失败
+        - 服务未运行时经 start() 幂等拉起（与 auto_start=false 的
+          "程序启动不拉起、用到再拉"语义一致）
+        - _request 自带 3 次重试，拉起期间请求可自然恢复
+        """
+        if self._custom_base_url:
+            return self._custom_base_url
+        return self._bridge.start().rstrip("/")
 
     def set_cookie(self, cookie: str) -> None:
         """设置 Cookie（写入 session.headers 供所有请求携带）"""
@@ -117,9 +137,10 @@ class NeteaseClient:
         timeout: int = 15,
     ) -> dict:
         """调用 NeteaseCloudMusicApi 接口"""
-        url = f"{self.base_url}{path}"
-
+        # url 在循环内每次重新解析：停止→重启后端口漂移时，
+        # 正在重试的请求也能经 base_url 属性取到新地址
         for attempt in range(1, retries + 1):
+            url = f"{self.base_url}{path}"
             try:
                 if method.upper() == "GET":
                     resp = self.session.get(url, params=params, timeout=timeout)

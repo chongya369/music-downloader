@@ -2,9 +2,10 @@
 
 启动方式：
     python webapp/app.py
-访问：http://localhost:56700
+访问：http://localhost:45600
 """
 
+import atexit
 import logging
 import os
 import sys
@@ -12,7 +13,11 @@ from pathlib import Path
 
 # 把项目根目录（code/client）和 webapp 目录加入 sys.path
 # 使 core、webapp 内的模块（models/task_manager）均可导入
-_ROOT = Path(__file__).resolve().parent.parent
+# frozen: PyInstaller 打包后用 exe 同级目录作为根目录
+if getattr(sys, "frozen", False):
+    _ROOT = Path(sys.executable).resolve().parent
+else:
+    _ROOT = Path(__file__).resolve().parent.parent
 _WEBAPP = Path(__file__).resolve().parent
 for p in (str(_ROOT), str(_WEBAPP)):
     if p not in sys.path:
@@ -22,6 +27,7 @@ from flask import Flask
 
 from models import init_db, Setting
 from task_manager import TaskManager
+from core import node_bridge
 from routes.api import api_bp
 from routes.views import views_bp
 from version import get_version
@@ -71,26 +77,61 @@ def filesize_filter(size: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _read_web_port() -> int:
-    """从设置读取 web 服务端口（启动时调用）"""
+def _read_web_bind() -> tuple:
+    """从设置读取 web 服务监听地址（启动时调用）
+
+    支持格式: "host:port"、":port"、"port"、"*:port"
+    返回 (host, port) 元组
+    """
     with app.app_context():
+        raw = str(Setting.get("web_port", "*:45600")).strip()
+
+    # 纯端口号，默认监听所有网卡
+    if ":" not in raw:
         try:
-            return int(Setting.get("web_port", "56700"))
+            return ("0.0.0.0", int(raw))
         except (TypeError, ValueError):
-            return 56700
+            return ("0.0.0.0", 45600)
+
+    host, _, port_str = raw.rpartition(":")
+    if host == "" or host == "*":
+        host = "0.0.0.0"
+    try:
+        return (host, int(port_str))
+    except (TypeError, ValueError):
+        return ("0.0.0.0", 45600)
 
 
 def main() -> None:
-    port = _read_web_port()
+    host, port = _read_web_bind()
+    # Setting.get 需在 app context 内调用；读出后显式传入，
+    # get_bridge 自身不碰数据库
+    with app.app_context():
+        auto_start = Setting.get("ncm_api_auto_start", "false") == "true"
+        try:
+            ncm_api_port = int(Setting.get("ncm_api_port", "45601"))
+        except (TypeError, ValueError):
+            ncm_api_port = 45601
+    bridge = node_bridge.get_bridge(auto_start=auto_start, port=ncm_api_port)
+    # atexit 注册必须写在 main() 内（此时单例已用真实 auto_start 创建）；
+    # 若放模块顶层会在 import 时以默认 auto_start=True 先建单例，忽略用户配置
+    atexit.register(bridge.stop)
+    if bridge.auto_start:
+        try:
+            bridge.start()
+            logger.info("网易云API服务就绪: %s", bridge.base_url)
+        except RuntimeError as e:
+            logger.warning("网易云API服务启动失败: %s", e)
     task_manager.start()
     logger.info("=" * 50)
-    logger.info("网易云音乐下载器 Web 服务启动 (v%s)", __version__)
+    logger.info("Deen音乐下载器 Web 服务启动 (v%s)", __version__)
     logger.info("访问地址: http://localhost:%d", port)
     logger.info("=" * 50)
     try:
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
     finally:
         task_manager.stop()
+        bridge.stop()          # 主程序退出 -> 自动关闭 API 服务
 
 
 if __name__ == "__main__":

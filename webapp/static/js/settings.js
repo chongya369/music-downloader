@@ -7,8 +7,13 @@ async function loadSettings() {
         const s = data.data;
         const form = document.getElementById("settings-form");
 
-        form.api_url.value = s.api_url || "";
-        form.web_port.value = s.web_port || "56700";
+        form.web_port.value = s.web_port || "*:45600";
+        form.ncm_api_port.value = s.ncm_api_port || "45601";
+        form.ncm_api_auto_start.checked = s.ncm_api_auto_start === "true";
+        form.use_custom_api_url.checked = s.use_custom_api_url === "true";
+        form.custom_api_url.value = s.custom_api_url || "";
+        toggleCustomUrl();
+
         form.output_dir.value = s.output_dir || "";
         form.level.value = s.level || "exhigh";
         form.max_retries.value = s.max_retries || "3";
@@ -43,8 +48,11 @@ document.getElementById("settings-form").addEventListener("submit", async functi
     e.preventDefault();
     const form = this;
     const payload = {
-        api_url: form.api_url.value.trim(),
         web_port: form.web_port.value.trim(),
+        ncm_api_port: form.ncm_api_port.value.trim(),
+        ncm_api_auto_start: form.ncm_api_auto_start.checked ? "true" : "false",
+        use_custom_api_url: form.use_custom_api_url.checked ? "true" : "false",
+        custom_api_url: form.use_custom_api_url.checked ? form.custom_api_url.value.trim() : "",
         output_dir: form.output_dir.value.trim(),
         level: form.level.value,
         max_retries: form.max_retries.value,
@@ -72,10 +80,131 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         });
         showToast(data.msg, "成功");
         loadSettings();
+        refreshNcmStatus();  // 端口修改后自动重启完成，立即刷新状态显示
     } catch (e) {
         showToast(e.message, "错误");
     }
 });
 
+// 自定义URL切换
+function toggleCustomUrl() {
+    const useCustom = document.getElementById("use-custom-api-url").checked;
+    const customInput = document.getElementById("custom-api-url-input");
+    const builtinSection = document.getElementById("ncm-builtin-section");
+
+    if (useCustom) {
+        customInput.disabled = false;
+        customInput.required = true;
+        customInput.focus();
+        builtinSection.style.opacity = "0.5";
+        builtinSection.style.pointerEvents = "none";
+    } else {
+        customInput.disabled = true;
+        customInput.required = false;
+        customInput.value = "";
+        builtinSection.style.opacity = "";
+        builtinSection.style.pointerEvents = "";
+    }
+}
+
+document.getElementById("use-custom-api-url").addEventListener("change", toggleCustomUrl);
+
 // 初始化
 loadSettings();
+
+// ======================================================================
+// 网易云API服务状态轮询与启停
+// ======================================================================
+const ncmStatusBadge = document.getElementById("ncm-status-badge");
+const ncmStatusDetail = document.getElementById("ncm-status-detail");
+
+function renderNcmStatus(data) {
+    // 自定义URL模式下显示特殊状态
+    const useCustom = document.getElementById("use-custom-api-url").checked;
+    const portInput = document.querySelector('[name="ncm_api_port"]');
+    if (useCustom) {
+        ncmStatusBadge.className = "badge bg-info";
+        ncmStatusBadge.textContent = "自定义URL";
+        ncmStatusDetail.textContent = "当前使用自定义API服务URL，内置服务已禁用";
+        return;
+    }
+    if (!data) {
+        ncmStatusBadge.className = "badge bg-secondary";
+        ncmStatusBadge.textContent = "未知";
+        ncmStatusDetail.textContent = "";
+        return;
+    }
+    if (data.running) {
+        ncmStatusBadge.className = "badge bg-success";
+        ncmStatusBadge.textContent = "运行中";
+        // 运行中禁止修改端口
+        portInput.disabled = true;
+        portInput.title = "请先停止API服务再修改端口";
+    } else {
+        ncmStatusBadge.className = "badge bg-danger";
+        ncmStatusBadge.textContent = "已停止";
+        // 停止后允许修改端口
+        portInput.disabled = false;
+        portInput.title = "";
+    }
+    const parts = [];
+    if (data.port) parts.push(`端口 ${data.port}`);
+    if (data.preferred_port && data.preferred_port !== data.port) parts.push(`配置端口 ${data.preferred_port}`);
+    if (data.pid) parts.push(`PID ${data.pid}`);
+    if (data.bin_exists === false) parts.push("未找到二进制");
+    ncmStatusDetail.textContent = parts.join(" · ");
+}
+
+async function refreshNcmStatus() {
+    try {
+        const resp = await api("/api/ncm/status", { timeout: 5000 });
+        renderNcmStatus(resp.data);
+    } catch (e) {
+        // 轮询失败保持上次状态即可，不打断操作
+    }
+}
+
+document.getElementById("btn-ncm-start").addEventListener("click", async function() {
+    const useCustom = document.getElementById("use-custom-api-url").checked;
+    if (useCustom) {
+        showToast("自定义URL模式下不可操作内置服务", "提示");
+        return;
+    }
+    const btn = this;
+    btn.disabled = true;
+    ncmStatusBadge.className = "badge bg-warning";
+    ncmStatusBadge.textContent = "启动中";
+    try {
+        // 首次启动最长可达 60s，覆盖默认 15s 超时
+        const resp = await api("/api/ncm/start", { method: "POST", timeout: 70000 });
+        showToast(resp.msg, "成功");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+        refreshNcmStatus();
+    }
+});
+
+document.getElementById("btn-ncm-stop").addEventListener("click", async function() {
+    const useCustom = document.getElementById("use-custom-api-url").checked;
+    if (useCustom) {
+        showToast("自定义URL模式下不可操作内置服务", "提示");
+        return;
+    }
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const resp = await api("/api/ncm/stop", { method: "POST" });
+        showToast(resp.msg, "成功");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+        refreshNcmStatus();
+    }
+});
+
+// 3s 轮询状态
+refreshNcmStatus();
+setInterval(refreshNcmStatus, 3000);

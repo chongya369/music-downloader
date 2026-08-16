@@ -227,8 +227,14 @@ class User(db.Model):
 
 # 默认配置项
 DEFAULT_SETTINGS = {
-    "api_url": "http://localhost:3000",
-    "web_port": "56700",
+    # 网易云API服务相关
+    "ncm_api_auto_start": "false",
+    "ncm_api_port": "45601",
+    # 自定义API服务URL（勾选 use_custom_api_url 时生效）
+    "use_custom_api_url": "false",
+    "custom_api_url": "",
+    # Web 服务监听地址（host:port，* 表示监听所有网卡）
+    "web_port": "*:45600",
     "output_dir": "downloads",
     "level": "exhigh",
     "write_metadata": "true",

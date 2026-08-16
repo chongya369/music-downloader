@@ -9,10 +9,11 @@ function showToast(msg, title = "提示") {
     toast.show();
 }
 
-// API 请求封装（15 秒超时，401 自动跳转登录）
+// API 请求封装（默认 15 秒超时，401 自动跳转登录；options.timeout 可覆盖）
 async function api(url, options = {}) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timeoutMs = options.timeout || 15000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
         const resp = await fetch(url, {
             headers: { "Content-Type": "application/json" },

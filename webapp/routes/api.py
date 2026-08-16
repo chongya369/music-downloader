@@ -27,6 +27,7 @@ from sqlalchemy import func
 
 from auth import current_user, admin_required, login_required
 from models import Account, Playlist, Setting, Song, DownloadTask, User, db
+from core import node_bridge
 from core.netease_client import NeteaseClient, OFFICIAL_TOPLISTS, parse_playlist_id
 
 api_bp = Blueprint("api", __name__)
@@ -78,10 +79,7 @@ def _refresh_account_info(acc: Account, cookie: str | None = None) -> None:
     if not use_cookie:
         return
     try:
-        client = NeteaseClient(
-            base_url=Setting.get("api_url", "http://localhost:3000"),
-            cookie=use_cookie,
-        )
+        client = _create_client(cookie=use_cookie)
         info = client.get_account_info()
         if info.get("code") == 200:
             a = info.get("account") or {}
@@ -105,15 +103,21 @@ def _get_task_manager():
     return current_app.config["TASK_MANAGER"]
 
 
+def _create_client(cookie: str = "") -> NeteaseClient:
+    """创建 NeteaseClient（自动应用自定义API服务URL设置）"""
+    use_custom = Setting.get("use_custom_api_url", "false") == "true"
+    custom_url = Setting.get("custom_api_url", "") if use_custom else ""
+    return NeteaseClient(cookie=cookie, custom_base_url=custom_url)
+
+
 def _get_client() -> NeteaseClient:
     """用第一个启用账号的 cookie 创建客户端（用于发现页/添加歌单等公开接口）
 
     无启用账号时用空 cookie。
     """
-    base_url = Setting.get("api_url", "http://localhost:3000")
     acc = Account.query.filter_by(enabled=True).order_by(Account.id).first()
     cookie = acc.cookie if acc else ""
-    return NeteaseClient(base_url=base_url, cookie=cookie or "")
+    return _create_client(cookie=cookie or "")
 
 
 def _safe_int(value, default: int, lo: int | None = None, hi: int | None = None) -> int:
@@ -432,10 +436,17 @@ def save_settings():
 
     请求体：key-value 字典，仅更新提交的字段。
     web_port 修改后需重启服务才生效。
+    ncm_api_port 修改需在API服务停止状态下进行。
     """
     from models import DEFAULT_SETTINGS
     data = request.get_json(force=True)
     allowed = set(DEFAULT_SETTINGS.keys())
+
+    # 端口变化时校验：API服务运行中禁止修改端口
+    if str(data.get("ncm_api_port", "")) != Setting.get("ncm_api_port", ""):
+        if node_bridge.get_bridge()._is_alive():
+            return jsonify({"code": 1,
+                            "msg": "API服务运行中，请先停止服务再修改端口"}), 400
 
     port_changed = False
     for key, value in data.items():
@@ -450,8 +461,34 @@ def save_settings():
     tm.refresh_schedule()
     msg = "设置已保存"
     if port_changed:
-        msg += "（端口修改需重启服务生效）"
+        msg += "（Web监听地址修改需重启服务生效）"
     return jsonify({"code": 0, "msg": msg})
+
+
+# ======================================================================
+# 内置 API 服务（NeteaseCloudMusicApi-enhanced）控制
+# ======================================================================
+@api_bp.route("/ncm/status")
+def ncm_status():
+    """获取内置 API 服务状态"""
+    return jsonify({"code": 0, "data": node_bridge.get_bridge().status()})
+
+
+@api_bp.route("/ncm/start", methods=["POST"])
+def ncm_start():
+    """启动内置 API 服务（幂等）"""
+    try:
+        url = node_bridge.get_bridge().start()
+        return jsonify({"code": 0, "msg": "网易云API服务已启动", "data": {"base_url": url}})
+    except RuntimeError as e:
+        return jsonify({"code": 1, "msg": str(e)}), 500
+
+
+@api_bp.route("/ncm/stop", methods=["POST"])
+def ncm_stop():
+    """停止内置 API 服务（幂等）"""
+    node_bridge.get_bridge().stop()
+    return jsonify({"code": 0, "msg": "网易云API服务已停止"})
 
 
 # ======================================================================
@@ -680,10 +717,7 @@ def test_account_login(aid: int):
     if not acc:
         return jsonify({"code": 1, "msg": "账号不存在"})
     try:
-        client = NeteaseClient(
-            base_url=Setting.get("api_url", "http://localhost:3000"),
-            cookie=acc.cookie,
-        )
+        client = _create_client(cookie=acc.cookie)
         info = client.get_account_info()
         if info.get("code") != 200:
             return jsonify({"code": 1, "msg": f"Cookie 无效: {info.get('msg', '未知错误')}"})
@@ -697,7 +731,7 @@ def test_account_login(aid: int):
             "data": acc.to_dict(monthly_downloaded=_monthly_downloaded(acc.id)),
         })
     except Exception as e:
-        return jsonify({"code": 1, "msg": f"连接 API 服务失败: {e}"})
+        return jsonify({"code": 1, "msg": f"连接网易云API服务失败: {e}"})
 
 
 @api_bp.route("/accounts/stats")

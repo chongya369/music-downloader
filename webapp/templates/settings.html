@@ -1,26 +1,75 @@
 {% extends "base.html" %}
-{% block title %}设置 - 网易云音乐下载器{% endblock %}
+{% block title %}设置 - Deen音乐下载器{% endblock %}
 {% block content %}
 <h4 class="mb-4"><i class="bi bi-gear"></i> 设置</h4>
 
 <form id="settings-form" class="needs-validation" novalidate>
 <div class="row g-3">
+    <!-- Web 服务 -->
+    <div class="col-12">
+        <div class="card mb-3">
+            <div class="card-header"><i class="bi bi-globe"></i> Web 服务</div>
+            <div class="card-body">
+                <div class="row g-3 align-items-center">
+                    <div class="col-md-6">
+                        <label class="form-label">Web 服务监听地址</label>
+                        <input type="text" class="form-control" name="web_port" placeholder="*:45600" value="*:45600">
+                        <div class="form-text">格式: host:port，如 *:45600 或 127.0.0.1:45600；* 表示监听所有网卡</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- API 服务 -->
     <div class="col-12">
         <div class="card">
             <div class="card-header"><i class="bi bi-hdd-network"></i> API 服务</div>
             <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-md-8">
-                        <label class="form-label">NeteaseCloudMusicApi 服务地址</label>
-                        <input type="text" class="form-control" name="api_url" placeholder="http://localhost:3000">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Web 服务端口</label>
-                        <input type="number" class="form-control" name="web_port" min="1024" max="65535" value="56700">
-                        <div class="form-text">修改后需重启服务生效</div>
+                <!-- 网易云API服务 -->
+                <h6 class="mb-3">网易云API服务</h6>
+
+                <!-- 状态 -->
+                <div class="d-flex align-items-center mb-3">
+                    <label class="form-label mb-0 me-2">状态:</label>
+                    <span id="ncm-status-badge" class="badge bg-secondary me-3">未知</span>
+                    <span id="ncm-status-detail" class="text-muted small"></span>
+                </div>
+
+                <!-- 端口 + 自动启动 + 启停按钮（同一行） -->
+                <div id="ncm-builtin-section">
+                    <div class="d-flex align-items-center flex-wrap gap-2 mb-3">
+                        <div class="d-flex align-items-center">
+                            <label class="form-label mb-0 me-1 small">端口</label>
+                            <input type="number" class="form-control" name="ncm_api_port" min="1024" max="65535" value="45601" style="width:100px;">
+                        </div>
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="ncm_api_auto_start" id="ncm-auto-start" value="true">
+                            <label class="form-check-label small" for="ncm-auto-start">随程序启动自动启动</label>
+                        </div>
+                        <button type="button" id="btn-ncm-start" class="btn btn-sm btn-success">
+                            <i class="bi bi-play"></i> 启动
+                        </button>
+                        <button type="button" id="btn-ncm-stop" class="btn btn-sm btn-danger">
+                            <i class="bi bi-stop"></i> 停止
+                        </button>
                     </div>
                 </div>
+
+                <!-- 自定义URL：容器外，勾选后不受内置服务禁用影响 -->
+                <div class="d-flex align-items-center mb-2">
+                    <div class="form-check me-2">
+                        <input type="checkbox" class="form-check-input" name="use_custom_api_url" id="use-custom-api-url" value="true">
+                        <label class="form-check-label" for="use-custom-api-url">使用自定义API服务URL</label>
+                    </div>
+                    <span class="me-1">:</span>
+                    <input type="text" class="form-control flex-grow-1" name="custom_api_url" id="custom-api-url-input" placeholder="http://127.0.0.1:3000" style="max-width:400px;" disabled>
+                </div>
+
+                <!-- 其他API服务占位 -->
+                <hr class="my-3">
+                <h6 class="mb-2">其他API服务</h6>
+                <p class="text-muted small mb-0">其他平台待开发</p>
             </div>
         </div>
     </div>

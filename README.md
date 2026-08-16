@@ -13,7 +13,7 @@
 - **定时同步**：APScheduler 多时间点 cron 触发，支持抖动延迟（避免固定时刻请求）
 - **断点续传**：HTTP Range 协议，下载失败自动重试，支持临时文件续传
 - **元数据写入**：MP3（ID3v2）/ FLAC（Vorbis Comment）标签，含封面、歌词、专辑信息
-- **语言检测**：基于歌词字符集自动识别中/英/日/韩语（日文优先判假名，避免汉字误判）
+- **API 服务控制**：Web「设置」页实时查看 NeteaseCloudMusicApi 服务状态，一键启动/停止与 `auto_start` 开关
 - **排除过滤**：按关键字过滤歌曲（如 live、伴奏、remix），playlist 和 search 两个场景独立配置
 - **发现页**：官方排行榜、热门分类歌单、搜索歌曲/专辑、单曲/专辑批量下载
 - **下载历史**：完整记录下载任务（成功/失败/跳过），支持失败重试
@@ -32,17 +32,19 @@
 | HTTP 客户端 | requests 2.31+ |
 | 音频元数据 | mutagen 1.47+ |
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
-| 网易云 API | [NeteaseCloudMusicApi](https://github.com/neteasecloudmusicapienhanced/api-enhanced)（Node.js 本地服务） |
+| 网易云 API | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（自动拉起对应平台二进制，不随源码分发） |
 
 ## 目录结构
 
 ```
 source/
 ├── core/                          # 核心业务层
-│   ├── netease_client.py          # 网易云 API 客户端（调用本地 Node 服务）
+│   ├── netease_client.py          # 网易云 API 客户端（调用 NeteaseCloudMusicApi 服务）
+│   ├── node_bridge.py             # NeteaseCloudMusicApi 二进制进程管理
 │   ├── downloader.py              # 文件下载器（断点续传 + 重试 + 路径保护）
 │   ├── metadata.py                # MP3/FLAC 元数据写入
 │   └── language_detector.py       # 基于歌词的语言检测
+├── api/                           # NeteaseCloudMusicApi 二进制（不随源码分发，需手动放置）
 ├── webapp/
 │   ├── app.py                     # Flask 应用入口（默认端口 56700）
 │   ├── models.py                  # 数据库模型（6 张表）+ 默认配置
@@ -55,10 +57,15 @@ source/
 │   │   └── api.py                 # JSON API 路由
 │   ├── templates/                 # Jinja2 HTML 模板
 │   └── static/                    # 静态资源（CSS/JS/vendor）
+├── doc/                           # 项目文档（CHANGELOG 等）
 ├── downloads/                     # 下载输出目录（按歌手名分子目录）
 ├── downloads.db                   # SQLite 数据库文件
+├── icon.ico                       # 打包用应用图标
+├── build.py                        # PyInstaller onefile 打包脚本（跨平台）
+├── build_win.bat                   # 一键打包入口（Windows）
+├── build_linux.sh                  # 一键打包入口（Linux，POSIX sh）
 ├── requirements.txt               # Python 依赖
-├── VERSION                        # 版本号
+├── version.txt                    # 版本号
 ├── run_web.bat                    # Windows 一键启动脚本
 └── run_web.sh                     # Linux 一键启动脚本
 ```
@@ -66,22 +73,20 @@ source/
 ## 环境依赖
 
 - **Python** 3.10+
-- **Node.js**（用于运行 NeteaseCloudMusicApi 服务）
+- **NeteaseCloudMusicApi-enhanced 二进制**（**不随源码分发**，需自行下载）
+  - 官方项目：https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced
+  - 将对应平台的二进制放入 `source/api/`（当前支持 Windows / Linux x64，可按需扩展其他平台），程序启动时自动按平台选择并拉起
+  - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
 
 ## 快速开始
 
-### 1. 启动网易云 API 服务
-
-先部署并启动 [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) Node 服务，默认监听 `http://localhost:3000`。
-
-### 2. 启动 Web 服务
+### 1. 启动 Web 服务
 
 Windows 用户直接双击 `run_web.bat`，脚本会自动：
 - 检测 Python 环境
-- 检测 NeteaseCloudMusicApi 服务是否可达
 - 创建虚拟环境（首次运行）
 - 安装 Python 依赖（首次运行）
-- 启动 Flask 服务
+- 启动 Flask 服务（默认自动拉起 NeteaseCloudMusicApi 服务）
 
 手动启动方式：
 
@@ -92,10 +97,10 @@ Windows 用户直接双击 `run_web.bat`，脚本会自动：
 python -m venv .venv
 
 # 安装依赖
-.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 
 # 启动服务
-.venv\Scripts\python webapp\app.py
+.venv\Scripts\python.exe webapp\app.py
 ```
 
 **Linux / macOS：**
@@ -115,13 +120,13 @@ chmod +x run_web.sh
 python3 -m venv .venv
 
 # 安装依赖
-.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
 
 # 启动服务
 .venv/bin/python webapp/app.py
 ```
 
-### 3. 访问 Web 界面
+### 2. 访问 Web 界面
 
 浏览器打开 `http://localhost:56700`，使用默认管理员账号登录：
 
@@ -130,14 +135,14 @@ python3 -m venv .venv
 
 **首次登录后请立即在「用户管理」页修改密码。**
 
-### 4. 添加网易云账号
+### 3. 添加网易云账号
 
 在「账号管理」页添加账号：
 - 填写账号别名（如"主账号"）
 - 粘贴 Cookie（**必须包含 `MUSIC_U` 字段**，从浏览器登录网易云后从 F12 → Network → Request Headers 复制）
 - 可选设置月额度上限（0 表示不限制）
 
-### 5. 添加歌单
+### 4. 添加歌单
 
 在「歌单管理」页添加要同步的歌单，支持：
 - 纯数字歌单 ID：`3778678`
@@ -151,7 +156,7 @@ python3 -m venv .venv
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `api_url` | `http://localhost:3000` | NeteaseCloudMusicApi 服务地址 |
+| `ncm_api_auto_start` | `true` | 是否随程序启动自动拉起 NeteaseCloudMusicApi 服务（重启生效） |
 | `web_port` | `56700` | Web 服务端口（修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录） |
 | `level` | `exhigh` | 音质等级：standard / higher / exhigh / lossless / hires |
@@ -351,6 +356,9 @@ python3 -m venv .venv
 |------|------|------|
 | GET | `/api/settings` | 获取配置 |
 | PUT | `/api/settings` | 保存配置 |
+| GET | `/api/ncm/status` | NeteaseCloudMusicApi 服务状态 |
+| POST | `/api/ncm/start` | 启动 NeteaseCloudMusicApi 服务 |
+| POST | `/api/ncm/stop` | 停止 NeteaseCloudMusicApi 服务 |
 
 ### 用户管理（仅管理员）
 | 方法 | 路径 | 说明 |
@@ -392,7 +400,7 @@ A: API 返回了 freeTrialInfo，表示当前账号无该歌曲完整版权，�
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
 ### Q: NeteaseCloudMusicApi 服务未启动会怎样？
-A: 「发现页」相关功能会失败；榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）；下载功能因需要获取歌曲链接会失败。建议先确保 Node 服务正常运行。
+A: 程序默认随启动自动拉起；若被手动停止，首次业务请求会经 `base_url` 属性自动重新拉起（需要几秒）。若二进制缺失，请在 Web「设置」页查看状态并确认 `source/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）。
 
 ### Q: 修改 Web 端口后无法访问？
 A: `web_port` 修改后需重启 Flask 服务才生效（Windows 通过 `run_web.bat`、Linux 通过 `./run_web.sh` 重启，或手动重启 `python webapp/app.py`）。
@@ -420,6 +428,42 @@ A: 系统对路径长度有保护机制：超过 240 字符自动截断文件名
 
 首次启动自动建表 + 写入默认配置 + 创建管理员账号。兼容迁移逻辑（如新增 `account_id` 列）在 [models.py](webapp/models.py) `init_db` 中通过 `ALTER TABLE` 实现。
 
+## 打包发布
+
+跨平台一键打包为单文件可执行程序（onefile 模式，依赖全部内置）：
+
+**Windows:**
+```bash
+build_win.bat
+```
+或手动执行：
+```bash
+.venv\Scripts\python.exe build.py
+```
+
+**Linux:**
+```bash
+chmod +x build_linux.sh
+./build_linux.sh
+```
+或手动执行：
+```bash
+python3 build.py
+```
+
+**注意：** PyInstaller 不支持交叉编译，Windows 产物必须在 Windows 上构建，Linux 产物必须在 Linux 上构建。
+
+产物位于 `dist/music_downloader/`，其中：
+- Windows 产物：`music_downloader.exe`
+- Linux 产物：`music_downloader`（无扩展名）
+
+打包脚本会自动：
+- 优先使用项目 `.venv` 的 Python（避免漏包第三方依赖）
+- 清理旧的 `dist/`、`build/` 与生成的 spec 文件
+- 创建空的 `api/`、`downloads/` 占位目录
+
+打包后需将对应平台的 API 二进制（Windows: `ncm-api-win-x64.exe`, Linux: `ncm-api-linux-x64`，从官方项目 Release 下载）放入 `dist/music_downloader/api/`。
+
 ## 版本
 
-当前版本：**0.1.0**（见 [VERSION](VERSION)）
+当前版本：**0.2.0**（见 [version.txt](version.txt)）
