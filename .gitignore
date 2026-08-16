@@ -70,6 +70,9 @@ downloads/
 log/
 *.log
 
+# 项目文档（仅本地维护，不随源码上传）
+doc/
+
 # SQLite 附属文件（journal/WAL 日志）
 *.db-journal
 *.db-wal

@@ -1,6 +1,6 @@
-# Deen音乐下载器 Web 版
+# Deen音乐下载器
 
-基于 Flask 的网易云音乐下载器，支持多账号管理、定时同步歌单、断点续传下载、元数据写入、Web 界面管理。
+Deen音乐下载器 —— 基于 Flask 的网易云音乐下载器，支持多账号管理、定时同步歌单、断点续传下载、元数据写入、Web 界面管理。
 
 ## 功能特性
 
@@ -13,7 +13,7 @@
 - **定时同步**：APScheduler 多时间点 cron 触发，支持抖动延迟（避免固定时刻请求）
 - **断点续传**：HTTP Range 协议，下载失败自动重试，支持临时文件续传
 - **元数据写入**：MP3（ID3v2）/ FLAC（Vorbis Comment）标签，含封面、歌词、专辑信息
-- **API 服务控制**：Web「设置」页实时查看 NeteaseCloudMusicApi 服务状态，一键启动/停止与 `auto_start` 开关
+- **API 服务控制**：Web「设置」页实时查看 NeteaseCloudMusicApi 服务状态，支持配置端口、一键启动/停止、`auto_start` 开关与自定义 API 服务 URL
 - **排除过滤**：按关键字过滤歌曲（如 live、伴奏、remix），playlist 和 search 两个场景独立配置
 - **发现页**：官方排行榜、热门分类歌单、搜索歌曲/专辑、单曲/专辑批量下载
 - **下载历史**：完整记录下载任务（成功/失败/跳过），支持失败重试
@@ -38,6 +38,9 @@
 
 ```
 source/
+├── .github/
+│   └── workflows/
+│       └── build.yml              # GitHub Actions 自动构建（Windows/Linux + Release）
 ├── core/                          # 核心业务层
 │   ├── netease_client.py          # 网易云 API 客户端（调用 NeteaseCloudMusicApi 服务）
 │   ├── node_bridge.py             # NeteaseCloudMusicApi 二进制进程管理
@@ -46,7 +49,7 @@ source/
 │   └── language_detector.py       # 基于歌词的语言检测
 ├── api/                           # NeteaseCloudMusicApi 二进制（不随源码分发，需手动放置）
 ├── webapp/
-│   ├── app.py                     # Flask 应用入口（默认端口 56700）
+│   ├── app.py                     # Flask 应用入口（默认监听 *:45600）
 │   ├── models.py                  # 数据库模型（6 张表）+ 默认配置
 │   ├── auth.py                    # 登录态校验装饰器
 │   ├── task_manager.py            # 下载任务调度器（核心）
@@ -57,10 +60,11 @@ source/
 │   │   └── api.py                 # JSON API 路由
 │   ├── templates/                 # Jinja2 HTML 模板
 │   └── static/                    # 静态资源（CSS/JS/vendor）
-├── doc/                           # 项目文档（CHANGELOG 等）
+├── doc/                           # 开发过程记录（仅本地维护，不随源码分发）
 ├── downloads/                     # 下载输出目录（按歌手名分子目录）
 ├── downloads.db                   # SQLite 数据库文件
 ├── icon.ico                       # 打包用应用图标
+├── icon1.ico                      # 备用打包图标
 ├── build.py                        # PyInstaller onefile 打包脚本（跨平台）
 ├── build_win.bat                   # 一键打包入口（Windows）
 ├── build_linux.sh                  # 一键打包入口（Linux，POSIX sh）
@@ -86,7 +90,7 @@ Windows 用户直接双击 `run_web.bat`，脚本会自动：
 - 检测 Python 环境
 - 创建虚拟环境（首次运行）
 - 安装 Python 依赖（首次运行）
-- 启动 Flask 服务（默认自动拉起 NeteaseCloudMusicApi 服务）
+- 启动 Flask 服务（NeteaseCloudMusicApi 服务按需自动拉起）
 
 手动启动方式：
 
@@ -128,7 +132,7 @@ python3 -m venv .venv
 
 ### 2. 访问 Web 界面
 
-浏览器打开 `http://localhost:56700`，使用默认管理员账号登录：
+浏览器打开 `http://localhost:45600`，使用默认管理员账号登录：
 
 - 用户名：`admin`
 - 密码：`admin123`
@@ -156,8 +160,11 @@ python3 -m venv .venv
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `ncm_api_auto_start` | `true` | 是否随程序启动自动拉起 NeteaseCloudMusicApi 服务（重启生效） |
-| `web_port` | `56700` | Web 服务端口（修改后需重启服务） |
+| `ncm_api_auto_start` | `false` | 是否随程序启动自动拉起 NeteaseCloudMusicApi 服务（`false` 为按需懒启动，重启生效） |
+| `ncm_api_port` | `45601` | NeteaseCloudMusicApi 服务端口（0 表示随机空闲端口，运行中不可修改） |
+| `use_custom_api_url` | `false` | 是否使用自定义 API 服务 URL（勾选时内置服务禁用） |
+| `custom_api_url` | （空） | 自定义 API 服务 URL，`use_custom_api_url` 为 `true` 时生效 |
+| `web_port` | `*:45600` | Web 服务监听地址（`host:port` 格式，如 `*:45600` 或 `127.0.0.1:45600`，`*` 表示所有网卡，修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录） |
 | `level` | `exhigh` | 音质等级：standard / higher / exhigh / lossless / hires |
 | `write_metadata` | `true` | 是否写入元数据（标题/艺术家/专辑/封面/歌词） |
@@ -400,9 +407,9 @@ A: API 返回了 freeTrialInfo，表示当前账号无该歌曲完整版权，�
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
 ### Q: NeteaseCloudMusicApi 服务未启动会怎样？
-A: 程序默认随启动自动拉起；若被手动停止，首次业务请求会经 `base_url` 属性自动重新拉起（需要几秒）。若二进制缺失，请在 Web「设置」页查看状态并确认 `source/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）。
+A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `source/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）。
 
-### Q: 修改 Web 端口后无法访问？
+### Q: 修改 Web 监听地址后无法访问？
 A: `web_port` 修改后需重启 Flask 服务才生效（Windows 通过 `run_web.bat`、Linux 通过 `./run_web.sh` 重启，或手动重启 `python webapp/app.py`）。
 
 ### Q: 下载的文件名包含特殊字符导致问题？
@@ -462,7 +469,11 @@ python3 build.py
 - 清理旧的 `dist/`、`build/` 与生成的 spec 文件
 - 创建空的 `api/`、`downloads/` 占位目录
 
-打包后需将对应平台的 API 二进制（Windows: `ncm-api-win-x64.exe`, Linux: `ncm-api-linux-x64`，从官方项目 Release 下载）放入 `dist/music_downloader/api/`。
+打包后需将对应平台的 API 二进制（Windows: `ncm-api-win-x64.exe`, Linux: `ncm-api-linux-x64`，从官方项目 Release 下载）放入 `dist/music_downloader/api/`，然后运行产物并访问 `http://localhost:45600`。
+
+### GitHub Actions 自动构建
+
+仓库已配置 [.github/workflows/build.yml](.github/workflows/build.yml)：推送 `v*` 标签（或手动触发）时自动在 Windows（windows-latest）与 Linux（Debian 12 容器）双平台执行 onefile 打包并压缩为 zip，随后自动发布 GitHub Release，产物为 `music_downloader-win-x64.zip` 与 `music_downloader-linux-x64.zip`。
 
 ## 版本
 
