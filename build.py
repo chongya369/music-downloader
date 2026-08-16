@@ -8,8 +8,8 @@
     Linux:   执行 ./build_linux.sh（或 python3 build.py）
 
 产物：
-    Windows: ../dist/NeteaseMusicDownloader/NeteaseMusicDownloader.exe
-    Linux:   ../dist/NeteaseMusicDownloader/NeteaseMusicDownloader
+    Windows: ./dist/music_downloader/music_downloader.exe
+    Linux:   ./dist/music_downloader/music_downloader
 
 注意：PyInstaller 不支持交叉编译，Linux 产物必须在 Linux 上构建，
 Windows 产物必须在 Windows 上构建。
@@ -23,10 +23,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-# 脚本所在目录 = source 目录
+# 脚本所在目录 = 项目根目录（CI 上 checkout 根即 source，本地 source/ 即工作目录）
 SOURCE_DIR = Path(__file__).resolve().parent
-# 项目根目录（source 的上一级）
-ROOT = SOURCE_DIR.parent
+ROOT = SOURCE_DIR
 
 ENTRY = SOURCE_DIR / "webapp" / "app.py"
 ICON = SOURCE_DIR / "icon.ico"

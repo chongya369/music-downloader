@@ -82,6 +82,6 @@ if %RC% NEQ 0 (
 echo.
 echo ============================================
 echo [DONE] Build succeeded
-echo [INFO] See ..\dist\music_downloader\
+echo [INFO] See .\dist\music_downloader\
 echo ============================================
 pause
