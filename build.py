@@ -217,8 +217,17 @@ def post_pack() -> None:
     (DIST_APP_DIR / "downloads").mkdir(exist_ok=True)
     print("[INFO] 已创建空 downloads/ 占位目录")
 
+    # Linux 下给可执行文件加执行权限（Windows 无此概念）
+    if not is_win():
+        bin_path.chmod(0o755)
+        print(f"[INFO] 已设置可执行权限: {bin_path}")
+
 
 def main() -> None:
+    # Windows(cp1252) / Debian 容器(C locale) 默认输出编码非 UTF-8，
+    # 强制切换避免中文 print 抛 UnicodeEncodeError
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print("=" * 60)
     print("[STEP] 一键打包开始 (onefile 模式, 跨平台)")
     print("=" * 60)

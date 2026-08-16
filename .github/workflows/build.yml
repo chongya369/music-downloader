@@ -13,6 +13,8 @@ jobs:
   build-windows:
     name: Build (Windows)
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +47,8 @@ jobs:
     name: Build (Debian 12)
     runs-on: ubuntu-latest
     container: debian:12
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +68,6 @@ jobs:
 
       - name: Package zip
         run: |
-          chmod +x dist/music_downloader/music_downloader
           cd dist/music_downloader
           zip -r ../../music_downloader-linux-x64.zip ./
 
