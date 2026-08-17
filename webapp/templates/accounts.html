@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block title %}账号管理 - Deen音乐下载器{% endblock %}
 {% block content %}
+<style>
+#accounts-cards { margin: 0; }
+.account-card-col { padding: 0.25rem; box-sizing: border-box; flex: 0 0 100%; }
+@media (min-width: 768px) { .account-card-col { flex: 0 0 25%; } }
+@media (min-width: 992px) { .account-card-col { flex: 0 0 16.66666667%; } }
+.account-card { border: 1px solid var(--bs-border-color, #dee2e6); border-radius: 6px; transition: box-shadow 0.15s; width: 100%; }
+.account-card:hover { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.account-card .card-body { padding: 6px 8px; }
+</style>
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h4 class="mb-0"><i class="bi bi-people"></i> 账号管理</h4>
     <div>
@@ -26,27 +35,52 @@
     会员到期时间在添加/编辑/测试账号时自动刷新。
 </div>
 
-<div class="card">
-    <div class="card-body">
-        <div class="table-responsive">
-            <table class="table table-hover align-middle">
-                <thead>
-                    <tr>
-                        <th width="70">排序</th>
-                        <th width="50">启用</th>
-                        <th>别名</th>
-                        <th>网易云昵称</th>
-                        <th width="100">会员类型</th>
-                        <th width="160">会员到期</th>
-                        <th width="180">本月已下载</th>
-                        <th width="150">上次校验</th>
-                        <th width="200">操作</th>
-                    </tr>
-                </thead>
-                <tbody id="account-tbody">
-                    <tr><td colspan="9" class="text-center text-muted">加载中...</td></tr>
-                </tbody>
-            </table>
+<!-- 平台分页 Tab -->
+<ul class="nav nav-tabs mb-3" id="platform-tabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" data-platform="all" data-bs-toggle="tab">全部 <span class="badge bg-secondary" id="count-all">0</span></button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" data-platform="netease" data-bs-toggle="tab">网易云 <span class="badge bg-secondary" id="count-netease">0</span></button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" data-platform="qq" data-bs-toggle="tab">QQ音乐 <span class="badge bg-secondary" id="count-qq">0</span></button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" data-platform="kugou" data-bs-toggle="tab">酷狗音乐 <span class="badge bg-secondary" id="count-kugou">0</span></button>
+    </li>
+</ul>
+
+<!-- 全部标签页：卡片视图（只读） -->
+<div id="accounts-card-view" style="display:none;">
+    <div id="accounts-cards" class="row g-2"></div>
+</div>
+
+<!-- 平台标签页：表格视图（可编辑） -->
+<div id="accounts-table-view">
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th width="70">排序</th>
+                            <th width="50">启用</th>
+                            <th>平台</th>
+                            <th>别名</th>
+                            <th>昵称</th>
+                            <th width="100">会员类型</th>
+                            <th width="160">会员到期</th>
+                            <th width="180">本月已下载</th>
+                            <th width="150">上次校验</th>
+                            <th width="200">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="account-tbody">
+                        <tr><td colspan="10" class="text-center text-muted">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 </div>
@@ -61,13 +95,21 @@
             </div>
             <div class="modal-body">
                 <div class="mb-3">
+                    <label class="form-label">平台</label>
+                    <select class="form-select" id="add-platform">
+                        <option value="netease" selected>网易云</option>
+                        <option value="qq">QQ音乐</option>
+                        <option value="kugou">酷狗音乐</option>
+                    </select>
+                </div>
+                <div class="mb-3">
                     <label class="form-label">账号别名</label>
                     <input type="text" class="form-control" id="add-name" placeholder="如：主账号">
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Cookie（含 MUSIC_U）</label>
+                    <label class="form-label">Cookie</label>
                     <textarea class="form-control" id="add-cookie" rows="3" placeholder="MUSIC_U=xxxx; os=pc"></textarea>
-                    <div class="form-text">浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U</div>
+                    <div class="form-text" id="add-cookie-hint">网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U</div>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">月度总额度（0=不限制）</label>
@@ -93,6 +135,10 @@
             </div>
             <div class="modal-body">
                 <input type="hidden" id="edit-id">
+                <div class="mb-3">
+                    <label class="form-label">平台</label>
+                    <input type="text" class="form-control" id="edit-platform" readonly>
+                </div>
                 <div class="mb-3">
                     <label class="form-label">账号别名</label>
                     <input type="text" class="form-control" id="edit-name">

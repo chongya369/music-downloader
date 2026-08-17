@@ -25,10 +25,11 @@ from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func
 
-from models import Account, DownloadTask, Playlist, Setting, Song, db
+from models import Account, DownloadTask, Playlist, Setting, Song, db, get_custom_api_url
 from core.downloader import Downloader, build_filename, sanitize_filename
 from core.metadata import write_tags
-from core.netease_client import NeteaseClient
+from core.providers.netease import NeteaseProvider
+from core.providers import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,10 @@ class AccountSelector:
         # 轮询模式：全局计数器
         self._rr_counter = 0
 
-    def _get_enabled_accounts(self) -> list[Account]:
-        """获取所有启用的账号（按 sort_order 升序排序）"""
+    def _get_enabled_accounts(self, platform: str = "netease") -> list[Account]:
+        """获取指定平台所有启用的账号（按 sort_order 升序排序）"""
         with self.app.app_context():
-            return Account.query.filter_by(enabled=True).order_by(Account.sort_order, Account.id).all()
+            return Account.query.filter_by(platform=platform, enabled=True).order_by(Account.sort_order, Account.id).all()
 
     def _filter_by_vip_preference(self, accounts: list[Account], prefer_non_vip: bool, fee: int) -> list[Account]:
         """按 VIP 偏好过滤账号列表
@@ -163,13 +164,13 @@ class AccountSelector:
         """账号是否可用（月额度和小时限额均未满）"""
         return not self.is_quota_exceeded(account_id) and not self.is_hourly_exceeded(account_id)
 
-    def all_hourly_limited(self) -> bool:
-        """所有启用账号是否都因小时限额满而不可用
+    def all_hourly_limited(self, platform: str = "netease") -> bool:
+        """指定平台所有启用账号是否都因小时限额满而不可用
 
         用于决定是否触发 30 分钟暂停。月额度满的账号不算"因小时限额满"。
         返回 False 的情况：无账号、或至少有一个账号月额度未满但小时限额也未满。
         """
-        accounts = self._get_enabled_accounts()
+        accounts = self._get_enabled_accounts(platform=platform)
         if not accounts:
             return False
         for a in accounts:
@@ -182,18 +183,19 @@ class AccountSelector:
         # 所有"月额度未满"的账号都因小时限额满 → 触发暂停
         return True
 
-    def pick_for_fallback(self, prefer_non_vip: bool = False, fee: int = 0) -> Account | None:
+    def pick_for_fallback(self, prefer_non_vip: bool = False, fee: int = 0, platform: str = "netease") -> Account | None:
         """接力模式：取当前账号，若不可用则切到下一个
 
         Args:
             prefer_non_vip: 是否优先非VIP账号
             fee: 歌曲费用类型（1=VIP歌曲）
+            platform: 平台标识，默认 netease
 
         Returns:
             可用的 Account，全部不可用返回 None
         """
         with self._lock:
-            accounts = self._get_enabled_accounts()
+            accounts = self._get_enabled_accounts(platform=platform)
             if not accounts:
                 return None
             # 按 VIP 偏好过滤
@@ -222,19 +224,20 @@ class AccountSelector:
                         return Account.query.get(aid)
             return None
 
-    def switch_to_next(self, current_id: int, prefer_non_vip: bool = False, fee: int = 0) -> Account | None:
+    def switch_to_next(self, current_id: int, prefer_non_vip: bool = False, fee: int = 0, platform: str = "netease") -> Account | None:
         """接力模式：强制切到下一个账号（失败时调用）
 
         Args:
             current_id: 当前账号 ID
             prefer_non_vip: 是否优先非VIP账号
             fee: 歌曲费用类型（1=VIP歌曲）
+            platform: 平台标识，默认 netease
 
         Returns:
             下一个可用账号，无则 None
         """
         with self._lock:
-            accounts = self._get_enabled_accounts()
+            accounts = self._get_enabled_accounts(platform=platform)
             if not accounts:
                 return None
             accounts = self._filter_by_vip_preference(accounts, prefer_non_vip, fee)
@@ -255,18 +258,19 @@ class AccountSelector:
                         return Account.query.get(aid)
             return None
 
-    def pick_for_round_robin(self, prefer_non_vip: bool = False, fee: int = 0) -> Account | None:
+    def pick_for_round_robin(self, prefer_non_vip: bool = False, fee: int = 0, platform: str = "netease") -> Account | None:
         """轮询模式：按计数器取下一个账号，跳过不可用的
 
         Args:
             prefer_non_vip: 是否优先非VIP账号
             fee: 歌曲费用类型（1=VIP歌曲）
+            platform: 平台标识，默认 netease
 
         Returns:
             可用 Account，全部不可用返回 None
         """
         with self._lock:
-            accounts = self._get_enabled_accounts()
+            accounts = self._get_enabled_accounts(platform=platform)
             if not accounts:
                 return None
             accounts = self._filter_by_vip_preference(accounts, prefer_non_vip, fee)
@@ -389,21 +393,32 @@ class TaskManager:
     # ------------------------------------------------------------------
     # 客户端构建
     # ------------------------------------------------------------------
-    def _get_client_for_account(self, account: Account) -> NeteaseClient:
-        """用指定账号的 cookie 创建客户端（仅用已传入 cookie，不查库）"""
-        return NeteaseClient(cookie=account.cookie or "")
+    def _get_client_for_account(self, account: Account) -> NeteaseProvider:
+        """用指定账号的 cookie 创建 provider（仅用已传入 cookie，不查库）
 
-    def _get_client_default(self) -> NeteaseClient:
-        """用第一个启用账号的 cookie 创建客户端
+        P1 薄包装：返回已注入凭证与自定义地址的 provider。
+        """
+        p = get_provider("netease")
+        p.set_cookie(account.cookie or "")
+        with self.app.app_context():
+            p.set_custom_base_url(get_custom_api_url())
+        return p
+
+    def _get_client_default(self) -> NeteaseProvider:
+        """用第一个启用的网易云账号 cookie 创建 provider
 
         用于同步歌单等公开接口。无启用账号时用空 cookie。
         此函数被调度线程调用（_sync_all_playlists 等），后台线程无 request
         context，Account.query 必须包 app_context。
         """
         with self.app.app_context():
-            acc = Account.query.filter_by(enabled=True).order_by(Account.id).first()
+            acc = Account.query.filter_by(platform="netease", enabled=True).order_by(Account.sort_order, Account.id).first()
             cookie = acc.cookie if acc else ""
-        return NeteaseClient(cookie=cookie or "")
+            custom_url = get_custom_api_url()
+        p = get_provider("netease")
+        p.set_cookie(cookie or "")
+        p.set_custom_base_url(custom_url)
+        return p
 
     def _get_downloader(self) -> Downloader:
         with self.app.app_context():
@@ -430,12 +445,18 @@ class TaskManager:
         client = self._get_client_default()
         for pl_id, pl_name in pl_list:
             try:
-                self._sync_playlist(client, pl_id)
+                self._sync_playlist(client, pl_id, platform="netease")
             except Exception as e:
                 logger.exception("同步歌单 %s 失败: %s", pl_name, e)
 
-    def _sync_playlist(self, client: NeteaseClient, playlist_id: int) -> int:
-        """同步单个歌单：拉取歌曲列表，过滤已下载，入队"""
+    def _sync_playlist(self, client: NeteaseProvider, playlist_id: int, platform: str = "netease") -> int:
+        """同步单个歌单：拉取歌曲列表，过滤已下载，入队
+
+        Args:
+            client: Provider 实例
+            playlist_id: 歌单 ID
+            platform: 平台标识，默认 netease
+        """
         with self.app.app_context():
             pl = Playlist.query.get(playlist_id)
             if not pl:
@@ -467,6 +488,7 @@ class TaskManager:
                     ).first()
                     if not already:
                         task = DownloadTask(
+                            platform=platform,
                             song_id=sid,
                             song_name=t["name"],
                             artists=t.get("artists", ""),
@@ -493,6 +515,7 @@ class TaskManager:
 
             for t in new_tracks:
                 task = DownloadTask(
+                    platform=platform,
                     song_id=t["id"],
                     song_name=t["name"],
                     artists=t.get("artists", ""),
@@ -508,18 +531,29 @@ class TaskManager:
             logger.info("歌单 [%s] 新增 %d 首到下载队列（排除 %d 首）", pl_name, len(new_tracks), excluded_count)
             return len(new_tracks)
 
-    def sync_playlist(self, playlist_id: int) -> int:
-        client = self._get_client_default()
-        return self._sync_playlist(client, playlist_id)
+    def sync_playlist(self, playlist_id: int, platform: str = "netease") -> int:
+        """同步单个歌单
 
-    def sync_all(self) -> int:
+        Args:
+            playlist_id: 歌单 ID
+            platform: 平台标识，默认 netease
+        """
+        client = self._get_client_default()
+        return self._sync_playlist(client, playlist_id, platform=platform)
+
+    def sync_all(self, platform: str = "netease") -> int:
+        """同步所有已启用的歌单
+
+        Args:
+            platform: 平台标识，默认 netease
+        """
         with self.app.app_context():
             playlists = Playlist.query.filter_by(enabled=True).all()
             pl_list = [(p.id, p.name) for p in playlists]
         client = self._get_client_default()
         total = 0
         for pl_id, _pl_name in pl_list:
-            total += self._sync_playlist(client, pl_id)
+            total += self._sync_playlist(client, pl_id, platform=platform)
         return total
 
     # ------------------------------------------------------------------
@@ -565,13 +599,14 @@ class TaskManager:
         scopes = [s.strip() for s in setting_scope.split(",") if s.strip()]
         return scope in scopes
 
-    def search_and_download(self, keyword: str, limit: int = 50, offset: int = 0) -> dict:
+    def search_and_download(self, keyword: str, limit: int = 50, offset: int = 0, platform: str = "netease") -> dict:
         """搜索歌手歌曲并入队下载
 
         Args:
             keyword: 搜索关键词（如歌手名或歌曲名）
             limit: 搜索结果数量（最大 100）
             offset: 偏移量（用于下载指定页）
+            platform: 平台标识，默认 netease
 
         Returns:
             {"enqueued": int, "excluded": int, "skipped": int, "total": int}
@@ -613,6 +648,7 @@ class TaskManager:
                     skipped += 1
                     continue
                 task = DownloadTask(
+                    platform=platform,
                     song_id=sid,
                     song_name=t.get("name", ""),
                     artists=t.get("artists", ""),
@@ -632,12 +668,13 @@ class TaskManager:
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
 
-    def download_album(self, album_id: int, album_name: str = "") -> dict:
+    def download_album(self, album_id: int, album_name: str = "", platform: str = "netease") -> dict:
         """下载专辑内全部歌曲（应用搜索场景排除过滤）
 
         Args:
             album_id: 专辑 ID
             album_name: 专辑名（用于任务记录）
+            platform: 平台标识，默认 netease
 
         Returns:
             {"enqueued": int, "excluded": int, "skipped": int, "total": int}
@@ -676,6 +713,7 @@ class TaskManager:
                     skipped += 1
                     continue
                 task = DownloadTask(
+                    platform=platform,
                     song_id=sid,
                     song_name=t.get("name", ""),
                     artists=t.get("artists", ""),
@@ -695,7 +733,7 @@ class TaskManager:
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
 
-    def download_single_song(self, song_id: int, name: str, artists: str, fee: int = 0) -> bool:
+    def download_single_song(self, song_id: int, name: str, artists: str, fee: int = 0, platform: str = "netease") -> bool:
         """下载单首歌曲（用户主动选择，不应用排除过滤）
 
         Args:
@@ -703,6 +741,7 @@ class TaskManager:
             name: 歌曲名
             artists: 歌手名
             fee: 费用类型（0=免费 1=VIP 4=购买专辑 8=低音质免费）
+            platform: 平台标识，默认 netease
 
         Returns:
             True=已入队，False=已存在或失败
@@ -718,6 +757,7 @@ class TaskManager:
             if pending:
                 return False
             task = DownloadTask(
+                platform=platform,
                 song_id=song_id,
                 song_name=name,
                 artists=artists,
@@ -751,6 +791,7 @@ class TaskManager:
                 if pending:
                     continue
                 task = DownloadTask(
+                    platform=song.platform or "netease",
                     song_id=song.id,
                     song_name=song.name,
                     artists=song.artists,
@@ -803,6 +844,7 @@ class TaskManager:
             pl_id = task.playlist_id
             pl_name = task.playlist_name
             fee = task.fee or 0
+            platform = task.platform or "netease"
 
             # 读取配置
             level = Setting.get("level", "exhigh")
@@ -813,14 +855,14 @@ class TaskManager:
 
         # 选择账号（按 VIP 偏好过滤）
         if mode == "round_robin":
-            account = self._account_selector.pick_for_round_robin(prefer_non_vip, fee)
+            account = self._account_selector.pick_for_round_robin(prefer_non_vip, fee, platform=platform)
         else:
             # 接力模式
-            account = self._account_selector.pick_for_fallback(prefer_non_vip, fee)
+            account = self._account_selector.pick_for_fallback(prefer_non_vip, fee, platform=platform)
 
         if not account:
             # 无可用账号：区分"全部因小时限额满"和"无账号/月额度满"
-            if self._account_selector.all_hourly_limited():
+            if self._account_selector.all_hourly_limited(platform=platform):
                 # 所有账号当前自然小时下载限额已满，暂停 30 分钟后重新入队
                 logger.warning(
                     "所有账号当前自然小时下载限额已满，暂停 %d 秒后继续下载",
@@ -838,7 +880,7 @@ class TaskManager:
                 # 暂停结束后把任务重新放回队列
                 self._task_queue.put(task_pk)
                 return
-            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "无可用账号（全部达额度或未配置）")
+            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "无可用账号（全部达额度或未配置）", platform=platform)
             return
 
         if mode == "round_robin":
@@ -879,12 +921,12 @@ class TaskManager:
         logger.info("下载 [%s - %s] 使用账号: %s", artists, sname, account.name)
 
         # 获取下载链接
-        url_info_list = client.get_song_urls([sid], level=level)
+        url_info_list = client.get_song_urls([str(sid)], level=level)
         url_info = url_info_list[0] if url_info_list else {}
         url = url_info.get("url")
 
         if not url:
-            reason = "试听片段" if url_info.get("freeTrialInfo") else "无版权或需VIP"
+            reason = "试听片段" if url_info.get("is_trial") else "无版权或需VIP"
             if switch_on_fail:
                 # 接力模式：切换下一个账号
                 next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee)
@@ -894,35 +936,26 @@ class TaskManager:
                                                 level, write_meta, write_lyric, switch_on_fail=True,
                                                 prefer_non_vip=prefer_non_vip, fee=fee)
                     return
-            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, reason, account_id=account.id)
+            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, reason, account_id=account.id, platform=account.platform)
             return
 
-        # 只有有 url 时才取扩展名和大小（防御 type 为 None 的情况，如数字专辑付费歌曲）
-        ext = (url_info.get("type") or "mp3").lower()
+        # 只有有 url 时才取扩展名和大小
+        ext = url_info.get("ext", "mp3")
         size = url_info.get("size")
 
         # 获取歌曲详情
-        details = client.get_song_detail([sid])
-        sd = details[0] if details else {}
-        album_info = sd.get("al") or {}
-        cover_url = album_info.get("picUrl", "")
-        album_name = album_info.get("name", "")
-        duration_ms = sd.get("dt", 0)
-        year = ""
-        pub = sd.get("publishTime")
-        if pub and pub > 0:
-            try:
-                year = datetime.fromtimestamp(pub / 1000).strftime("%Y")
-            except (OSError, ValueError):
-                year = ""
+        details = client.get_song_detail([str(sid)])
+        meta = details[0] if details else {}
+        cover_url = meta.get("cover_url", "")
+        album_name = meta.get("album", "")
+        duration_ms = meta.get("duration_ms", 0)
+        year = meta.get("year", "")
         lyric = ""
         if write_lyric:
-            lyric = client.get_lyric(sid).get("lrc", "")
+            lyric = client.get_lyric(str(sid)).get("lrc", "")
 
         # 取主歌手作为下载子目录（多歌手取第一个，文件名仍保留全部歌手）
-        # 兜底：歌手列表为空或清洗后为空 → "群星"
-        artists_list = sd.get("ar") or []
-        primary_artist = artists_list[0].get("name", "") if artists_list else ""
+        primary_artist = meta.get("artist", "群星")
         primary_artist = sanitize_filename(primary_artist) if primary_artist.strip() else "群星"
 
         # 下载文件
@@ -957,7 +990,7 @@ class TaskManager:
         except OSError as e:
             logger.error("下载 %s - %s 时 [Errno %d]: %s", artists, sname, e.errno or 0, e)
             self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
-                              f"下载异常 [Errno {e.errno}]: {e}", account_id=account.id)
+                              f"下载异常 [Errno {e.errno}]: {e}", account_id=account.id, platform=account.platform)
             return
 
         if not path:
@@ -969,7 +1002,7 @@ class TaskManager:
                                                 level, write_meta, write_lyric, switch_on_fail=True,
                                                 prefer_non_vip=prefer_non_vip, fee=fee)
                     return
-            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "下载失败（重试耗尽）", account_id=account.id)
+            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "下载失败（重试耗尽）", account_id=account.id, platform=account.platform)
             return
 
         # 写入元数据
@@ -991,6 +1024,7 @@ class TaskManager:
             Song.query.filter_by(id=sid, status="failed").delete()
             song = Song(
                 id=sid,
+                platform=account.platform,
                 name=sname,
                 artists=artists,
                 album=album_name,
@@ -1023,12 +1057,18 @@ class TaskManager:
         pl_name: str,
         reason: str,
         account_id: int | None = None,
+        platform: str = "netease",
     ) -> None:
-        """标记任务为失败，并记录到 songs 表"""
+        """标记任务为失败，并记录到 songs 表
+
+        Args:
+            platform: 平台标识，默认 netease
+        """
         with self.app.app_context():
             Song.query.filter_by(id=sid).delete()
             song = Song(
                 id=sid,
+                platform=platform,
                 name=name,
                 artists=artists,
                 playlist_id=pl_id,
@@ -1058,7 +1098,8 @@ class TaskManager:
             pl_id = task.playlist_id
             pl_name = task.playlist_name
             account_id = task.account_id
-        self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, reason, account_id=account_id)
+            platform = task.platform or "netease"
+        self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, reason, account_id=account_id, platform=platform)
 
     # ------------------------------------------------------------------
     # 状态查询

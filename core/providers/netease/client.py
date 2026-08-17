@@ -1,6 +1,6 @@
 """网易云音乐 API 客户端 - 调用内置 NeteaseCloudMusicApi-enhanced 服务
 
-服务二进制由 core.node_bridge 管理（自动拉起，监听 127.0.0.1 随机端口），
+服务二进制由 bridge 模块管理（自动拉起，监听 127.0.0.1 随机端口），
 API 地址每次请求时经 base_url 属性动态解析，无需手动指定。
 
 会员鉴权通过 Cookie 中的 MUSIC_U 实现，所有需要会员权限的接口会自动带上 Cookie。
@@ -12,6 +12,8 @@ import time
 from typing import Any
 
 import requests
+
+from . import bridge
 
 logger = logging.getLogger(__name__)
 
@@ -48,35 +50,6 @@ _UA = (
 )
 
 
-def parse_playlist_id(text: str) -> int | None:
-    """从用户输入解析歌单 ID
-
-    支持以下格式：
-        - 纯数字：3778678
-        - 网易云分享链接：https://music.163.com/playlist?id=3778678
-        - 短链接：https://y.music.163.com/m/playlist?id=3778678
-        - 分享文案：「...」https://y.music.163.com/.../3778678/...
-
-    Returns:
-        歌单 ID，解析失败返回 None
-    """
-    text = text.strip()
-    if not text:
-        return None
-    # 纯数字
-    if text.isdigit():
-        return int(text)
-    # URL 中的 id= 参数
-    m = re.search(r"[?&]id=(\d+)", text)
-    if m:
-        return int(m.group(1))
-    # 路径中的数字（短链接格式 /playlist/xxx 或末尾数字）
-    m = re.search(r"/(\d{5,})(?:/|\s|$)", text)
-    if m:
-        return int(m.group(1))
-    return None
-
-
 class NeteaseClient:
     """网易云音乐 API 客户端
 
@@ -91,8 +64,7 @@ class NeteaseClient:
             cookie: Cookie 字符串，必须包含 MUSIC_U（会员鉴权）
             custom_base_url: 自定义API服务URL（设置后直接使用，不通过内置bridge）
         """
-        from core import node_bridge
-        self._bridge = node_bridge.get_bridge()
+        self._bridge = bridge.get_bridge()
         self._custom_base_url = custom_base_url.rstrip("/") if custom_base_url else ""
         self.session = requests.Session()
         # session 默认 trust_env=True 会读主进程 http_proxy/https_proxy，

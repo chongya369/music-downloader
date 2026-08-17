@@ -16,44 +16,6 @@ async function loadStats() {
     }
 }
 
-// 加载任务列表
-async function loadTasks() {
-    try {
-        const data = await api("/api/tasks");
-        const tasks = data.data;
-        const list = document.getElementById("task-list");
-        const countEl = document.getElementById("task-count");
-
-        if (!tasks || tasks.length === 0) {
-            list.innerHTML = '<p class="text-muted text-center mb-0">暂无下载任务</p>';
-            countEl.textContent = "0 个任务";
-            // 注意：导航栏的同步指示器由 app.js 的全局轮询负责更新
-            return;
-        }
-
-        countEl.textContent = tasks.length + " 个任务";
-        // 注意：导航栏的同步指示器由 app.js 的全局轮询负责更新
-
-        list.innerHTML = tasks.map(t => {
-            const pct = t.progress || 0;
-            const status = t.status === "downloading" ? "下载中" : "等待中";
-            return `
-                <div class="task-item">
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                        <span>${t.artists} - ${t.song_name}</span>
-                        <span class="badge ${t.status === 'downloading' ? 'bg-primary' : 'bg-info'}">${status}</span>
-                    </div>
-                    <div class="progress">
-                        <div class="progress-bar" style="width: ${pct}%">${pct}%</div>
-                    </div>
-                </div>
-            `;
-        }).join("");
-    } catch (e) {
-        console.error("加载任务失败:", e);
-    }
-}
-
 // 同步全部
 document.getElementById("btn-sync-all").addEventListener("click", async function() {
     const btn = this;
@@ -110,28 +72,10 @@ async function loadAccountsStats() {
     }
 }
 
-// 同步全部
-document.getElementById("btn-sync-all").addEventListener("click", async function() {
-    const btn = this;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="loading-spinner"></span> 同步中...';
-    try {
-        const data = await api("/api/sync-all", { method: "POST" });
-        showToast(data.msg, "同步结果");
-    } catch (e) {
-        showToast(e.message, "错误");
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="bi bi-cloud-arrow-down"></i> 立即同步';
-    }
-});
-
 // 初始化
 loadStats();
 loadAccountsStats();
-loadTasks();
-// 每 2 秒刷新任务
-setInterval(loadTasks, 2000);
+
 // 每 30 秒刷新统计和账号状态
 setInterval(loadStats, 30000);
 setInterval(loadAccountsStats, 30000);

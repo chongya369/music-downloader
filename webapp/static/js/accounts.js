@@ -1,12 +1,21 @@
 // 账号管理页逻辑
 
+// 当前选中的平台（'all' / 'netease' / 'qq' / 'kugou'）
+let currentPlatform = "all";
+// 全量账号缓存（用于 Tab 切换时过滤）
+let allAccounts = [];
+
+// 平台中文名映射
+const PLATFORM_NAMES = { netease: "网易云", qq: "QQ音乐", kugou: "酷狗音乐" };
+const PLATFORM_COLORS = { netease: "#C20C0C", qq: "#31C27C", kugou: "#0062FF" };
+
 // 导出账号信息（含 cookie，敏感）
 document.getElementById("btn-export-accounts").addEventListener("click", function() {
     if (!confirm("导出文件包含 Cookie 等敏感信息，请妥善保管。是否继续？")) return;
     window.location.href = "/api/accounts/export";
 });
 
-// 导入账号信息（从 v0.4.0+ 导出的 JSON 文件）
+// 导入账号信息
 document.getElementById("btn-import-accounts").addEventListener("click", function() {
     document.getElementById("import-file-input").click();
 });
@@ -23,7 +32,7 @@ document.getElementById("import-file-input").addEventListener("change", async fu
             this.value = "";
             return;
         }
-        if (!confirm(`即将导入 ${count} 个账号（同名账号将自动跳过）。是否继续？`)) {
+        if (!confirm(`即将导入 ${count} 个账号（同平台+同名账号将自动跳过）。是否继续？`)) {
             this.value = "";
             return;
         }
@@ -36,93 +45,230 @@ document.getElementById("import-file-input").addEventListener("change", async fu
     } catch (err) {
         showToast("导入失败：" + err.message, "错误");
     } finally {
-        this.value = "";  // 重置以便重复选择同一文件
+        this.value = "";
     }
+});
+
+// 绑定平台 Tab 切换事件
+document.querySelectorAll("#platform-tabs .nav-link").forEach(el => {
+    el.addEventListener("click", function() {
+        currentPlatform = this.dataset.platform;
+        renderAccounts(allAccounts);
+    });
 });
 
 // 加载账号列表
 async function loadAccounts() {
     try {
         const data = await api("/api/accounts");
-        const tbody = document.getElementById("account-tbody");
-        const list = data.data;
+        allAccounts = data.data || [];
 
-        if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">暂无账号，点击右上角添加</td></tr>';
-            return;
-        }
+        // 更新各平台 Tab 上的计数
+        const counts = { all: allAccounts.length, netease: 0, qq: 0, kugou: 0 };
+        allAccounts.forEach(a => {
+            if (counts[a.platform] !== undefined) counts[a.platform]++;
+        });
+        document.getElementById("count-all").textContent = counts.all;
+        document.getElementById("count-netease").textContent = counts.netease;
+        document.getElementById("count-qq").textContent = counts.qq;
+        document.getElementById("count-kugou").textContent = counts.kugou;
 
-        tbody.innerHTML = list.map((a, idx) => {
-            const checked = a.enabled ? "checked" : "";
-            const checkTime = a.last_check_at || "从未校验";
-            // 额度显示：不限制显示"不限"，否则显示"已用/总额"
+        renderAccounts(allAccounts);
+    } catch (e) {
+        showToast(e.message, "错误");
+    }
+}
+
+// 渲染账号列表（按 currentPlatform 过滤）
+function renderAccounts(list) {
+    const isAll = currentPlatform === "all";
+    const filtered = isAll
+        ? list
+        : list.filter(a => a.platform === currentPlatform);
+
+    const cardView = document.getElementById("accounts-card-view");
+    const tableView = document.getElementById("accounts-table-view");
+
+    if (!cardView || !tableView) return;
+
+    if (isAll) {
+        cardView.style.display = "";
+        tableView.style.display = "none";
+        renderCards(filtered);
+    } else {
+        cardView.style.display = "none";
+        tableView.style.display = "";
+        renderTable(filtered);
+    }
+}
+
+// 卡片视图（全部标签页，按平台分组显示）
+function renderCards(list) {
+    const container = document.getElementById("accounts-cards");
+    if (!container) return;
+
+    if (!list || list.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted py-3">暂无账号，点击右上角添加</div>';
+        return;
+    }
+
+    const PLATFORM_ORDER = ["netease", "qq", "kugou"];
+    const grouped = {};
+    list.forEach(a => {
+        if (!grouped[a.platform]) grouped[a.platform] = [];
+        grouped[a.platform].push(a);
+    });
+
+    container.innerHTML = PLATFORM_ORDER.filter(p => grouped[p]).map(platform => {
+        const items = grouped[platform];
+        const platformName = PLATFORM_NAMES[platform] || platform;
+        const platformColor = PLATFORM_COLORS[platform] || "#6c757d";
+
+        const cardsHtml = items.map(a => {
+            const enabled = a.enabled;
             const quotaText = a.quota_limit > 0
                 ? `${a.monthly_downloaded} / ${a.quota_limit}`
                 : `${a.monthly_downloaded}（不限）`;
             const quotaColor = a.quota_limit > 0 && a.monthly_downloaded >= a.quota_limit
-                ? "text-danger" : "text-success";
-            // 会员到期：非会员显示"—"，会员显示日期，有会员类型但无到期显示"未知"
+                ? "color:#dc3545;" : "color:#198754;";
+
             let expireText;
             if (a.vip_type > 0) {
                 if (a.vip_expire_at) {
-                    // 只显示日期部分
                     const d = a.vip_expire_at.split(" ")[0];
                     const expireDate = new Date(d);
                     const today = new Date();
                     today.setHours(0, 0, 0, 0);
                     const expired = expireDate < today;
-                    expireText = `<span class="${expired ? 'text-danger' : 'text-success'}">${d}</span>`;
+                    expireText = `<span style="color:${expired ? '#dc3545' : '#198754'}">${d}</span>`;
                 } else {
-                    expireText = '<span class="text-muted">未知</span>';
+                    expireText = '<span style="color:#6c757d;">未知</span>';
                 }
             } else {
-                expireText = '<span class="text-muted">—</span>';
+                expireText = '<span style="color:#6c757d;">—</span>';
             }
-            // 排序按钮：第一个禁用上移，最后一个禁用下移
-            const isFirst = idx === 0;
-            const isLast = idx === list.length - 1;
+
             return `
-                <tr>
-                    <td>
-                        <div class="btn-group btn-group-sm">
-                            <button class="btn btn-outline-secondary btn-move" data-id="${a.id}" data-direction="up" ${isFirst ? 'disabled' : ''} title="上移">
-                                <i class="bi bi-arrow-up"></i>
-                            </button>
-                            <button class="btn btn-outline-secondary btn-move" data-id="${a.id}" data-direction="down" ${isLast ? 'disabled' : ''} title="下移">
-                                <i class="bi bi-arrow-down"></i>
-                            </button>
+                <div class="account-card-col">
+                    <div class="card account-card">
+                        <div class="card-body">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="badge" style="background-color:${platformColor};color:#ffffff;font-size:0.75rem;">${platformName}</span>
+                                <span class="fw-semibold text-truncate" style="font-size:0.875rem;" title="${a.name}">${a.name}</span>
+                            </div>
+                            <hr class="my-1" style="opacity:0.5;">
+                            <div class="d-flex align-items-center gap-2 mb-1" style="font-size:0.8rem;">
+                                <span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}" style="font-size:0.7rem;">${a.vip_text}</span>
+                                <span style="color:#6c757d;">到期</span>
+                                ${expireText}
+                            </div>
+                            <div class="d-flex align-items-center gap-2" style="font-size:0.8rem;">
+                                <span style="color:${enabled ? '#198754' : '#6c757d'};">${enabled ? '● 已启用' : '○ 已禁用'}</span>
+                                <span style="color:#dee2e6;">|</span>
+                                <span style="${quotaColor};">${quotaText}</span>
+                            </div>
                         </div>
-                    </td>
-                    <td>
-                        <div class="form-check form-switch">
-                            <input class="form-check-input toggle-enabled" type="checkbox" ${checked} data-id="${a.id}">
-                        </div>
-                    </td>
-                    <td>${a.name}</td>
-                    <td>${a.nickname || '<span class="text-muted">未获取</span>'}</td>
-                    <td><span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}">${a.vip_text}</span></td>
-                    <td><small>${expireText}</small></td>
-                    <td><strong class="${quotaColor}">${quotaText}</strong></td>
-                    <td><small class="text-muted">${checkTime}</small></td>
-                    <td>
-                        <button class="btn btn-sm btn-outline-success btn-test" data-id="${a.id}">
-                            <i class="bi bi-check2-all"></i> 测试
-                        </button>
-                        <button class="btn btn-sm btn-outline-primary btn-edit" data-id="${a.id}">
-                            <i class="bi bi-pencil"></i> 编辑
-                        </button>
-                        <button class="btn btn-sm btn-outline-danger btn-delete" data-id="${a.id}" data-name="${a.name}">
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </td>
-                </tr>
+                    </div>
+                </div>
             `;
         }).join("");
 
+        return `
+            <div class="platform-group mb-3">
+                <div class="d-flex align-items-center gap-2 mb-2 px-1">
+                    <span class="fw-bold" style="font-size:0.95rem;">${platformName}</span>
+                    <span class="text-muted" style="font-size:0.8rem;">共 ${items.length} 个账号</span>
+                </div>
+                <div class="row g-2">${cardsHtml}</div>
+            </div>
+        `;
+    }).join("");
+}
+
+// 表格视图（平台标签页，可编辑）
+function renderTable(list) {
+    const tbody = document.getElementById("account-tbody");
+
+    if (!list || list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">暂无账号，点击右上角添加</td></tr>';
         bindEvents();
-    } catch (e) {
-        showToast(e.message, "错误");
+        return;
     }
+
+    tbody.innerHTML = list.map((a, idx) => {
+        const checked = a.enabled ? "checked" : "";
+        const checkTime = a.last_check_at || "从未校验";
+        const platformName = a.platform_name || PLATFORM_NAMES[a.platform] || a.platform;
+        const platformColor = PLATFORM_COLORS[a.platform] || "#6c757d";
+        const quotaText = a.quota_limit > 0
+            ? `${a.monthly_downloaded} / ${a.quota_limit}`
+            : `${a.monthly_downloaded}（不限）`;
+        const quotaColor = a.quota_limit > 0 && a.monthly_downloaded >= a.quota_limit
+            ? "text-danger" : "text-success";
+
+        let expireText;
+        if (a.vip_type > 0) {
+            if (a.vip_expire_at) {
+                const d = a.vip_expire_at.split(" ")[0];
+                const expireDate = new Date(d);
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const expired = expireDate < today;
+                expireText = `<span class="${expired ? 'text-danger' : 'text-success'}">${d}</span>`;
+            } else {
+                expireText = '<span class="text-muted">未知</span>';
+            }
+        } else {
+            expireText = '<span class="text-muted">—</span>';
+        }
+
+        const isFirst = idx === 0;
+        const isLast = idx === list.length - 1;
+        const testBtn = a.platform === "netease"
+            ? `<button class="btn btn-sm btn-outline-success btn-test" data-id="${a.id}">
+                   <i class="bi bi-check2-all"></i> 测试
+               </button>`
+            : `<button class="btn btn-sm btn-outline-secondary btn-test disabled" data-id="${a.id}" title="该平台暂不支持">
+                   <i class="bi bi-check2-all"></i> 测试
+               </button>`;
+        return `
+            <tr>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-secondary btn-move" data-id="${a.id}" data-direction="up" ${isFirst ? 'disabled' : ''} title="上移">
+                            <i class="bi bi-arrow-up"></i>
+                        </button>
+                        <button class="btn btn-outline-secondary btn-move" data-id="${a.id}" data-direction="down" ${isLast ? 'disabled' : ''} title="下移">
+                            <i class="bi bi-arrow-down"></i>
+                        </button>
+                    </div>
+                </td>
+                <td>
+                    <div class="form-check form-switch">
+                        <input class="form-check-input toggle-enabled" type="checkbox" ${checked} data-id="${a.id}">
+                    </div>
+                </td>
+                <td><span class="badge" style="background-color:${platformColor};color:#ffffff;">${platformName}</span></td>
+                <td>${a.name}</td>
+                <td>${a.nickname || '<span class="text-muted">未获取</span>'}</td>
+                <td><span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}">${a.vip_text}</span></td>
+                <td><small>${expireText}</small></td>
+                <td><strong class="${quotaColor}">${quotaText}</strong></td>
+                <td><small class="text-muted">${checkTime}</small></td>
+                <td>
+                    ${testBtn}
+                    <button class="btn btn-sm btn-outline-primary btn-edit" data-id="${a.id}">
+                        <i class="bi bi-pencil"></i> 编辑
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger btn-delete" data-id="${a.id}" data-name="${a.name}">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join("");
+
+    bindEvents();
 }
 
 function bindEvents() {
@@ -163,6 +309,7 @@ function bindEvents() {
     // 测试登录
     document.querySelectorAll(".btn-test").forEach(el => {
         el.addEventListener("click", async function() {
+            if (this.classList.contains("disabled")) return;
             const id = this.dataset.id;
             this.disabled = true;
             this.innerHTML = '<span class="loading-spinner"></span>';
@@ -183,12 +330,12 @@ function bindEvents() {
     document.querySelectorAll(".btn-edit").forEach(el => {
         el.addEventListener("click", async function() {
             const id = this.dataset.id;
-            // 拉取最新数据
             try {
                 const data = await api("/api/accounts");
                 const acc = data.data.find(x => x.id == id);
                 if (!acc) return;
                 document.getElementById("edit-id").value = acc.id;
+                document.getElementById("edit-platform").value = acc.platform_name || PLATFORM_NAMES[acc.platform] || acc.platform;
                 document.getElementById("edit-name").value = acc.name;
                 document.getElementById("edit-cookie").value = "";
                 document.getElementById("edit-quota").value = acc.quota_limit;
@@ -216,8 +363,22 @@ function bindEvents() {
     });
 }
 
+// 平台切换时更新 Cookie 提示文案
+document.getElementById("add-platform").addEventListener("change", function() {
+    const platform = this.value;
+    const hint = document.getElementById("add-cookie-hint");
+    if (platform === "netease") {
+        hint.textContent = "网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U";
+    } else if (platform === "qq") {
+        hint.textContent = "QQ音乐：暂不支持自动登录，Cookie 将保存备用";
+    } else {
+        hint.textContent = "酷狗音乐：暂不支持自动登录，Cookie 将保存备用";
+    }
+});
+
 // 添加账号
 document.getElementById("btn-add-account").addEventListener("click", async function() {
+    const platform = document.getElementById("add-platform").value;
     const name = document.getElementById("add-name").value.trim();
     const cookie = document.getElementById("add-cookie").value.trim();
     const quota = parseInt(document.getElementById("add-quota").value) || 0;
@@ -231,7 +392,7 @@ document.getElementById("btn-add-account").addEventListener("click", async funct
     try {
         const data = await api("/api/accounts", {
             method: "POST",
-            body: JSON.stringify({ name, cookie, quota_limit: quota }),
+            body: JSON.stringify({ platform, name, cookie, quota_limit: quota }),
         });
         showToast(data.msg, "添加成功");
         bootstrap.Modal.getInstance(document.getElementById("add-account-modal")).hide();
@@ -244,6 +405,13 @@ document.getElementById("btn-add-account").addEventListener("click", async funct
     } finally {
         btn.disabled = false;
         btn.textContent = "添加";
+    }
+});
+
+// 添加弹窗打开时，自动选中当前 Tab 的平台
+document.getElementById("add-account-modal").addEventListener("show.bs.modal", function() {
+    if (currentPlatform !== "all") {
+        document.getElementById("add-platform").value = currentPlatform;
     }
 });
 

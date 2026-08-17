@@ -27,7 +27,7 @@ from flask import Flask
 
 from models import init_db, Setting
 from task_manager import TaskManager
-from core import node_bridge
+from core.providers.netease import bridge
 from routes.api import api_bp
 from routes.views import views_bp
 from version import get_version
@@ -112,14 +112,14 @@ def main() -> None:
             ncm_api_port = int(Setting.get("ncm_api_port", "45601"))
         except (TypeError, ValueError):
             ncm_api_port = 45601
-    bridge = node_bridge.get_bridge(auto_start=auto_start, port=ncm_api_port)
+    ncm_bridge = bridge.get_bridge(auto_start=auto_start, port=ncm_api_port)
     # atexit 注册必须写在 main() 内（此时单例已用真实 auto_start 创建）；
     # 若放模块顶层会在 import 时以默认 auto_start=True 先建单例，忽略用户配置
-    atexit.register(bridge.stop)
-    if bridge.auto_start:
+    atexit.register(ncm_bridge.stop)
+    if ncm_bridge.auto_start:
         try:
-            bridge.start()
-            logger.info("网易云API服务就绪: %s", bridge.base_url)
+            ncm_bridge.start()
+            logger.info("网易云API服务就绪: %s", ncm_bridge.base_url)
         except RuntimeError as e:
             logger.warning("网易云API服务启动失败: %s", e)
     task_manager.start()
@@ -131,7 +131,7 @@ def main() -> None:
         app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
     finally:
         task_manager.stop()
-        bridge.stop()          # 主程序退出 -> 自动关闭 API 服务
+        ncm_bridge.stop()          # 主程序退出 -> 自动关闭 API 服务
 
 
 if __name__ == "__main__":

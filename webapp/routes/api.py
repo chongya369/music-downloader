@@ -26,9 +26,12 @@ from flask import Blueprint, current_app, jsonify, request, Response, session
 from sqlalchemy import func
 
 from auth import current_user, admin_required, login_required
-from models import Account, Playlist, Setting, Song, DownloadTask, User, db
-from core import node_bridge
-from core.netease_client import NeteaseClient, OFFICIAL_TOPLISTS, parse_playlist_id
+from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_custom_api_url, PLATFORMS, PLATFORM_NAMES
+from core.providers.netease import NeteaseProvider
+from core.providers.netease.client import OFFICIAL_TOPLISTS
+from core.providers.netease.parse_links import parse_playlist_id
+from core.providers import get_provider
+from core.providers.netease import bridge
 
 api_bp = Blueprint("api", __name__)
 logger = logging.getLogger(__name__)
@@ -71,10 +74,14 @@ def _monthly_downloaded(account_id: int) -> int:
 def _refresh_account_info(acc: Account, cookie: str | None = None) -> None:
     """刷新账号信息：昵称、会员类型、会员到期时间
 
+    仅 netease 平台支持自动刷新；QQ/酷狗等平台跳过。
+
     Args:
         acc: 账号对象（会被原地修改，但不 commit）
         cookie: 用指定 cookie 测试；None 时用 acc.cookie
     """
+    if acc.platform != "netease":
+        return  # 非网易云平台暂不支持自动刷新
     use_cookie = cookie if cookie is not None else (acc.cookie or "")
     if not use_cookie:
         return
@@ -103,19 +110,21 @@ def _get_task_manager():
     return current_app.config["TASK_MANAGER"]
 
 
-def _create_client(cookie: str = "") -> NeteaseClient:
-    """创建 NeteaseClient（自动应用自定义API服务URL设置）"""
-    use_custom = Setting.get("use_custom_api_url", "false") == "true"
-    custom_url = Setting.get("custom_api_url", "") if use_custom else ""
-    return NeteaseClient(cookie=cookie, custom_base_url=custom_url)
+def _create_client(cookie: str = "") -> NeteaseProvider:
+    """创建 NeteaseProvider（P1 薄包装：返回 provider，自动应用自定义API服务URL设置）"""
+    p = get_provider("netease")
+    p.set_custom_base_url(get_custom_api_url())
+    if cookie:
+        p.set_cookie(cookie)
+    return p
 
 
-def _get_client() -> NeteaseClient:
-    """用第一个启用账号的 cookie 创建客户端（用于发现页/添加歌单等公开接口）
+def _get_client() -> NeteaseProvider:
+    """用第一个启用的网易云账号 cookie 创建 provider（用于发现页/添加歌单等公开接口）
 
     无启用账号时用空 cookie。
     """
-    acc = Account.query.filter_by(enabled=True).order_by(Account.id).first()
+    acc = Account.query.filter_by(platform="netease", enabled=True).order_by(Account.sort_order, Account.id).first()
     cookie = acc.cookie if acc else ""
     return _create_client(cookie=cookie or "")
 
@@ -313,9 +322,13 @@ def get_songs():
     for task, song in pagination.items:
         # 状态映射回前端：done → success
         display_status = "success" if task.status == "done" else task.status
+        # 获取平台信息：优先从 task 获取，其次从 song 获取，最后默认为 netease
+        platform = task.platform or (song.platform if song else "netease") or "netease"
         data.append({
             "id": task.song_id,
             "pk": task.pk,
+            "platform": platform,
+            "platform_name": PLATFORM_NAMES.get(platform, platform),
             "name": task.song_name,
             "artists": task.artists,
             "album": song.album if song else "",
@@ -444,7 +457,7 @@ def save_settings():
 
     # 端口变化时校验：API服务运行中禁止修改端口
     if str(data.get("ncm_api_port", "")) != Setting.get("ncm_api_port", ""):
-        if node_bridge.get_bridge()._is_alive():
+        if bridge.get_bridge()._is_alive():
             return jsonify({"code": 1,
                             "msg": "API服务运行中，请先停止服务再修改端口"}), 400
 
@@ -471,14 +484,14 @@ def save_settings():
 @api_bp.route("/ncm/status")
 def ncm_status():
     """获取内置 API 服务状态"""
-    return jsonify({"code": 0, "data": node_bridge.get_bridge().status()})
+    return jsonify({"code": 0, "data": bridge.get_bridge().status()})
 
 
 @api_bp.route("/ncm/start", methods=["POST"])
 def ncm_start():
     """启动内置 API 服务（幂等）"""
     try:
-        url = node_bridge.get_bridge().start()
+        url = bridge.get_bridge().start()
         return jsonify({"code": 0, "msg": "网易云API服务已启动", "data": {"base_url": url}})
     except RuntimeError as e:
         return jsonify({"code": 1, "msg": str(e)}), 500
@@ -487,7 +500,7 @@ def ncm_start():
 @api_bp.route("/ncm/stop", methods=["POST"])
 def ncm_stop():
     """停止内置 API 服务（幂等）"""
-    node_bridge.get_bridge().stop()
+    bridge.get_bridge().stop()
     return jsonify({"code": 0, "msg": "网易云API服务已停止"})
 
 
@@ -496,8 +509,15 @@ def ncm_stop():
 # ======================================================================
 @api_bp.route("/accounts")
 def get_accounts():
-    """获取所有账号列表（按 sort_order 排序，含本月下载量）"""
-    accounts = Account.query.order_by(Account.sort_order, Account.id).all()
+    """获取所有账号列表（按平台+sort_order排序，含本月下载量）
+
+    可选参数：platform=netease/qq/kugou，仅返回指定平台账号。
+    """
+    platform = request.args.get("platform", "").strip()
+    if platform and platform in PLATFORMS:
+        accounts = Account.query.filter_by(platform=platform).order_by(Account.sort_order, Account.id).all()
+    else:
+        accounts = Account.query.order_by(Account.platform, Account.sort_order, Account.id).all()
     data = []
     for acc in accounts:
         d = acc.to_dict(monthly_downloaded=_monthly_downloaded(acc.id))
@@ -509,38 +529,51 @@ def get_accounts():
 def add_account():
     """添加账号
 
-    请求体：{"name","cookie","quota_limit"}
-    添加后会自动测试登录，回填 nickname、vip_type、vip_expire_at
+    请求体：{"platform", "name", "cookie", "quota_limit"}
+    platform: netease(网易云,默认) / qq(QQ音乐) / kugou(酷狗音乐)
+    网易云添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
     """
     data = request.get_json(force=True)
+    platform = data.get("platform", "netease").strip() or "netease"
+    if platform not in PLATFORMS:
+        return jsonify({"code": 1, "msg": f"不支持的平台: {platform}，可选: {PLATFORM_NAMES}"})
     name = data.get("name", "").strip()
     cookie = data.get("cookie", "").strip()
     quota_limit = int(data.get("quota_limit", 0))
 
     if not name:
         return jsonify({"code": 1, "msg": "请填写账号别名"})
-    if not cookie or "MUSIC_U" not in cookie:
-        return jsonify({"code": 1, "msg": "Cookie 必须包含 MUSIC_U"})
 
-    # 新账号的 sort_order = 当前最大值 + 1（无账号时为 1）
-    max_order = db.session.query(db.func.max(Account.sort_order)).scalar() or 0
+    # 网易云要求 Cookie 含 MUSIC_U；其他平台暂不强校验
+    if platform == "netease":
+        if not cookie or "MUSIC_U" not in cookie:
+            return jsonify({"code": 1, "msg": "Cookie 必须包含 MUSIC_U"})
+
+    # 新账号的 sort_order = 当前平台内最大值 + 1
+    max_order = db.session.query(db.func.max(Account.sort_order)).filter(
+        Account.platform == platform
+    ).scalar() or 0
     acc = Account(
+        platform=platform,
         name=name,
         cookie=cookie,
         quota_limit=quota_limit,
         sort_order=max_order + 1,
         enabled=True,
-        last_check_at=datetime.now(),
+        last_check_at=datetime.now() if platform == "netease" else None,
     )
-    # 测试登录并回填昵称/会员信息
-    _refresh_account_info(acc, cookie=cookie)
+    # 网易云自动刷新账号信息
+    if platform == "netease":
+        _refresh_account_info(acc, cookie=cookie)
     db.session.add(acc)
     db.session.commit()
-    logger.info("添加账号: %s (nickname=%s, vip=%s, sort_order=%d)", name, acc.nickname, acc.vip_type, acc.sort_order)
+    platform_name = PLATFORM_NAMES.get(platform, platform)
+    extra = f" ({acc.nickname})" if acc.nickname else ""
+    logger.info("添加账号: [%s] %s (nickname=%s, vip=%s, sort_order=%d)", platform_name, name, acc.nickname, acc.vip_type, acc.sort_order)
     return jsonify({
         "code": 0,
         "data": acc.to_dict(monthly_downloaded=0),
-        "msg": f"已添加: {name}" + (f" ({acc.nickname})" if acc.nickname else ""),
+        "msg": f"已添加: [{platform_name}] {name}" + extra,
     })
 
 
@@ -549,7 +582,7 @@ def update_account(aid: int):
     """更新账号信息
 
     请求体：{"name","cookie","quota_limit","enabled"} 中任意字段
-    cookie 非空时重新测试登录并回填 nickname/vip_type/vip_expire_at
+    platform 在添加后不可修改；cookie 非空时重新测试登录（仅网易云）。
     """
     acc = Account.query.get(aid)
     if not acc:
@@ -591,7 +624,7 @@ def delete_account(aid: int):
 
 @api_bp.route("/accounts/<int:aid>/move", methods=["POST"])
 def move_account(aid: int):
-    """调整账号使用顺序（与相邻账号交换 sort_order）
+    """调整账号使用顺序（与同平台相邻账号交换 sort_order）
 
     请求体：{"direction": "up"|"down"}
     """
@@ -602,34 +635,35 @@ def move_account(aid: int):
     if direction not in ("up", "down"):
         return jsonify({"code": 1, "msg": "direction 必须为 up 或 down"})
 
-    # 按 sort_order 升序拿到所有账号
-    all_acc = Account.query.order_by(Account.sort_order, Account.id).all()
+    # 按平台内 sort_order 升序拿到同平台账号
+    all_acc = Account.query.filter_by(platform=acc.platform).order_by(Account.sort_order, Account.id).all()
     idx = next((i for i, a in enumerate(all_acc) if a.id == aid), -1)
     if idx < 0:
         return jsonify({"code": 1, "msg": "账号不存在"})
 
     if direction == "up":
         if idx == 0:
-            return jsonify({"code": 1, "msg": "已是第一个账号"})
+            return jsonify({"code": 1, "msg": "已是该平台第一个账号"})
         target = all_acc[idx - 1]
     else:
         if idx == len(all_acc) - 1:
-            return jsonify({"code": 1, "msg": "已是最后一个账号"})
+            return jsonify({"code": 1, "msg": "已是该平台最后一个账号"})
         target = all_acc[idx + 1]
 
     # 交换 sort_order
     acc.sort_order, target.sort_order = target.sort_order, acc.sort_order
     db.session.commit()
-    logger.info("账号顺序调整: %s <-> %s", acc.name, target.name)
+    logger.info("账号顺序调整: [%s] %s <-> %s", acc.platform, acc.name, target.name)
     return jsonify({"code": 0, "msg": "顺序已更新"})
 
 
 @api_bp.route("/accounts/import", methods=["POST"])
 def import_accounts():
-    """导入账号信息（JSON 格式，与 v0.4.0 导出格式兼容）
+    """导入账号信息（JSON 格式）
 
-    请求体：{"accounts":[{"name","cookie","nickname","vip_type","vip_expire_at",
+    请求体：{"accounts":[{"platform","name","cookie","nickname","vip_type","vip_expire_at",
                          "quota_limit","sort_order","enabled"}, ...]}
+    platform 缺省为 netease；旧版导出文件无 platform 字段时自动归为网易云。
     返回：{"code":0, "data":{"imported":N, "skipped":N, "total":N}, "msg":"..."}
     """
     data = request.get_json(force=True) or {}
@@ -645,11 +679,15 @@ def import_accounts():
         if not name or not cookie:
             skipped += 1
             continue
-        # 跳过同名已存在的账号（避免重复导入）
-        if Account.query.filter_by(name=name).first():
+        platform = (a.get("platform") or "netease").strip() or "netease"
+        if platform not in PLATFORMS:
+            platform = "netease"
+        # 跳过同平台+同名已存在的账号（避免重复导入）
+        if Account.query.filter_by(platform=platform, name=name).first():
             skipped += 1
             continue
         acc = Account(
+            platform=platform,
             name=name,
             cookie=cookie,
             nickname=a.get("nickname", ""),
@@ -684,12 +722,13 @@ def export_accounts():
 
     返回 attachment 文件下载，文件名 accounts_export_YYYYMMDD_HHMMSS.json
     """
-    accounts = Account.query.order_by(Account.sort_order, Account.id).all()
+    accounts = Account.query.order_by(Account.platform, Account.sort_order, Account.id).all()
     payload = {
         "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "version": "0.4.0",
+        "version": "0.5.0",
         "accounts": [
             {
+                "platform": a.platform,
                 "name": a.name,
                 "cookie": a.cookie or "",
                 "nickname": a.nickname or "",
@@ -712,10 +751,20 @@ def export_accounts():
 
 @api_bp.route("/accounts/<int:aid>/test", methods=["POST"])
 def test_account_login(aid: int):
-    """测试指定账号的登录状态，并刷新会员信息"""
+    """测试指定账号的登录状态，并刷新会员信息
+
+    仅 netease 平台支持自动登录测试；其他平台返回暂不支持。
+    """
     acc = Account.query.get(aid)
     if not acc:
         return jsonify({"code": 1, "msg": "账号不存在"})
+
+    if acc.platform != "netease":
+        return jsonify({
+            "code": 1,
+            "msg": f"该平台（{PLATFORM_NAMES.get(acc.platform, acc.platform)}）暂不支持登录测试",
+        })
+
     try:
         client = _create_client(cookie=acc.cookie)
         info = client.get_account_info()
@@ -737,12 +786,14 @@ def test_account_login(aid: int):
 @api_bp.route("/accounts/stats")
 def accounts_stats():
     """所有账号的本月下载统计（总览页账号卡片用）"""
-    accounts = Account.query.filter_by(enabled=True).order_by(Account.id).all()
+    accounts = Account.query.filter_by(enabled=True).order_by(Account.platform, Account.sort_order, Account.id).all()
     data = []
     for acc in accounts:
         downloaded = _monthly_downloaded(acc.id)
         data.append({
             "id": acc.id,
+            "platform": acc.platform,
+            "platform_name": PLATFORM_NAMES.get(acc.platform, acc.platform),
             "name": acc.name,
             "nickname": acc.nickname,
             "vip_text": {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}.get(acc.vip_type, f"vipType={acc.vip_type}"),

@@ -56,7 +56,7 @@ def exe_suffix() -> str:
 
 
 def api_binary_name() -> str:
-    """内置 API 二进制文件名，须与 core/node_bridge.py 的 _BINARIES 保持一致"""
+    """内置 API 二进制文件名，须与 core/providers/netease/bridge.py 的 _BINARIES 保持一致"""
     return "ncm-api-win-x64.exe" if is_win() else "ncm-api-linux-x64"
 
 
@@ -103,6 +103,28 @@ def clean_old_build() -> None:
                 except OSError:
                     pass
     print("[INFO] 已清理旧的 build / dist / .spec")
+
+
+def runtime_hook_path() -> Path:
+    """动态生成 PyInstaller runtime hook，返回其路径。
+
+    hook 在解压结束后、主脚本运行前执行，先打印启动提示，
+    避免用户看到黑屏误以为卡住。hook 文件在打包时自动写入
+    build/ 临时目录，无需单独维护，也不随源码分发。
+    """
+    hook = BUILD_DIR / "runtime_hook.py"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(
+        'import sys\n'
+        '\n'
+        'print("============================================")\n'
+        'print("  music_downloader 正在启动，请等待...")\n'
+        'print("  启动完成后请访问: http://localhost:56700")\n'
+        'print("============================================")\n'
+        'sys.stdout.flush()\n',
+        encoding="utf-8",
+    )
+    return hook
 
 
 def run_pyinstaller(py: str) -> None:
@@ -159,6 +181,11 @@ def run_pyinstaller(py: str) -> None:
     # 图标：仅 Windows 有效（.ico 对 Linux ELF 无作用，避免告警）
     if is_win() and ICON.exists():
         cmd.append(f"--icon={ICON}")
+
+    # runtime hook：解压结束后、主脚本运行前打印启动提示，避免黑屏误以为卡住
+    hook = runtime_hook_path()
+    cmd.append("--runtime-hook")
+    cmd.append(str(hook))
 
     for d in add_data:
         cmd.append(f"--add-data={d}")

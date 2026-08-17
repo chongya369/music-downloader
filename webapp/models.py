@@ -1,7 +1,7 @@
 """数据库模型 - SQLAlchemy + SQLite
 
 表结构：
-- Account：网易云账号（多账号管理）
+- Account：多平台账号管理（网易云/QQ音乐/酷狗音乐）
 - Playlist：关注的歌单/榜单
 - Song：已下载歌曲记录（去重依据）
 - DownloadTask：下载任务（实时进度 + 失败列表）
@@ -17,24 +17,34 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 db = SQLAlchemy()
 
+# 支持的音乐平台
+PLATFORMS = ["netease", "qq", "kugou"]
+PLATFORM_NAMES = {
+    "netease": "网易云",
+    "qq": "QQ音乐",
+    "kugou": "酷狗音乐",
+}
+
 
 class Account(db.Model):
-    """网易云账号
+    """多平台账号
 
-    vip_type: 0=非会员, 11=黑胶VIP, 12=SVIP
+    platform: netease(网易云) / qq(QQ音乐) / kugou(酷狗音乐)
+    vip_type: 0=非会员, 11=黑胶VIP, 12=SVIP（网易云语义，其他平台待定）
     quota_limit: 总额度，0=不限制
-    vip_expire_at: 会员到期时间（来自 /vip/info，可能为空）
-    sort_order: 使用顺序（升序），账号选择器按此排序
+    vip_expire_at: 会员到期时间（来自 API，可能为空）
+    sort_order: 使用顺序（升序），账号选择器按此排序（按平台独立）
     """
     __tablename__ = "accounts"
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    platform = db.Column(db.String(20), default="netease", nullable=False)
     name = db.Column(db.String(100), nullable=False)      # 别名（如"主账号"）
     cookie = db.Column(db.Text, default="")
-    nickname = db.Column(db.String(200), default="")      # 网易云昵称
+    nickname = db.Column(db.String(200), default="")      # 平台昵称
     vip_type = db.Column(db.Integer, default=0)
     vip_expire_at = db.Column(db.DateTime)                # 会员到期时间
     quota_limit = db.Column(db.Integer, default=0)        # 总额度，0=不限制
-    sort_order = db.Column(db.Integer, default=0)         # 使用顺序（升序）
+    sort_order = db.Column(db.Integer, default=0)         # 使用顺序（升序，平台内独立）
     enabled = db.Column(db.Boolean, default=True)
     last_check_at = db.Column(db.DateTime)                # 上次登录校验时间
     created_at = db.Column(db.DateTime, default=datetime.now)
@@ -42,6 +52,8 @@ class Account(db.Model):
     def to_dict(self, monthly_downloaded: int | None = None) -> dict:
         return {
             "id": self.id,
+            "platform": self.platform,
+            "platform_name": PLATFORM_NAMES.get(self.platform, self.platform),
             "name": self.name,
             "nickname": self.nickname,
             "vip_type": self.vip_type,
@@ -91,9 +103,11 @@ class Song(db.Model):
     """已下载歌曲记录（去重依据 + 下载历史）
 
     status: success / failed / skipped
+    platform: 平台标识（netease / qq / kugou）
     """
     __tablename__ = "songs"
-    id = db.Column(db.Integer, primary_key=True)           # 网易云歌曲 ID
+    id = db.Column(db.Integer, primary_key=True)           # 平台歌曲 ID
+    platform = db.Column(db.String(20), default="netease", nullable=False)
     name = db.Column(db.String(300), nullable=False)
     artists = db.Column(db.String(300), default="")
     album = db.Column(db.String(300), default="")
@@ -113,6 +127,8 @@ class Song(db.Model):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "platform": self.platform,
+            "platform_name": PLATFORM_NAMES.get(self.platform, self.platform),
             "name": self.name,
             "artists": self.artists,
             "album": self.album,
@@ -134,9 +150,11 @@ class DownloadTask(db.Model):
 
     status: pending / downloading / done / failed
     fee: 网易云歌曲费用类型 0=免费 1=VIP 4=购买专辑 8=低音质免费
+    platform: 平台标识（netease / qq / kugou）
     """
     __tablename__ = "download_tasks"
     pk = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    platform = db.Column(db.String(20), default="netease", nullable=False)
     song_id = db.Column(db.Integer, nullable=False)
     song_name = db.Column(db.String(300), default="")
     artists = db.Column(db.String(300), default="")
@@ -153,6 +171,8 @@ class DownloadTask(db.Model):
     def to_dict(self) -> dict:
         return {
             "pk": self.pk,
+            "platform": self.platform,
+            "platform_name": PLATFORM_NAMES.get(self.platform, self.platform),
             "song_id": self.song_id,
             "song_name": self.song_name,
             "artists": self.artists,
@@ -260,6 +280,16 @@ DEFAULT_SETTINGS = {
 }
 
 
+def get_custom_api_url() -> str:
+    """读取自定义API服务URL（需在 app context 内调用）
+
+    反环硬约束：此函数不得 import core.providers.*。
+    """
+    if Setting.get("use_custom_api_url", "false") != "true":
+        return ""
+    return Setting.get("custom_api_url", "").rstrip("/")
+
+
 def _column_exists(inspector, table: str, column: str) -> bool:
     """检查某列是否已存在（用于 ALTER TABLE 迁移）"""
     return column in {c["name"] for c in inspector.get_columns(table)}
@@ -283,6 +313,25 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         if inspector.has_table("download_tasks") and not _column_exists(inspector, "download_tasks", "account_id"):
             with db.engine.begin() as conn:
                 conn.execute(text("ALTER TABLE download_tasks ADD COLUMN account_id INTEGER"))
+        # 兼容迁移：给旧 accounts 表补充 platform 列（默认 netease）
+        if inspector.has_table("accounts") and not _column_exists(inspector, "accounts", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("ALTER TABLE accounts ADD COLUMN platform VARCHAR(20) DEFAULT 'netease' NOT NULL"))
+        # 兼容迁移：给旧 songs 表补充 platform 列
+        if inspector.has_table("songs") and not _column_exists(inspector, "songs", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("ALTER TABLE songs ADD COLUMN platform VARCHAR(20) DEFAULT 'netease' NOT NULL"))
+        # 兼容迁移：给旧 download_tasks 表补充 platform 列
+        if inspector.has_table("download_tasks") and not _column_exists(inspector, "download_tasks", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("ALTER TABLE download_tasks ADD COLUMN platform VARCHAR(20) DEFAULT 'netease' NOT NULL"))
+        # 更新历史数据：确保所有记录都有正确的平台标记
+        if inspector.has_table("songs") and _column_exists(inspector, "songs", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("UPDATE songs SET platform = 'netease' WHERE platform IS NULL OR platform = ''"))
+        if inspector.has_table("download_tasks") and _column_exists(inspector, "download_tasks", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("UPDATE download_tasks SET platform = 'netease' WHERE platform IS NULL OR platform = ''"))
         # 写入缺失的默认配置
         for key, value in DEFAULT_SETTINGS.items():
             if not db.session.get(Setting, key):

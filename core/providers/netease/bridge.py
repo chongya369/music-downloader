@@ -2,6 +2,8 @@
 
 负责拉起/停止官方预编译二进制（ncm-api-win-x64.exe / ncm-api-linux-x64），
 对外提供幂等的 start/stop/status。单个进程仅监听 127.0.0.1 随机空闲端口。
+
+此模块为基础设施层，不经过 Provider 抽象。
 """
 
 import logging
@@ -170,7 +172,8 @@ def get_bridge(auto_start: bool | None = None, port: int | None = None) -> NodeB
                 if getattr(sys, "frozen", False):
                     root = Path(sys.executable).resolve().parent
                 else:
-                    root = Path(__file__).resolve().parent.parent
+                    # netease(0) → providers(1) → core(2) → source(3)
+                    root = Path(__file__).resolve().parents[3]
                 _bridge = NodeBridge(
                     bin_dir=root / "api",
                     auto_start=(True if auto_start is None else auto_start),
