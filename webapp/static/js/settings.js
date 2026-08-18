@@ -148,10 +148,25 @@ function renderNcmStatus(data) {
         portInput.title = "";
     }
     const parts = [];
+    // 运行模式提示（二进制 = 开箱即用，Node.js = 需环境）
+    if (data.mode === "binary") parts.push("预编译模式（免安装）");
     if (data.port) parts.push(`端口 ${data.port}`);
     if (data.preferred_port && data.preferred_port !== data.port) parts.push(`配置端口 ${data.preferred_port}`);
     if (data.pid) parts.push(`PID ${data.pid}`);
-    if (data.bin_exists === false) parts.push("未找到二进制");
+    // 保留 bin_exists 兼容（值 = 入口文件是否存在）
+    if (data.bin_exists === false) parts.push("未找到入口文件");
+    // 环境与依赖提示：区分 缺Node / 可自动安装 / 真的缺依赖 三种情况
+    if (data.mode !== "binary") {
+        if (data.node_available === false) {
+            parts.push("未安装 Node.js 18+（下载 nodejs.org）");
+        } else if (data.auto_installable) {
+            parts.push("点击启动将自动安装 4 个依赖包（仅首次）");
+        } else if (data.deps_ready === false) {
+            parts.push("依赖未安装（需联网安装）");
+        }
+    }
+    // 回退模式时额外显示"依赖缓存目录"
+    if (data.deps_dir) parts.push(`依赖缓存 ${data.deps_dir}`);
     ncmStatusDetail.textContent = parts.join(" · ");
 }
 

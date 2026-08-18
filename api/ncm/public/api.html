@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API 调试界面</title>
+<style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      padding: 32px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 24px;
+    }
+
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    label {
+      font-size: 14px;
+      font-weight: 500;
+      color: #555;
+      min-width: 80px;
+    }
+
+    input, select {
+      padding: 10px 14px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      flex: 1;
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: #333;
+    }
+
+    button {
+      background: #333;
+      color: white;
+      padding: 10px 24px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    button:hover {
+      background: #555;
+    }
+
+    .data-result {
+      display: flex;
+      gap: 16px;
+      min-height: 400px;
+    }
+
+    .data-result > div {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .data-result label {
+      margin-bottom: 8px;
+      padding: 0;
+    }
+
+    textarea {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      resize: vertical;
+      min-height: 350px;
+      outline: none;
+    }
+
+    textarea:focus {
+      border-color: #333;
+    }
+
+    /* ===== 自定义选项区域 ===== */
+    .section-container {
+      margin-top: 20px;
+      padding: 16px 20px;
+      background: #fafafa;
+      border: 1px solid #e8e8e8;
+      border-radius: 8px;
+    }
+
+    .section-container + .section-container {
+      margin-top: 12px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #555;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .section-title .count-badge {
+      font-size: 11px;
+      background: #ddd;
+      color: #666;
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-weight: 400;
+    }
+
+    .dynamic-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+      align-items: center;
+    }
+
+    .dynamic-row .key-input {
+      flex: 0 0 200px;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      font-family: 'Courier New', monospace;
+    }
+
+    .dynamic-row .value-input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .dynamic-row .key-input:focus,
+    .dynamic-row .value-input:focus {
+      border-color: #333;
+    }
+
+    .remove-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      background: #fff;
+      color: #999;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+
+    .remove-btn:hover {
+      background: #fee;
+      color: #e33;
+      border-color: #fcc;
+    }
+
+    .add-btn {
+      background: #fff;
+      color: #333;
+      border: 1px dashed #ccc;
+      padding: 6px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 4px;
+    }
+
+    .add-btn:hover {
+      border-color: #999;
+      background: #f5f5f5;
+    }
+
+    /* ===== 参数编辑区 Tab ===== */
+    .param-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .param-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .param-header-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: #555;
+    }
+
+    .param-tabs {
+      display: flex;
+      gap: 0;
+      background: #f0f0f0;
+      border-radius: 6px;
+      padding: 2px;
+    }
+
+    .tab-btn {
+      padding: 4px 14px;
+      border: none;
+      background: transparent;
+      color: #888;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+      color: #555;
+    }
+
+    .tab-btn.active {
+      background: #fff;
+      color: #333;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .param-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .param-panel textarea {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      resize: vertical;
+      min-height: 350px;
+      outline: none;
+    }
+
+    .param-panel textarea:focus {
+      border-color: #333;
+    }
+</style>
+</head>
+<body>
+    <div class="container">
+        <h1>API 调试界面</h1>
+        <form onsubmit="event.preventDefault(); sendRequest();">
+            <div class="form-row">
+                <label for="uri">URI</label>
+                <input type="text" id="uri" name="uri" value="/api/song/lyric/v1">
+            </div>
+            <div class="form-row">
+                <label for="method">请求方法</label>
+                <select id="method" name="method">
+                    <option value="POST" selected>POST</option>
+                    <option value="GET">GET</option>
+                    <option value="PUT">PUT</option>
+                    <option value="DELETE">DELETE</option>
+                    <option value="PATCH">PATCH</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label for="crypto">加密方式</label>
+                <select id="crypto" name="crypto">
+                    <option value="weapi">weapi</option>
+                    <option value="eapi">eapi</option>
+                    <option value="api">api</option>
+                    <option value="linuxapi">linuxapi</option>
+                    <option value="xeapi">xeapi</option>
+                    <option value="" selected>(默认)</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label for="timeout">超时(ms)</label>
+                <input type="number" id="timeout" name="timeout" value="30000" min="0" step="1000" placeholder="0 表示无超时">
+            </div>
+            <div class="form-row">
+                <label></label>
+                <button type="submit">发送请求</button>
+            </div>
+        </form>
+
+        <!-- ===== 自定义请求头 ===== -->
+        <div class="section-container" id="headersSection">
+            <div class="section-title">
+                请求头 (Headers)
+                <span class="count-badge" id="headerCount">4</span>
+            </div>
+            <div id="headersList"></div>
+            <button class="add-btn" onclick="addHeaderRow('', '')">+ 添加请求头</button>
+        </div>
+
+        <div class="data-result">
+            <div>
+                <label for="result">响应结果</label>
+                <textarea id="result" name="result" readonly></textarea>
+            </div>
+            <div class="param-container">
+                <div class="param-header">
+                    <span class="param-header-title">请求参数</span>
+                    <div class="param-tabs">
+                        <button class="tab-btn active" data-mode="json" onclick="switchParamTab('json')">JSON</button>
+                        <button class="tab-btn" data-mode="kv" onclick="switchParamTab('kv')">键值对</button>
+                    </div>
+                </div>
+                <div class="param-panel" id="jsonPanel">
+                    <textarea id="data" name="data">
+{
+    "cp": false,
+    "id": "2058263032",
+    "kv": 0,
+    "lv": 0,
+    "rv": 0,
+    "tv": 0,
+    "yrv": 0,
+    "ytv": 0,
+    "yv": 0
+}</textarea>
+                </div>
+                <div class="param-panel" id="kvPanel" style="display:none">
+                    <div id="kvList"></div>
+                    <button class="add-btn" onclick="addKvRow('', '')">+ 添加参数</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://fastly.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script>
+        // ===== 动态行管理 =====
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function addHeaderRow(key, value) {
+            const list = document.getElementById('headersList');
+            const row = document.createElement('div');
+            row.className = 'dynamic-row';
+            row.innerHTML =
+                '<input type="text" class="key-input" placeholder="Header 名称" value="' +
+                escapeHtml(key) +
+                '">' +
+                '<input type="text" class="value-input" placeholder="值" value="' +
+                escapeHtml(value) +
+                '">' +
+                '<button class="remove-btn" onclick="removeRow(this)" title="删除">✕</button>';
+            list.appendChild(row);
+            updateCount();
+        }
+
+        function addKvRow(key, value) {
+            const list = document.getElementById('kvList');
+            const row = document.createElement('div');
+            row.className = 'dynamic-row';
+            row.innerHTML =
+                '<input type="text" class="key-input" placeholder="参数名" value="' +
+                escapeHtml(key) +
+                '">' +
+                '<input type="text" class="value-input" placeholder="值" value="' +
+                escapeHtml(value) +
+                '">' +
+                '<button class="remove-btn" onclick="removeRow(this)" title="删除">✕</button>';
+            list.appendChild(row);
+        }
+
+        function removeRow(btn) {
+            btn.parentElement.remove();
+        }
+
+        function collectHeaders() {
+            const headers = {};
+            document.querySelectorAll('#headersList .dynamic-row').forEach(function (row) {
+                var key = row.querySelector('.key-input').value.trim();
+                var value = row.querySelector('.value-input').value;
+                if (key) headers[key] = value;
+            });
+            return headers;
+        }
+
+        function collectKvData() {
+            var obj = {};
+            document.querySelectorAll('#kvList .dynamic-row').forEach(function (row) {
+                var key = row.querySelector('.key-input').value.trim();
+                var val = row.querySelector('.value-input').value;
+                if (!key) return;
+                // 自动类型转换
+                if (val === 'true') obj[key] = true;
+                else if (val === 'false') obj[key] = false;
+                else if (val === 'null') obj[key] = null;
+                else if (/^-?\d+(\.\d+)?$/.test(val) && !isNaN(Number(val))) obj[key] = Number(val);
+                else obj[key] = val;
+            });
+            return obj;
+        }
+
+        // ===== Tab 切换 =====
+        function syncJsonToKv() {
+            try {
+                var data = JSON.parse(document.getElementById('data').value);
+                var list = document.getElementById('kvList');
+                list.innerHTML = '';
+                Object.keys(data).forEach(function (k) {
+                    addKvRow(k, String(data[k]));
+                });
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function syncKvToJson() {
+            var obj = collectKvData();
+            document.getElementById('data').value = JSON.stringify(obj, null, 2);
+        }
+
+        function switchParamTab(mode) {
+            var jsonPanel = document.getElementById('jsonPanel');
+            var kvPanel = document.getElementById('kvPanel');
+
+            if (mode === 'kv') {
+                if (!syncJsonToKv()) {
+                    alert('JSON 格式有误，无法切换到键值对模式，请先修正 JSON');
+                    return;
+                }
+                jsonPanel.style.display = 'none';
+                kvPanel.style.display = 'block';
+            } else {
+                syncKvToJson();
+                kvPanel.style.display = 'none';
+                jsonPanel.style.display = 'block';
+            }
+
+            document.querySelectorAll('.tab-btn').forEach(function (btn) {
+                btn.classList.toggle('active', btn.dataset.mode === mode);
+            });
+        }
+
+        // ===== 默认请求头（直接套用后端预设值）=====
+        var defaultHeaders = [
+            { key: 'Cookie', value: '' },
+            {
+                key: 'User-Agent',
+                value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+            },
+            { key: 'Referer', value: 'https://music.163.com' },
+            { key: 'Content-Type', value: 'application/json' },
+        ];
+
+        // ===== 发送请求 =====
+        async function sendRequest() {
+            document.getElementById('result').value = '';
+
+            var uri = document.getElementById('uri').value;
+            var method = document.getElementById('method').value;
+            var crypto = document.getElementById('crypto').value;
+            var timeout = parseInt(document.getElementById('timeout').value, 10) || 0;
+            var headers = collectHeaders();
+
+            // 根据当前激活的 tab 读取数据
+            var parsedData;
+            var activeTab = document.querySelector('.tab-btn.active');
+            if (activeTab && activeTab.dataset.mode === 'kv') {
+                parsedData = collectKvData();
+            } else {
+                var rawData = document.getElementById('data').value;
+                try {
+                    parsedData = rawData.trim() ? JSON.parse(rawData) : {};
+                } catch (e) {
+                    document.getElementById('result').value =
+                        '请求数据格式错误：' + e.message;
+                    return;
+                }
+            }
+
+            var axiosConfig = {
+                url: '/api?timestamp=' + Date.now(),
+                method: method,
+            };
+
+            if (timeout > 0) {
+                axiosConfig.timeout = timeout;
+            }
+
+            if (method === 'GET') {
+                axiosConfig.params = {
+                    uri: uri,
+                    crypto: crypto,
+                    data: JSON.stringify(parsedData),
+                    headers: Object.keys(headers).length ? JSON.stringify(headers) : undefined,
+                };
+            } else {
+                axiosConfig.data = {
+                    uri: uri,
+                    crypto: crypto,
+                    data: parsedData,
+                    headers: Object.keys(headers).length ? headers : undefined,
+                };
+            }
+
+            try {
+                var res = await axios(axiosConfig);
+                document.getElementById('result').value = JSON.stringify(
+                    res.data,
+                    null,
+                    2,
+                );
+            } catch (error) {
+                document.getElementById('result').value =
+                    'Request failed: ' + error.message;
+            }
+        }
+
+        // ===== 从 URL 查询参数恢复 =====
+        (function fillFromQuery() {
+            var params = new URLSearchParams(window.location.search);
+            if (!params.toString()) {
+                // 没有查询参数，用默认 header
+                defaultHeaders.forEach(function (h) {
+                    addHeaderRow(h.key, h.value);
+                });
+                return;
+            }
+
+            var uri = params.get('uri');
+            var crypto = params.get('crypto');
+            var dataParam = params.get('data');
+            var method = params.get('method');
+            var timeout = params.get('timeout');
+            var headersParam = params.get('headers');
+            var kvParams = params.get('kvParams');
+            var paramMode = params.get('paramMode');
+
+            if (uri) document.getElementById('uri').value = uri;
+            if (method) {
+                var methodSelect = document.getElementById('method');
+                if (
+                    [].slice.call(methodSelect.options).some(function (opt) {
+                        return opt.value === method;
+                    })
+                ) {
+                    methodSelect.value = method;
+                }
+            }
+            if (timeout) document.getElementById('timeout').value = timeout;
+
+            if (crypto) {
+                var cryptoSelect = document.getElementById('crypto');
+                if (
+                    [].slice.call(cryptoSelect.options).some(function (opt) {
+                        return opt.value === crypto;
+                    })
+                ) {
+                    cryptoSelect.value = crypto;
+                }
+            }
+
+            if (dataParam) {
+                try {
+                    document.getElementById('data').value = JSON.stringify(
+                        JSON.parse(dataParam),
+                        null,
+                        2,
+                    );
+                } catch (_) {
+                    document.getElementById('data').value = dataParam;
+                }
+            }
+
+            if (headersParam) {
+                try {
+                    var parsed = JSON.parse(headersParam);
+                    Object.keys(parsed).forEach(function (k) {
+                        addHeaderRow(k, parsed[k]);
+                    });
+                } catch (_) {
+                    // fallback: 用默认 header
+                    defaultHeaders.forEach(function (h) {
+                        addHeaderRow(h.key, h.value);
+                    });
+                }
+            } else {
+                defaultHeaders.forEach(function (h) {
+                    addHeaderRow(h.key, h.value);
+                });
+            }
+
+            if (kvParams) {
+                try {
+                    var parsed = JSON.parse(kvParams);
+                    // 先填充 kv 列表，再切换到 kv 模式
+                    Object.keys(parsed).forEach(function (k) {
+                        addKvRow(k, String(parsed[k]));
+                    });
+                    if (paramMode === 'kv') {
+                        switchParamTab('kv');
+                    }
+                } catch (_) {
+                    /* ignore */
+                }
+            } else if (paramMode === 'kv' && dataParam) {
+                // 从 data 参数同步到键值对模式
+                try {
+                    var data = JSON.parse(dataParam);
+                    Object.keys(data).forEach(function (k) {
+                        addKvRow(k, String(data[k]));
+                    });
+                    switchParamTab('kv');
+                } catch (_) {
+                    /* ignore */
+                }
+            }
+        })();
+    </script>
+</body>
+</html>

@@ -83,5 +83,6 @@ echo.
 echo ============================================
 echo [DONE] Build succeeded
 echo [INFO] See .\dist\music_downloader\
+echo [INFO] Next: install Node.js 18+ (https://nodejs.org/)
 echo ============================================
 pause

@@ -120,15 +120,15 @@ else
     echo "[信息] 所有依赖已就绪"
 fi
 
-# 检测内置 API 二进制（0.2.0+）
-API_BIN="api/ncm-api-linux-x64"
-if [ -f "$API_BIN" ]; then
-    chmod +x "$API_BIN"
-    echo "[信息] API 二进制就绪: $API_BIN"
+# 检测 Node.js 运行时（API 服务端需要 Node.js 18+）
+if command -v node >/dev/null 2>&1; then
+    echo "[信息] 检测到 Node.js"
 else
-    echo "[警告] 缺少 API 二进制: $API_BIN"
-    echo "[警告] 发现页等功能将不可用。请从官方 Release 下载后放回 source/api/ 目录"
+    echo "[警告] 未检测到 Node.js，请先安装 Node.js 18+ (https://nodejs.org/)"
+    echo "[警告] API 功能将不可用"
+    echo "[警告] 安装 Node.js 后首次运行将自动安装 4 个 API 依赖包（需联网）"
 fi
+echo "[信息] Node.js 检测完成"
 
 echo ""
 echo "============================================"

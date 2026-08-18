@@ -121,18 +121,18 @@ if "%MISSING_DEPS%"=="1" (
     echo [INFO] All dependencies ready
 )
 
-REM Check built-in API binary (0.2.0+)
-set API_BIN=api\ncm-api-win-x64.exe
-set API_BIN_OK=1
-if not exist "%API_BIN%" (
-    echo [WARN] Missing API binary: %API_BIN%
-    echo [WARN] Discover/playlist features may be unavailable.
-    echo [WARN] Download the matching release and put it in source\api\ .
-    set API_BIN_OK=0
+REM Check Node.js runtime (API server requires Node.js 18+)
+set NODE_OK=1
+where node >nul 2>nul
+if not errorlevel 1 (
+    echo [INFO] Node.js found
 ) else (
-    echo [INFO] API binary ready: %API_BIN%
+    echo [WARN] Node.js not found! Please install Node.js 18+ from https://nodejs.org/
+    echo [WARN] API features will be unavailable without Node.js.
+    echo [WARN] First run will auto-install API dependencies if Node.js is present.
+    set NODE_OK=0
 )
-echo [STEP] API binary check done: API_BIN_OK=%API_BIN_OK%
+echo [STEP] Node.js check done: NODE_OK=%NODE_OK%
 
 echo.
 echo ============================================
