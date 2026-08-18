@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ============================================
 # 网易云音乐下载器 Web 一键启动脚本 (Linux)
 # 前提：已安装 Python 3.10+
@@ -42,7 +42,7 @@ if [ -f /etc/debian_version ] && ! "$PYTHON_CMD" -m ensurepip --version >/dev/nu
     echo "[信息] 缺少 python3-venv，尝试安装..."
     apt-get update >/dev/null 2>&1 && apt-get install -y python3-venv || true
 fi
-if ! "$PYTHON_CMD" -m pip --version >/dev/null 2>&1; then
+if [ -f /etc/debian_version ] && ! "$PYTHON_CMD" -m pip --version >/dev/null 2>&1; then
     echo "[信息] 系统中缺少 pip，尝试安装 python3-pip..."
     apt-get update >/dev/null 2>&1 && apt-get install -y python3-pip || true
 fi
@@ -110,10 +110,12 @@ done
 
 if [ "$MISSING_DEPS" -eq 1 ]; then
     echo "[信息] 安装缺失依赖（首次运行较慢）..."
-    .venv/bin/python -m pip install -r requirements.txt
-    if [ $? -ne 0 ]; then
-        echo "[错误] 依赖安装失败"
-        exit 1
+    if ! .venv/bin/python -m pip install -r requirements.txt; then
+        echo "[警告] 默认源安装失败，尝试清华镜像..."
+        if ! .venv/bin/python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple; then
+            echo "[错误] 依赖安装失败"
+            exit 1
+        fi
     fi
     echo "[信息] 依赖安装完成"
 else
@@ -121,10 +123,18 @@ else
 fi
 
 # 检测 Node.js 运行时（API 服务端需要 Node.js 18+）
+NODE_OK=0
 if command -v node >/dev/null 2>&1; then
-    echo "[信息] 检测到 Node.js"
-else
-    echo "[警告] 未检测到 Node.js，请先安装 Node.js 18+ (https://nodejs.org/)"
+    NODE_VERSION=$(node -v | sed 's/^v//' | cut -d. -f1)
+    if [ "$NODE_VERSION" -ge 18 ]; then
+        echo "[信息] 检测到 Node.js $NODE_VERSION.x"
+        NODE_OK=1
+    else
+        echo "[警告] Node.js 版本过低（当前 $NODE_VERSION.x），需要 18+"
+    fi
+fi
+if [ "$NODE_OK" -eq 0 ]; then
+    echo "[警告] 请先安装 Node.js 18+ (https://nodejs.org/)"
     echo "[警告] API 功能将不可用"
     echo "[警告] 安装 Node.js 后首次运行将自动安装 4 个 API 依赖包（需联网）"
 fi
