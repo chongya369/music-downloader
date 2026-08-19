@@ -130,9 +130,7 @@ jobs:
         run: .venv/bin/python build.py
 
       - name: Package zip
-        run: |
-          cd dist/music_downloader
-          zip -r ../music_downloader-linux-x64.zip ./
+        run: zip -r music_downloader-linux-x64.zip -C dist/music_downloader .
 
       - uses: actions/upload-artifact@v4
         with:
