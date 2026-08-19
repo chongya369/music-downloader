@@ -121,19 +121,6 @@ if "%MISSING_DEPS%"=="1" (
     echo [INFO] All dependencies ready
 )
 
-REM Check Node.js runtime (API server requires Node.js 18+)
-set NODE_OK=1
-where node >nul 2>nul
-if not errorlevel 1 (
-    echo [INFO] Node.js found
-) else (
-    echo [WARN] Node.js not found! Please install Node.js 18+ from https://nodejs.org/
-    echo [WARN] API features will be unavailable without Node.js.
-    echo [WARN] First run will auto-install API dependencies if Node.js is present.
-    set NODE_OK=0
-)
-echo [STEP] Node.js check done: NODE_OK=%NODE_OK%
-
 echo.
 echo ============================================
 echo [STEP] About to start Web service...

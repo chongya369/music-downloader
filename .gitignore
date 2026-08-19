@@ -97,8 +97,12 @@ Desktop.ini
 ehthumbs.db
 ehthumbs_vista.db
 
-# Node.js 依赖（运行时自动安装，不入库）
+# 手动安装的第三方模块目录（不入库）
 node_modules/
+
+# NeteaseCloudMusicApi 预编译二进制（体积大，不随源码分发，需手动下载放置）
+ncm-api-*
+依赖api二进制文件/
 
 # 临时/误生成文件
 $null

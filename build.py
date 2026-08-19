@@ -14,9 +14,9 @@
 注意：PyInstaller 不支持交叉编译，Linux 产物必须在 Linux 上构建，
 Windows 产物必须在 Windows 上构建。
 
-打包后产物（dist/NeteaseMusicDownloader/）会连带复制 api/ncm/（esbuild 构建的
-API 服务端，排除 node_modules/public），用户安装 Node.js 18+ 后首次运行
-自动安装 4 个运行时依赖包即可。
+打包后产物（dist/music_downloader/）不包含 API 二进制。用户需从官方 Release
+下载预编译二进制（ncm-api-win-x64.exe / ncm-api-linux-x64），放入产物
+api/ 目录后，开箱即可启动 API 服务。
 """
 
 import shutil
@@ -54,6 +54,11 @@ def exe_suffix() -> str:
     """可执行文件后缀：Windows 为 .exe，Linux 无后缀。
     仅用于产物检查与提示文案；PyInstaller --name 不得拼此后缀。"""
     return ".exe" if is_win() else ""
+
+
+def api_binary_name() -> str:
+    """内部 API 二进制文件名，须与 core/providers/netease/bridge.py 保持一致"""
+    return "ncm-api-win-x64.exe" if is_win() else "ncm-api-linux-x64"
 
 
 def venv_python() -> Path:
@@ -210,15 +215,11 @@ def run_pyinstaller(py: str) -> None:
 
 
 def post_pack() -> None:
-    """打包后处理：检查产物、复制 ncm 目录、创建 downloads/ 占位目录
+    """打包后处理：检查产物、创建空 api/ 与 downloads/ 占位目录
 
-    onefile 模式下可执行文件是单个文件，用户数据（api 源码、数据库、
-    下载目录）放在可执行文件同级目录。ncm 目录复制到 exe 同级 api/ncm/，
-    运行时 bridge.py 的 get_bridge() frozen 分支指向同一路径。
-    - 排除 node_modules / public（node_modules 首次运行时安装；public 是
-      NeteaseCloudMusicApi 自带静态站，本项目只用 HTTP 调用 API 路由）
-    - 额外复制 ncm/data/*.txt → api/data/（修复 app.js 读 ../data/china_ip_ranges.txt）
-    - 生成 package.runtime.json（仅 4 个外部依赖，供运行时 staging 安装）
+    onefile 模式下可执行文件是单个文件，用户数据（api 二进制、数据库、
+    下载目录）放在可执行文件同级目录。version.txt 已打入文件内，无需复制。
+    API 二进制不随源码分发，由用户从官方 Release 下载后手动放入 api/ 目录。
     """
     if not DIST_APP_DIR.exists():
         DIST_APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -229,77 +230,23 @@ def post_pack() -> None:
         print(f"[ERROR] 未找到产物: {bin_path}")
         sys.exit(1)
 
-    # 复制 ncm 目录（排除 node_modules / public）
-    ncm_src = SOURCE_DIR / "api" / "ncm"
-    ncm_dst = DIST_APP_DIR / "api" / "ncm"
-    if ncm_src.exists():
-        ncm_dst.mkdir(parents=True, exist_ok=True)  # 提前创建目标目录，确保 copy2 的父路径存在
-        for item in ncm_src.iterdir():
-            if item.name in ("node_modules", "public"):
-                continue  # node_modules 首次运行时安装；public 约 14MB 本项目未用
-            dest = ncm_dst / item.name
-            if item.is_dir():
-                shutil.copytree(
-                    item, dest,
-                    ignore=shutil.ignore_patterns("node_modules", "__pycache__"),
-                )
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)  # 双重保险，应对嵌套子目录下的文件
-                shutil.copy2(item, dest)
-        print(f"[INFO] 已复制 ncm 目录到 {ncm_dst}（排除 node_modules/public，首次运行时自动安装 4 个依赖包）")
-
-        # 修复 china_ip_ranges.txt 路径错位：app.js 读 path.join(__dirname, "../data/china_ip_ranges.txt")
-        # __dirname = ncm 目录，即需要文件存在于 api/data/（ncm 的上一级 data 目录）
-        data_src = ncm_src / "data"
-        data_dst = DIST_APP_DIR / "api" / "data"
-        if data_src.exists():
-            for f in data_src.glob("*.txt"):
-                dest_file = data_dst / f.name
-                if not dest_file.parent.exists():
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(f, dest_file)
-            print(f"[INFO] 已复制 ncm/data/*.txt 到 {data_dst}（修复 IP 表路径）")
-
-        # 生成精简运行时 package.runtime.json：仅 4 个 esbuild 未内联的外部依赖
-        # 版本范围与 ncm/package.json 严格对齐（unblockmusic-utils ^0.4.0）
-        import json as _json
-        runtime_pkg = {
-            "name": "ncm-runtime",
-            "private": True,
-            "dependencies": {
-                "@neteasecloudmusicapienhanced/unblockmusic-utils": "^0.4.0",
-                "jsdom": "^24.1.3",
-                "pac-proxy-agent": "^7.2.0",
-                "tunnel": "^0.0.6",
-            },
-        }
-        runtime_pkg_path = ncm_dst / "package.runtime.json"
-        runtime_pkg_path.write_text(
-            _json.dumps(runtime_pkg, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        print(f"[INFO] 已生成精简运行时依赖清单: {runtime_pkg_path}")
-    else:
-        print("[WARN] 未找到 api/ncm 目录，API 服务端将不可用")
+    # 创建空 api/ 占位目录（用户手动放入二进制），并附使用说明
+    api_dir = DIST_APP_DIR / "api"
+    api_dir.mkdir(exist_ok=True)
+    readme = api_dir / "README.txt"
+    readme.write_text(
+        "API 使用说明:\n"
+        "1. 从官方项目 (https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)\n"
+        "   下载对应平台的预编译二进制。\n"
+        f"2. 将文件重命名为 {api_binary_name()} 放入本 api/ 目录，\n"
+        "   然后启动程序即可，开箱即用。\n",
+        encoding="utf-8",
+    )
+    print(f"[INFO] 已创建空 api/ 占位目录，提示放入 {api_binary_name()}")
 
     # 创建空 downloads/ 占位目录
     (DIST_APP_DIR / "downloads").mkdir(exist_ok=True)
     print("[INFO] 已创建空 downloads/ 占位目录")
-
-    # API 使用说明
-    readme = DIST_APP_DIR / "api" / "README.txt"
-    readme.write_text(
-        "首次使用说明:\n"
-        "1. 请安装 Node.js 18+ (https://nodejs.org/)\n"
-        "2. 首次运行程序时会自动安装 API 依赖（仅 4 个外部包，需要联网）\n"
-        "3. 如自动安装失败，请重试启动程序即可（自动安装已保证只装 4 包）\n"
-        "4. 极少数无法自动安装时，可手动执行（注意：此手工命令在 api/ncm 下会\n"
-        "   连带安装完整 package.json 依赖，仅作兜底）:\n"
-        "   cd api\\ncm && npm install --ignore-scripts --omit=dev "
-        "@neteasecloudmusicapienhanced/unblockmusic-utils jsdom pac-proxy-agent tunnel\n",
-        encoding="utf-8",
-    )
-    print("[INFO] 已创建 API 使用说明: " + str(DIST_APP_DIR / "api" / "README.txt"))
 
     # Linux 下给可执行文件加执行权限（Windows 无此概念）
     if not is_win():
@@ -328,13 +275,13 @@ def main() -> None:
     print(f"[INFO] 产物目录: {DIST_APP_DIR}")
     print(f"[INFO] 启动程序: {DIST_APP_DIR / bin_name}")
     print("[INFO] 下一步:")
-    print(f"  1. 确保已安装 Node.js 18+ (https://nodejs.org/)")
-    print(f"  2. 首次运行时会自动安装 API 依赖（仅 4 个外部包，需联网）")
+    print(f"  1. 从官方 Release 下载预编译 API 二进制并放入 {DIST_APP_DIR / 'api'}:")
+    print(f"     Windows: ncm-api-win-x64.exe  /  Linux: ncm-api-linux-x64")
     if is_win():
-        print(f"  3. 双击 {bin_name}")
+        print(f"  2. 双击 {bin_name}")
     else:
-        print(f"  3. 运行 ./{bin_name}")
-    print("  4. 访问 http://localhost:45600")
+        print(f"  2. 运行 ./{bin_name}")
+    print("  3. 访问 http://localhost:45600")
     print("=" * 60)
 
 

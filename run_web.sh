@@ -122,24 +122,6 @@ else
     echo "[信息] 所有依赖已就绪"
 fi
 
-# 检测 Node.js 运行时（API 服务端需要 Node.js 18+）
-NODE_OK=0
-if command -v node >/dev/null 2>&1; then
-    NODE_VERSION=$(node -v | sed 's/^v//' | cut -d. -f1)
-    if [ "$NODE_VERSION" -ge 18 ]; then
-        echo "[信息] 检测到 Node.js $NODE_VERSION.x"
-        NODE_OK=1
-    else
-        echo "[警告] Node.js 版本过低（当前 $NODE_VERSION.x），需要 18+"
-    fi
-fi
-if [ "$NODE_OK" -eq 0 ]; then
-    echo "[警告] 请先安装 Node.js 18+ (https://nodejs.org/)"
-    echo "[警告] API 功能将不可用"
-    echo "[警告] 安装 Node.js 后首次运行将自动安装 4 个 API 依赖包（需联网）"
-fi
-echo "[信息] Node.js 检测完成"
-
 echo ""
 echo "============================================"
 echo "[信息] 启动 Web 服务..."

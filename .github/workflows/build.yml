@@ -22,38 +22,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check api/ncm critical files
-        shell: pwsh
-        run: |
-          $required = @(
-            "api/ncm/app.js",
-            "api/ncm/index.js",
-            "api/ncm/run.js",
-            "api/ncm/package.json",
-            "api/ncm/util/index.js",
-            "api/ncm/util/request.js",
-            "api/ncm/module/login.js",
-            "api/ncm/module/song_url.js",
-            "api/ncm/module/song_download_url.js",
-            "api/ncm/data/china_ip_ranges.txt",
-            "api/ncm/data/deviceid.txt"
-          )
-          $missing = @()
-          foreach ($f in $required) {
-            if (-not (Test-Path $f)) { $missing += $f }
-          }
-          if ($missing.Count -gt 0) {
-            Write-Host "[ERROR] Missing api/ncm/ critical files:"
-            $missing | ForEach-Object { Write-Host "  - $_" }
-            exit 1
-          }
-          $modCount = (Get-ChildItem "api/ncm/module/*.js").Count
-          if ($modCount -lt 50) {
-            Write-Host "[ERROR] api/ncm/module/ has only $modCount JS files (expected >50), source files may be incomplete"
-            exit 1
-          }
-          Write-Host "[OK] api/ncm/ critical files check passed ($modCount JS files in module dir)"
-
       - name: Create venv & install deps
         shell: pwsh
         run: |
@@ -87,39 +55,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Check api/ncm critical files
-        run: |
-          set -e
-          required="
-            api/ncm/app.js
-            api/ncm/index.js
-            api/ncm/run.js
-            api/ncm/package.json
-            api/ncm/util/index.js
-            api/ncm/util/request.js
-            api/ncm/module/login.js
-            api/ncm/module/song_url.js
-            api/ncm/module/song_download_url.js
-            api/ncm/data/china_ip_ranges.txt
-            api/ncm/data/deviceid.txt
-          "
-          missing=""
-          for f in $required; do
-            if [ ! -f "$f" ]; then
-              missing="$missing  - $f\n"
-            fi
-          done
-          if [ -n "$missing" ]; then
-            printf "[ERROR] Missing api/ncm/ critical files:\n$missing"
-            exit 1
-          fi
-          modCount=$(ls api/ncm/module/*.js 2>/dev/null | wc -l)
-          if [ "$modCount" -lt 50 ]; then
-            echo "[ERROR] api/ncm/module/ has only $modCount JS files (expected >50), source files may be incomplete"
-            exit 1
-          fi
-          echo "[OK] api/ncm/ critical files check passed ($modCount JS files in module dir)"
-
       - name: Create venv & install deps
         run: |
           python3 -m venv .venv
@@ -130,7 +65,9 @@ jobs:
         run: .venv/bin/python build.py
 
       - name: Package zip
-        run: zip -r music_downloader-linux-x64.zip -C dist/music_downloader .
+        run: |
+          cd dist/music_downloader
+          zip -r ../../music_downloader-linux-x64.zip ./
 
       - uses: actions/upload-artifact@v4
         with:

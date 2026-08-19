@@ -83,6 +83,6 @@ echo.
 echo ============================================
 echo [DONE] Build succeeded
 echo [INFO] See .\dist\music_downloader\
-echo [INFO] Next: install Node.js 18+ (https://nodejs.org/)
+echo [NEXT] Put ncm-api-win-x64.exe into .\dist\music_downloader\api\
 echo ============================================
 pause
