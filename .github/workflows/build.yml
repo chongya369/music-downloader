@@ -44,16 +44,18 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build (Linux x64)
+    name: Build (Debian 12)
     runs-on: ubuntu-latest
+    container: debian:12
     env:
       PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Install Python env
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-venv python3-pip zip
 
       - name: Create venv & install deps
         run: |

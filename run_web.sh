@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # ============================================
 # 网易云音乐下载器 Web 一键启动脚本 (Linux)
 # 前提：已安装 Python 3.10+
@@ -42,7 +42,7 @@ if [ -f /etc/debian_version ] && ! "$PYTHON_CMD" -m ensurepip --version >/dev/nu
     echo "[信息] 缺少 python3-venv，尝试安装..."
     apt-get update >/dev/null 2>&1 && apt-get install -y python3-venv || true
 fi
-if [ -f /etc/debian_version ] && ! "$PYTHON_CMD" -m pip --version >/dev/null 2>&1; then
+if ! "$PYTHON_CMD" -m pip --version >/dev/null 2>&1; then
     echo "[信息] 系统中缺少 pip，尝试安装 python3-pip..."
     apt-get update >/dev/null 2>&1 && apt-get install -y python3-pip || true
 fi
@@ -110,16 +110,24 @@ done
 
 if [ "$MISSING_DEPS" -eq 1 ]; then
     echo "[信息] 安装缺失依赖（首次运行较慢）..."
-    if ! .venv/bin/python -m pip install -r requirements.txt; then
-        echo "[警告] 默认源安装失败，尝试清华镜像..."
-        if ! .venv/bin/python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple; then
-            echo "[错误] 依赖安装失败"
-            exit 1
-        fi
+    .venv/bin/python -m pip install -r requirements.txt
+    if [ $? -ne 0 ]; then
+        echo "[错误] 依赖安装失败"
+        exit 1
     fi
     echo "[信息] 依赖安装完成"
 else
     echo "[信息] 所有依赖已就绪"
+fi
+
+# 检测内置 API 二进制（0.2.0+）
+API_BIN="api/ncm-api-linux-x64"
+if [ -f "$API_BIN" ]; then
+    chmod +x "$API_BIN"
+    echo "[信息] API 二进制就绪: $API_BIN"
+else
+    echo "[警告] 缺少 API 二进制: $API_BIN"
+    echo "[警告] 发现页等功能将不可用。请从官方 Release 下载后放回 source/api/ 目录"
 fi
 
 echo ""

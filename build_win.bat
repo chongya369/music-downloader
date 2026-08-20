@@ -83,6 +83,5 @@ echo.
 echo ============================================
 echo [DONE] Build succeeded
 echo [INFO] See .\dist\music_downloader\
-echo [NEXT] Put ncm-api-win-x64.exe into .\dist\music_downloader\api\
 echo ============================================
 pause

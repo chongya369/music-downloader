@@ -13,8 +13,7 @@ Deen音乐下载器 —— 基于 Flask 的网易云音乐下载器，支持多�
 - **定时同步**：APScheduler 多时间点 cron 触发，支持抖动延迟（避免固定时刻请求）
 - **断点续传**：HTTP Range 协议，下载失败自动重试，支持临时文件续传
 - **元数据写入**：MP3（ID3v2）/ FLAC（Vorbis Comment）标签，含封面、歌词、专辑信息
-- **多平台 Provider 架构**：`core/providers/` 统一抽象接口 + 注册表（当前内置网易云实现，可扩展其他音乐平台）
-- **API 服务控制**：内置 NeteaseCloudMusicApi-enhanced（预编译二进制模式自动拉起）；Web「设置」页实时查看状态、配置端口、一键启动/停止、`auto_start` 开关与自定义 API 服务 URL
+- **API 服务控制**：Web「设置」页实时查看 NeteaseCloudMusicApi 服务状态，支持配置端口、一键启动/停止、`auto_start` 开关与自定义 API 服务 URL
 - **排除过滤**：按关键字过滤歌曲（如 live、伴奏、remix），playlist 和 search 两个场景独立配置
 - **发现页**：官方排行榜、热门分类歌单、搜索歌曲/专辑、单曲/专辑批量下载
 - **下载历史**：完整记录下载任务（成功/失败/跳过），支持失败重试
@@ -33,8 +32,7 @@ Deen音乐下载器 —— 基于 Flask 的网易云音乐下载器，支持多�
 | HTTP 客户端 | requests 2.31+ |
 | 音频元数据 | mutagen 1.47+ |
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
-| API 服务端 | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（预编译二进制模式，自动拉起） |
-| 运行时 | Python 3.10+（API 使用预编译二进制，开箱即用） |
+| 网易云 API | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（自动拉起对应平台二进制，不随源码分发） |
 
 ## 目录结构
 
@@ -44,18 +42,12 @@ source/
 │   └── workflows/
 │       └── build.yml              # GitHub Actions 自动构建（Windows/Linux + Release）
 ├── core/                          # 核心业务层
-│   ├── providers/                 # 多平台 Provider 架构
-│   │   ├── base.py                # MusicProvider 抽象基类（统一数据结构）
-│   │   ├── registry.py            # Provider 注册表（get_provider 工厂）
-│   │   └── netease/               # 网易云实现
-│   │       ├── client.py          # 网易云 API 客户端
-│   │       ├── bridge.py          # API 服务进程管理（预编译二进制模式）
-│   │       ├── _transform.py      # 统一数据结构转换
-│   │       └── parse_links.py     # 歌单链接解析
+│   ├── netease_client.py          # 网易云 API 客户端（调用 NeteaseCloudMusicApi 服务）
+│   ├── node_bridge.py             # NeteaseCloudMusicApi 二进制进程管理
 │   ├── downloader.py              # 文件下载器（断点续传 + 重试 + 路径保护）
 │   ├── metadata.py                # MP3/FLAC 元数据写入
 │   └── language_detector.py       # 基于歌词的语言检测
-├── api/                           # 放置预编译 API 二进制（ncm-api-win-x64.exe / ncm-api-linux-x64）
+├── api/                           # NeteaseCloudMusicApi 二进制（不随源码分发，需手动放置）
 ├── webapp/
 │   ├── app.py                     # Flask 应用入口（默认监听 *:45600）
 │   ├── models.py                  # 数据库模型（6 张表）+ 默认配置
@@ -72,6 +64,7 @@ source/
 ├── downloads/                     # 下载输出目录（按歌手名分子目录）
 ├── downloads.db                   # SQLite 数据库文件
 ├── icon.ico                       # 打包用应用图标
+├── icon1.ico                      # 备用打包图标
 ├── build.py                        # PyInstaller onefile 打包脚本（跨平台）
 ├── build_win.bat                   # 一键打包入口（Windows）
 ├── build_linux.sh                  # 一键打包入口（Linux，POSIX sh）
@@ -84,7 +77,10 @@ source/
 ## 环境依赖
 
 - **Python** 3.10+
-- **NeteaseCloudMusicApi-enhanced 服务端（预编译二进制模式，开箱即用）**：将官方预编译二进制重命名为 `ncm-api-win-x64.exe`（Windows）/ `ncm-api-linux-x64`（Linux）后放入 `source/api/` 或 `source/依赖api二进制文件/`（**不随源码分发**，从[官方项目](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)自行下载）。二进制内部已打包全部依赖，无需额外安装任何东西。
+- **NeteaseCloudMusicApi-enhanced 二进制**（**不随源码分发**，需自行下载）
+  - 官方项目：https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced
+  - 将对应平台的二进制放入 `source/api/`（当前支持 Windows / Linux x64，可按需扩展其他平台），程序启动时自动按平台选择并拉起
+  - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
 
 ## 快速开始
 
@@ -94,7 +90,7 @@ Windows 用户直接双击 `run_web.bat`，脚本会自动：
 - 检测 Python 环境
 - 创建虚拟环境（首次运行）
 - 安装 Python 依赖（首次运行）
-- 启动 Flask 服务（NeteaseCloudMusicApi 服务按需自动拉起，使用 `api/` 下的预编译二进制）
+- 启动 Flask 服务（NeteaseCloudMusicApi 服务按需自动拉起）
 
 手动启动方式：
 
@@ -411,7 +407,7 @@ A: API 返回了 freeTrialInfo，表示当前账号无该歌曲完整版权，�
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
 ### Q: NeteaseCloudMusicApi 服务未启动会怎样？
-A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。服务端为预编译二进制模式：需将 `ncm-api-win-x64.exe`（Windows）/ `ncm-api-linux-x64`（Linux）放入 `api/` 目录（开发期也可放 `source/api/` 或 `source/依赖api二进制文件/`），开箱即用。若未放置二进制，启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/providers/netease/client.py)）。
+A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `source/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）。
 
 ### Q: 修改 Web 监听地址后无法访问？
 A: `web_port` 修改后需重启 Flask 服务才生效（Windows 通过 `run_web.bat`、Linux 通过 `./run_web.sh` 重启，或手动重启 `python webapp/app.py`）。
@@ -471,20 +467,9 @@ python3 build.py
 打包脚本会自动：
 - 优先使用项目 `.venv` 的 Python（避免漏包第三方依赖）
 - 清理旧的 `dist/`、`build/` 与生成的 spec 文件
-- 创建空 `api/` 占位目录并写入 `README.txt`（提示放入预编译二进制），以及空 `downloads/` 占位目录
-- 注入 PyInstaller runtime hook：解压后先打印启动提示（避免黑屏误以为卡住）
+- 创建空的 `api/`、`downloads/` 占位目录
 
-产物 `dist/music_downloader/` 结构：
-
-```
-dist/music_downloader/
-├── music_downloader(.exe)         # 主程序（onefile）
-├── api/                           # 放置预编译二进制（ncm-api-win-x64.exe / ncm-api-linux-x64）
-│   └── README.txt                 # API 放置说明
-└── downloads/                     # 下载输出目录
-```
-
-**使用产物**：从官方 Release 下载对应的预编译二进制放入 `dist/music_downloader/api/` 后，直接运行 `music_downloader(.exe)`，访问 `http://localhost:45600`。API 二进制不随产物分发，放入后自动以二进制模式启动，开箱即用。
+打包后需将对应平台的 API 二进制（Windows: `ncm-api-win-x64.exe`, Linux: `ncm-api-linux-x64`，从官方项目 Release 下载）放入 `dist/music_downloader/api/`，然后运行产物并访问 `http://localhost:45600`。
 
 ### GitHub Actions 自动构建
 
@@ -492,4 +477,4 @@ dist/music_downloader/
 
 ## 版本
 
-当前版本：**0.3.0-alpha.1**（见 [version.txt](version.txt)）
+当前版本：**0.2.0**（见 [version.txt](version.txt)）

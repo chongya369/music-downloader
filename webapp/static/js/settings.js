@@ -148,13 +148,10 @@ function renderNcmStatus(data) {
         portInput.title = "";
     }
     const parts = [];
-    // 恒定二进制模式（免安装）
-    parts.push("预编译二进制模式（免安装）");
     if (data.port) parts.push(`端口 ${data.port}`);
     if (data.preferred_port && data.preferred_port !== data.port) parts.push(`配置端口 ${data.preferred_port}`);
     if (data.pid) parts.push(`PID ${data.pid}`);
-    // 保留 bin_exists 兼容（值 = API 二进制文件是否存在）
-    if (data.bin_exists === false) parts.push("未找到 API 二进制文件");
+    if (data.bin_exists === false) parts.push("未找到二进制");
     ncmStatusDetail.textContent = parts.join(" · ");
 }
 

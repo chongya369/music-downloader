@@ -14,9 +14,8 @@
 注意：PyInstaller 不支持交叉编译，Linux 产物必须在 Linux 上构建，
 Windows 产物必须在 Windows 上构建。
 
-打包后产物（dist/music_downloader/）不包含 API 二进制。用户需从官方 Release
-下载预编译二进制（ncm-api-win-x64.exe / ncm-api-linux-x64），放入产物
-api/ 目录后，开箱即可启动 API 服务。
+打包后用户需手动把 api 二进制（ncm-api-win-x64.exe / ncm-api-linux-x64）
+放到 dist/NeteaseMusicDownloader/api/ 目录。
 """
 
 import shutil
@@ -57,7 +56,7 @@ def exe_suffix() -> str:
 
 
 def api_binary_name() -> str:
-    """内部 API 二进制文件名，须与 core/providers/netease/bridge.py 保持一致"""
+    """内置 API 二进制文件名，须与 core/providers/netease/bridge.py 的 _BINARIES 保持一致"""
     return "ncm-api-win-x64.exe" if is_win() else "ncm-api-linux-x64"
 
 
@@ -120,7 +119,7 @@ def runtime_hook_path() -> Path:
         '\n'
         'print("============================================")\n'
         'print("  music_downloader 正在启动，请等待...")\n'
-        'print("  启动完成后请访问: http://localhost:45600")\n'
+        'print("  启动完成后请访问: http://localhost:56700")\n'
         'print("============================================")\n'
         'sys.stdout.flush()\n',
         encoding="utf-8",
@@ -219,7 +218,6 @@ def post_pack() -> None:
 
     onefile 模式下可执行文件是单个文件，用户数据（api 二进制、数据库、
     下载目录）放在可执行文件同级目录。version.txt 已打入文件内，无需复制。
-    API 二进制不随源码分发，由用户从官方 Release 下载后手动放入 api/ 目录。
     """
     if not DIST_APP_DIR.exists():
         DIST_APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -230,19 +228,16 @@ def post_pack() -> None:
         print(f"[ERROR] 未找到产物: {bin_path}")
         sys.exit(1)
 
-    # 创建空 api/ 占位目录（用户手动放入二进制），并附使用说明
+    # 创建空 api/ 占位目录（用户手动放入二进制）
+    # 占位提示的文件名与内容均按平台参数化，与 node_bridge._BINARIES 对齐
     api_dir = DIST_APP_DIR / "api"
     api_dir.mkdir(exist_ok=True)
-    readme = api_dir / "README.txt"
-    readme.write_text(
-        "API 使用说明:\n"
-        "1. 从官方项目 (https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)\n"
-        "   下载对应平台的预编译二进制。\n"
-        f"2. 将文件重命名为 {api_binary_name()} 放入本 api/ 目录，\n"
-        "   然后启动程序即可，开箱即用。\n",
+    api_bin = api_binary_name()
+    (api_dir / f"Please put {api_bin} here.txt").write_text(
+        f"Please download {api_bin} from official release and place it here.\n",
         encoding="utf-8",
     )
-    print(f"[INFO] 已创建空 api/ 占位目录，提示放入 {api_binary_name()}")
+    print("[INFO] 已创建空 api/ 占位目录")
 
     # 创建空 downloads/ 占位目录
     (DIST_APP_DIR / "downloads").mkdir(exist_ok=True)
@@ -275,8 +270,7 @@ def main() -> None:
     print(f"[INFO] 产物目录: {DIST_APP_DIR}")
     print(f"[INFO] 启动程序: {DIST_APP_DIR / bin_name}")
     print("[INFO] 下一步:")
-    print(f"  1. 从官方 Release 下载预编译 API 二进制并放入 {DIST_APP_DIR / 'api'}:")
-    print(f"     Windows: ncm-api-win-x64.exe  /  Linux: ncm-api-linux-x64")
+    print(f"  1. 把 {api_binary_name()} 放到 {DIST_APP_DIR / 'api'}")
     if is_win():
         print(f"  2. 双击 {bin_name}")
     else:

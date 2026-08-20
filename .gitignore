@@ -1,4 +1,4 @@
-# Python virtual environment
+﻿# Python virtual environment
 .venv/
 venv/
 
@@ -6,14 +6,6 @@ venv/
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-*.egg
-*.egg-info/
-
-# Python 工具链缓存
-.mypy_cache/
-.ruff_cache/
-.pytype/
 
 # Distribution / packaging
 .Python
@@ -60,8 +52,6 @@ cover/
 
 # Environments
 .env
-.env.*
-!.env.example
 .venv
 env/
 ENV/
@@ -76,8 +66,6 @@ ENV.bak/
 
 # Project specific
 downloads.db
-*.sqlite
-*.sqlite3
 downloads/
 log/
 *.log
@@ -90,19 +78,13 @@ doc/
 *.db-wal
 *.db-shm
 
-# OS generated files
+# Windows 系统文件
 Thumbs.db
 Desktop.ini
-.DS_Store
-ehthumbs.db
-ehthumbs_vista.db
 
-# 手动安装的第三方模块目录（不入库）
-node_modules/
-
-# NeteaseCloudMusicApi 预编译二进制（体积大，不随源码分发，需手动下载放置）
+# 内置 NeteaseCloudMusicApi 二进制（体积大，不入库）
+api/
 ncm-api-*
-依赖api二进制文件/
 
 # 临时/误生成文件
 $null

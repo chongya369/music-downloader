@@ -121,6 +121,19 @@ if "%MISSING_DEPS%"=="1" (
     echo [INFO] All dependencies ready
 )
 
+REM Check built-in API binary (0.2.0+)
+set API_BIN=api\ncm-api-win-x64.exe
+set API_BIN_OK=1
+if not exist "%API_BIN%" (
+    echo [WARN] Missing API binary: %API_BIN%
+    echo [WARN] Discover/playlist features may be unavailable.
+    echo [WARN] Download the matching release and put it in source\api\ .
+    set API_BIN_OK=0
+) else (
+    echo [INFO] API binary ready: %API_BIN%
+)
+echo [STEP] API binary check done: API_BIN_OK=%API_BIN_OK%
+
 echo.
 echo ============================================
 echo [STEP] About to start Web service...
