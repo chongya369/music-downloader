@@ -190,6 +190,12 @@ class NeteaseClient:
                 "name": item.get("name"),
                 "description": item.get("description", ""),
                 "update_frequency": item.get("updateFrequency", ""),
+                "cover_img_url": (
+                    item.get("picUrl")
+                    or item.get("coverImgUrl")
+                    or item.get("coverUrl")
+                    or ""
+                ),
             }
             for item in result.get("list", [])
         ]
@@ -386,7 +392,12 @@ class NeteaseClient:
                 "name": item.get("name"),
                 "description": item.get("description", ""),
                 "update_frequency": item.get("updateFrequency", ""),
-                "cover_img_url": item.get("coverImgUrl", ""),
+                "cover_img_url": (
+                    item.get("picUrl")
+                    or item.get("coverImgUrl")
+                    or item.get("coverUrl")
+                    or ""
+                ),
                 "track_count": item.get("trackCount", 0),
             }
             for item in result.get("list", [])
@@ -414,7 +425,12 @@ class NeteaseClient:
             {
                 "id": item.get("id"),
                 "name": item.get("name"),
-                "cover_img_url": item.get("coverImgUrl", ""),
+                "cover_img_url": (
+                    item.get("picUrl")
+                    or item.get("coverImgUrl")
+                    or item.get("coverUrl")
+                    or ""
+                ),
                 "play_count": item.get("playCount", 0),
                 "track_count": item.get("trackCount", 0),
                 "creator": (item.get("creator") or {}).get("nickname", ""),

@@ -49,6 +49,13 @@ body {
     font-size: 0.8em;
 }
 
+/* 平台徽章（我的歌单列表） */
+.badge-platform {
+    font-size: 0.7rem;
+    font-weight: 500;
+    vertical-align: middle;
+}
+
 /* 加载动画 */
 .loading-spinner {
     display: inline-block;

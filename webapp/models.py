@@ -73,9 +73,11 @@ class Playlist(db.Model):
 
     type: official(官方榜单) / user(用户自定义歌单)
     enabled: 是否启用自动下载
+    platform: 平台标识（netease / qq / kugou）
     """
     __tablename__ = "playlists"
-    id = db.Column(db.Integer, primary_key=True)           # 网易云歌单/榜单 ID
+    id = db.Column(db.Integer, primary_key=True)           # 平台歌单/榜单 ID
+    platform = db.Column(db.String(20), default="netease", nullable=False)
     name = db.Column(db.String(200), nullable=False)
     type = db.Column(db.String(20), default="official")    # official / user
     enabled = db.Column(db.Boolean, default=True)
@@ -89,6 +91,8 @@ class Playlist(db.Model):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "platform": self.platform,
+            "platform_name": PLATFORM_NAMES.get(self.platform, self.platform),
             "name": self.name,
             "type": self.type,
             "enabled": self.enabled,
@@ -325,6 +329,10 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         if inspector.has_table("download_tasks") and not _column_exists(inspector, "download_tasks", "platform"):
             with db.engine.begin() as conn:
                 conn.execute(text("ALTER TABLE download_tasks ADD COLUMN platform VARCHAR(20) DEFAULT 'netease' NOT NULL"))
+        # 兼容迁移：给旧 playlists 表补充 platform 列
+        if inspector.has_table("playlists") and not _column_exists(inspector, "playlists", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("ALTER TABLE playlists ADD COLUMN platform VARCHAR(20) DEFAULT 'netease' NOT NULL"))
         # 更新历史数据：确保所有记录都有正确的平台标记
         if inspector.has_table("songs") and _column_exists(inspector, "songs", "platform"):
             with db.engine.begin() as conn:
@@ -332,6 +340,9 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         if inspector.has_table("download_tasks") and _column_exists(inspector, "download_tasks", "platform"):
             with db.engine.begin() as conn:
                 conn.execute(text("UPDATE download_tasks SET platform = 'netease' WHERE platform IS NULL OR platform = ''"))
+        if inspector.has_table("playlists") and _column_exists(inspector, "playlists", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("UPDATE playlists SET platform = 'netease' WHERE platform IS NULL OR platform = ''"))
         # 写入缺失的默认配置
         for key, value in DEFAULT_SETTINGS.items():
             if not db.session.get(Setting, key):

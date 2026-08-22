@@ -12,11 +12,13 @@
             <i class="bi bi-bookmark-star"></i> 我的歌单
         </a>
     </li>
+    {% for p in platforms %}
     <li class="nav-item">
-        <a class="nav-link" href="#" data-tab="discover">
-            <i class="bi bi-compass"></i> 发现
+        <a class="nav-link" href="#" data-tab="discover" data-platform="{{ p.key }}">
+            <i class="bi bi-{{ p.icon }}"></i> {{ p.name }}
         </a>
     </li>
+    {% endfor %}
 </ul>
 
 <!-- Tab 1: 我的歌单 -->
@@ -249,8 +251,16 @@
             <div class="modal-body">
                 <div class="mb-3">
                     <label class="form-label">歌单 ID 或分享链接</label>
-                    <input type="text" class="form-control" id="add-source" placeholder="粘贴网易云歌单链接或输入 ID">
+                    <input type="text" class="form-control" id="add-source" placeholder="粘贴歌单链接或输入 ID">
                     <div class="form-text">支持格式：纯数字 ID、分享链接、短链接</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">平台</label>
+                    <select class="form-select" id="add-platform">
+                        {% for p in platforms %}
+                        <option value="{{ p.key }}">{{ platform_names[p.key] }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
                 <div class="mb-3">
                     <label class="form-label">类型</label>
@@ -274,5 +284,8 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+window._AVAILABLE_PLATFORMS = {{ platforms | tojson | safe }};
+</script>
 <script src="{{ url_for('static', filename='js/playlists.js') }}"></script>
 {% endblock %}

@@ -397,25 +397,26 @@ class TaskManager:
         """用指定账号的 cookie 创建 provider（仅用已传入 cookie，不查库）
 
         P1 薄包装：返回已注入凭证与自定义地址的 provider。
+        按账号所属平台分发，避免不同平台请求互相串用。
         """
-        p = get_provider("netease")
+        p = get_provider(account.platform or "netease")
         p.set_cookie(account.cookie or "")
         with self.app.app_context():
             p.set_custom_base_url(get_custom_api_url())
         return p
 
-    def _get_client_default(self) -> NeteaseProvider:
-        """用第一个启用的网易云账号 cookie 创建 provider
+    def _get_client_default(self, platform: str = "netease") -> NeteaseProvider:
+        """用第一个启用的指定平台账号 cookie 创建 provider
 
         用于同步歌单等公开接口。无启用账号时用空 cookie。
         此函数被调度线程调用（_sync_all_playlists 等），后台线程无 request
         context，Account.query 必须包 app_context。
         """
         with self.app.app_context():
-            acc = Account.query.filter_by(platform="netease", enabled=True).order_by(Account.sort_order, Account.id).first()
+            acc = Account.query.filter_by(platform=platform, enabled=True).order_by(Account.sort_order, Account.id).first()
             cookie = acc.cookie if acc else ""
             custom_url = get_custom_api_url()
-        p = get_provider("netease")
+        p = get_provider(platform)
         p.set_cookie(cookie or "")
         p.set_custom_base_url(custom_url)
         return p
@@ -439,15 +440,19 @@ class TaskManager:
             if not playlists:
                 logger.info("没有已启用的歌单，跳过同步")
                 return
-            pl_list = [(p.id, p.name) for p in playlists]
+            pl_list = [(p.id, p.name, p.platform or "netease") for p in playlists]
 
-        # 同步歌单用默认客户端（不需要鉴权，歌单详情公开）
-        client = self._get_client_default()
-        for pl_id, pl_name in pl_list:
-            try:
-                self._sync_playlist(client, pl_id, platform="netease")
-            except Exception as e:
-                logger.exception("同步歌单 %s 失败: %s", pl_name, e)
+        # 按平台分组同步，每组用对应平台的默认客户端（不需要鉴权，歌单详情公开）
+        groups: dict[str, list[tuple[int, str]]] = {}
+        for pl_id, pl_name, pl_platform in pl_list:
+            groups.setdefault(pl_platform, []).append((pl_id, pl_name))
+        for platform, group in groups.items():
+            client = self._get_client_default(platform=platform)
+            for pl_id, pl_name in group:
+                try:
+                    self._sync_playlist(client, pl_id, platform=platform)
+                except Exception as e:
+                    logger.exception("同步歌单 %s 失败: %s", pl_name, e)
 
     def _sync_playlist(self, client: NeteaseProvider, playlist_id: int, platform: str = "netease") -> int:
         """同步单个歌单：拉取歌曲列表，过滤已下载，入队
@@ -536,24 +541,42 @@ class TaskManager:
 
         Args:
             playlist_id: 歌单 ID
-            platform: 平台标识，默认 netease
+            platform: 平台标识（歌单记录已有平台时以记录为准）
+
+        Returns:
+            新增到下载队列的歌曲数
         """
-        client = self._get_client_default()
+        # 优先从 Playlist 记录读取平台归属
+        with self.app.app_context():
+            pl = Playlist.query.get(playlist_id)
+            if pl:
+                platform = pl.platform or platform or "netease"
+        client = self._get_client_default(platform=platform)
         return self._sync_playlist(client, playlist_id, platform=platform)
 
     def sync_all(self, platform: str = "netease") -> int:
         """同步所有已启用的歌单
 
         Args:
-            platform: 平台标识，默认 netease
+            platform: 平台标识（歌单记录已有平台时以记录为准）
+
+        Returns:
+            新增到下载队列的歌曲总数
         """
         with self.app.app_context():
             playlists = Playlist.query.filter_by(enabled=True).all()
-            pl_list = [(p.id, p.name) for p in playlists]
-        client = self._get_client_default()
+            pl_list = [(p.id, p.name, p.platform or platform or "netease") for p in playlists]
+        if not pl_list:
+            return 0
+        # 按平台分组，每组用对应平台的默认客户端
+        groups: dict[str, list[tuple[int, str]]] = {}
+        for pl_id, pl_name, pl_platform in pl_list:
+            groups.setdefault(pl_platform, []).append((pl_id, pl_name))
         total = 0
-        for pl_id, _pl_name in pl_list:
-            total += self._sync_playlist(client, pl_id, platform=platform)
+        for plat, group in groups.items():
+            client = self._get_client_default(platform=plat)
+            for pl_id, pl_name in group:
+                total += self._sync_playlist(client, pl_id, platform=plat)
         return total
 
     # ------------------------------------------------------------------
@@ -611,7 +634,7 @@ class TaskManager:
         Returns:
             {"enqueued": int, "excluded": int, "skipped": int, "total": int}
         """
-        client = self._get_client_default()
+        client = self._get_client_default(platform=platform)
         search_res = client.search_songs(keyword, limit=limit, offset=offset)
         tracks = search_res.get("items", [])
         total = len(tracks)
@@ -679,7 +702,7 @@ class TaskManager:
         Returns:
             {"enqueued": int, "excluded": int, "skipped": int, "total": int}
         """
-        client = self._get_client_default()
+        client = self._get_client_default(platform=platform)
         tracks = client.get_album_songs(album_id)
         total = len(tracks)
         if total == 0:

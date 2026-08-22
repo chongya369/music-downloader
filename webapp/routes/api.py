@@ -110,23 +110,31 @@ def _get_task_manager():
     return current_app.config["TASK_MANAGER"]
 
 
-def _create_client(cookie: str = "") -> NeteaseProvider:
-    """创建 NeteaseProvider（P1 薄包装：返回 provider，自动应用自定义API服务URL设置）"""
-    p = get_provider("netease")
+def _create_client(cookie: str = "", platform: str = "netease") -> NeteaseProvider:
+    """创建指定平台的 Provider（返回 provider，自动应用自定义API服务URL设置）"""
+    p = get_provider(platform)
     p.set_custom_base_url(get_custom_api_url())
     if cookie:
         p.set_cookie(cookie)
     return p
 
 
-def _get_client() -> NeteaseProvider:
-    """用第一个启用的网易云账号 cookie 创建 provider（用于发现页/添加歌单等公开接口）
+def _get_client(platform: str = "netease") -> NeteaseProvider:
+    """用第一个启用的指定平台账号 cookie 创建 provider（用于发现页/添加歌单等公开接口）
 
     无启用账号时用空 cookie。
     """
-    acc = Account.query.filter_by(platform="netease", enabled=True).order_by(Account.sort_order, Account.id).first()
+    acc = Account.query.filter_by(platform=platform, enabled=True).order_by(Account.sort_order, Account.id).first()
     cookie = acc.cookie if acc else ""
-    return _create_client(cookie=cookie or "")
+    return _create_client(cookie=cookie or "", platform=platform)
+
+
+def _req_platform() -> str:
+    """从请求中读取平台标识（POST 取 body.platform，GET 取 query.platform），默认 netease"""
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        return (data.get("platform") or "").strip().lower() or "netease"
+    return (request.args.get("platform") or "").strip().lower() or "netease"
 
 
 def _safe_int(value, default: int, lo: int | None = None, hi: int | None = None) -> int:
@@ -174,12 +182,14 @@ def add_playlist():
     请求体：
         {"source": "3778678" 或 "https://music.163.com/playlist?id=xxx" 或榜单ID,
          "type": "official" 或 "user",
-         "limit": 100}
+         "limit": 100,
+         "platform": "netease" / "qq" / "kugou"}
     """
     data = request.get_json(force=True)
     source = data.get("source", "").strip()
     pl_type = data.get("type", "user")
     limit = _safe_int(data.get("limit", 100), 100, lo=1, hi=1000)
+    platform = (data.get("platform") or "").strip().lower() or "netease"
 
     if not source:
         return jsonify({"code": 1, "msg": "请输入歌单 ID 或链接"})
@@ -195,17 +205,20 @@ def add_playlist():
 
     # 拉取歌单信息确认有效
     try:
-        client = _get_client()
+        client = _get_client(platform)
         detail = client.get_playlist_detail(pid, limit=1)
         if not detail:
             return jsonify({"code": 1, "msg": "无法获取歌单信息，请检查 ID 或 Cookie"})
         name = detail.get("name", str(pid))
         track_count = detail.get("track_count", 0)
+    except ValueError as e:
+        return jsonify({"code": 1, "msg": str(e)})
     except Exception as e:
         return jsonify({"code": 1, "msg": f"获取歌单信息失败: {e}"})
 
     pl = Playlist(
         id=pid,
+        platform=platform,
         name=name,
         type=pl_type,
         enabled=True,
@@ -812,7 +825,7 @@ def accounts_stats():
 def discover_toplists():
     """获取官方排行榜列表"""
     try:
-        client = _get_client()
+        client = _get_client(_req_platform())
         lists = client.get_toplists()
         return jsonify({"code": 0, "data": lists})
     except Exception as e:
@@ -838,7 +851,7 @@ def discover_playlists():
     page = max(1, int(request.args.get("page", 1)))
     offset = (page - 1) * limit
     try:
-        client = _get_client()
+        client = _get_client(_req_platform())
         playlists, total = client.get_hot_playlists(cat=cat, limit=limit, order=order, offset=offset)
         pages = (total + limit - 1) // limit if limit > 0 else 0
         return jsonify({
@@ -858,7 +871,7 @@ def discover_playlists():
 def discover_categories():
     """获取所有歌单分类"""
     try:
-        client = _get_client()
+        client = _get_client(_req_platform())
         cats = client.get_playlist_categories()
         # 只返回分类名列表，前端用
         names = [c["name"] for c in cats if c.get("name")]
@@ -897,7 +910,7 @@ def discover_search():
         return jsonify({"code": 1, "msg": "请输入搜索关键词"})
 
     try:
-        client = _get_client()
+        client = _get_client(_req_platform())
         if search_type == "album":
             res = client.search_albums(keyword, limit=limit, offset=offset)
             items = res.get("items", [])
@@ -969,7 +982,10 @@ def discover_search_download():
         return jsonify({"code": 1, "msg": "请输入搜索关键词"})
 
     tm = _get_task_manager()
-    result = tm.search_and_download(keyword, limit=limit, offset=offset)
+    try:
+        result = tm.search_and_download(keyword, limit=limit, offset=offset, platform=_req_platform())
+    except ValueError as e:
+        return jsonify({"code": 1, "msg": str(e)})
     msg = f"共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，跳过 {result['skipped']}"
     return jsonify({"code": 0, "data": result, "msg": msg})
 
@@ -988,7 +1004,10 @@ def discover_album_download():
         return jsonify({"code": 1, "msg": "缺少 album_id"})
 
     tm = _get_task_manager()
-    result = tm.download_album(int(album_id), album_name)
+    try:
+        result = tm.download_album(int(album_id), album_name, platform=_req_platform())
+    except ValueError as e:
+        return jsonify({"code": 1, "msg": str(e)})
     msg = f"专辑共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，跳过 {result['skipped']}"
     return jsonify({"code": 0, "data": result, "msg": msg})
 
@@ -1008,7 +1027,7 @@ def discover_download_song():
         return jsonify({"code": 1, "msg": "缺少 song_id"})
 
     tm = _get_task_manager()
-    ok = tm.download_single_song(int(song_id), name, artists, fee)
+    ok = tm.download_single_song(int(song_id), name, artists, fee, platform=_req_platform())
     if ok:
         return jsonify({"code": 0, "msg": f"已加入下载队列: {name}"})
     return jsonify({"code": 1, "msg": "该歌曲已下载或正在下载中"})

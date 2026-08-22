@@ -1,7 +1,63 @@
-// 歌单管理页逻辑（双标签：我的歌单 + 发现）
+// 歌单管理页逻辑（我的歌单 + 多平台发现）
 
 let myPlaylistIds = new Set();  // 已关注歌单 ID 集合，用于发现页标记"已添加"
 let defaultPlaylistLimit = 50;  // 添加歌单时的默认下载数量（来自设置）
+
+// ==================================================================
+// 平台状态管理（配置驱动，与模板 window._AVAILABLE_PLATFORMS 对应）
+// ==================================================================
+let _currentPlatform = "netease";
+let _platformState = {};
+
+function getPlatformState(platform) {
+    if (!_platformState[platform]) {
+        _platformState[platform] = {
+            subtab: "toplists",
+            hotPage: 1,
+            searchState: { keyword: "", type: "song", limit: 50, page: 1 },
+        };
+    }
+    return _platformState[platform];
+}
+
+function _saveCurrentPlatformState() {
+    const state = getPlatformState(_currentPlatform);
+    state.subtab = _discoverState.subtab;
+    state.hotPage = _discoverState.hotPage;
+    state.searchState = { ..._searchState };
+}
+
+function _restorePlatformState(platform) {
+    const state = getPlatformState(platform);
+    _discoverState.subtab = state.subtab;
+    _discoverState.hotPage = state.hotPage;
+    _searchState = { ...state.searchState };
+
+    // 切换子标签激活态
+    document.querySelectorAll("#discover-subtabs .nav-link").forEach(n => {
+        n.classList.toggle("active", n.dataset.subtab === state.subtab);
+    });
+    document.querySelectorAll("#tab-discover [id^='subtab-']").forEach(el => el.classList.add("d-none"));
+    document.getElementById("subtab-" + state.subtab).classList.remove("d-none");
+
+    // 同步搜索框与表格显示状态
+    document.getElementById("search-type").value = _searchState.type;
+    document.getElementById("search-keyword").value = _searchState.keyword;
+    const isAlbum = _searchState.type === "album";
+    document.getElementById("search-result-song").classList.toggle("d-none", isAlbum);
+    document.getElementById("search-result-album").classList.toggle("d-none", !isAlbum);
+    document.getElementById("btn-search-download-all").style.display = isAlbum ? "none" : "";
+
+    // 加载当前子标签内容
+    if (state.subtab === "toplists") {
+        loadToplists();
+    } else if (state.subtab === "hot") {
+        loadCategories();
+        loadHotPlaylists();
+    } else if (state.subtab === "search") {
+        loadSearchResults();
+    }
+}
 
 // 加载默认下载数量配置
 async function loadDefaultPlaylistLimit() {
@@ -32,15 +88,27 @@ document.querySelectorAll("#playlist-tabs .nav-link").forEach(el => {
         // 切换激活态
         document.querySelectorAll("#playlist-tabs .nav-link").forEach(n => n.classList.remove("active"));
         this.classList.add("active");
-        // 切换内容
-        document.getElementById("tab-mine").classList.add("d-none");
-        document.getElementById("tab-discover").classList.add("d-none");
-        document.getElementById("tab-" + tab).classList.remove("d-none");
-        // 首次切到发现页时加载默认子标签（排行榜）
-        if (tab === "discover" && !window._discoverLoaded) {
-            window._discoverLoaded = true;
-            loadToplists();
-            window._toplistsLoaded = true;
+        if (tab === "mine") {
+            document.getElementById("tab-mine").classList.remove("d-none");
+            document.getElementById("tab-discover").classList.add("d-none");
+            return;
+        }
+        // 平台 tab
+        const platform = this.dataset.platform;
+        if (platform) {
+            const showingDiscover = document.getElementById("tab-mine").classList.contains("d-none");
+            // 已在当前平台的发现页则无需重复加载
+            if (platform === _currentPlatform && showingDiscover) {
+                return;
+            }
+            // 保存当前平台状态
+            _saveCurrentPlatformState();
+            _currentPlatform = platform;
+            // 隐藏 mine，显示 discover
+            document.getElementById("tab-mine").classList.add("d-none");
+            document.getElementById("tab-discover").classList.remove("d-none");
+            // 恢复该平台状态
+            _restorePlatformState(platform);
         }
     });
 });
@@ -65,6 +133,9 @@ async function loadPlaylists() {
             const typeText = p.type === "official" ? "官方榜单" : "自定义";
             const checked = p.enabled ? "checked" : "";
             const syncTime = p.last_synced_at || "从未同步";
+            const platformBadge = p.platform_name
+                ? `<span class="badge-platform badge ${p.platform === 'qq' ? 'bg-info' : 'bg-primary'}">${p.platform_name}</span> `
+                : "";
             return `
                 <tr>
                     <td>
@@ -72,7 +143,7 @@ async function loadPlaylists() {
                             <input class="form-check-input toggle-enabled" type="checkbox" ${checked} data-id="${p.id}">
                         </div>
                     </td>
-                    <td>${p.name}</td>
+                    <td>${platformBadge}${p.name}</td>
                     <td><span class="badge ${p.type === 'official' ? 'bg-info' : 'bg-secondary'}">${typeText}</span></td>
                     <td>
                         <input type="number" class="form-control form-control-sm limit-input" value="${p.limit_count}" data-id="${p.id}" min="1" max="1000" style="width:70px">
@@ -163,10 +234,10 @@ function bindPlaylistEvents() {
 }
 
 // 添加歌单（我的歌单弹窗 + 发现页共用）
-async function addPlaylist(source, type, limit) {
+async function addPlaylist(source, type, limit, platform = "netease") {
     return await api("/api/playlists", {
         method: "POST",
-        body: JSON.stringify({ source, type, limit }),
+        body: JSON.stringify({ source, type, limit, platform }),
     });
 }
 
@@ -174,13 +245,14 @@ document.getElementById("btn-add-confirm").addEventListener("click", async funct
     const source = document.getElementById("add-source").value.trim();
     const type = document.getElementById("add-type").value;
     const limit = parseInt(document.getElementById("add-limit").value) || defaultPlaylistLimit;
+    const platform = document.getElementById("add-platform").value;
     if (!source) { showToast("请输入歌单 ID 或链接"); return; }
 
     const btn = this;
     btn.disabled = true;
     btn.innerHTML = '<span class="loading-spinner"></span> 添加中...';
     try {
-        const data = await addPlaylist(source, type, limit);
+        const data = await addPlaylist(source, type, limit, platform);
         showToast(data.msg, "添加成功");
         bootstrap.Modal.getInstance(document.getElementById("add-modal")).hide();
         document.getElementById("add-source").value = "";
@@ -231,7 +303,7 @@ document.querySelectorAll("#discover-subtabs .nav-link").forEach(el => {
 
 async function loadCategories() {
     try {
-        const data = await api("/api/discover/categories");
+        const data = await api("/api/discover/categories?platform=" + _currentPlatform);
         const sel = document.getElementById("discover-cat");
         const cats = data.data || [];
         sel.innerHTML = cats.map(c => `<option value="${c}">${c}</option>`).join("");
@@ -244,7 +316,7 @@ async function loadToplists() {
     const grid = document.getElementById("toplist-grid");
     grid.innerHTML = '<div class="col-12 text-center text-muted"><span class="loading-spinner"></span> 加载中...</div>';
     try {
-        const data = await api("/api/discover/toplists");
+        const data = await api("/api/discover/toplists?platform=" + _currentPlatform);
         const list = data.data || [];
         if (list.length === 0) {
             grid.innerHTML = '<div class="col-12 text-center text-muted">暂无数据</div>';
@@ -267,7 +339,7 @@ async function loadHotPlaylists() {
 
     grid.innerHTML = '<div class="col-12 text-center text-muted"><span class="loading-spinner"></span> 加载中...</div>';
     try {
-        const data = await api(`/api/discover/playlists?cat=${encodeURIComponent(cat)}&limit=${limit}&order=${order}&page=${page}`);
+        const data = await api(`/api/discover/playlists?cat=${encodeURIComponent(cat)}&limit=${limit}&order=${order}&page=${page}&platform=${_currentPlatform}`);
         const list = data.data || [];
         const total = data.total || 0;
         const pages = data.pages || 0;
@@ -340,7 +412,7 @@ function bindAddButtons() {
             this.disabled = true;
             this.innerHTML = '<span class="loading-spinner"></span>';
             try {
-                const data = await addPlaylist(id, type, defaultPlaylistLimit);
+                const data = await addPlaylist(id, type, defaultPlaylistLimit, _currentPlatform);
                 showToast(data.msg, "添加成功");
                 this.className = "btn btn-sm btn-secondary w-100";
                 this.innerHTML = '<i class="bi bi-check2"></i> 已添加';
@@ -445,7 +517,7 @@ document.getElementById("btn-search-download-all").addEventListener("click", asy
     try {
         const data = await api("/api/discover/search-download", {
             method: "POST",
-            body: JSON.stringify({ keyword: kw, limit, offset }),
+            body: JSON.stringify({ keyword: kw, limit, offset, platform: _currentPlatform }),
         });
         showToast(data.msg, "下载结果");
         // 下载后刷新当前页状态
@@ -496,7 +568,7 @@ async function loadSearchResults() {
     try {
         const data = await api("/api/discover/search", {
             method: "POST",
-            body: JSON.stringify({ keyword, type, limit, offset }),
+            body: JSON.stringify({ keyword, type, limit, offset, platform: _currentPlatform }),
         });
         const d = data.data || {};
         const list = d.items || [];
@@ -593,7 +665,7 @@ function bindSingleDownload() {
             try {
                 const data = await api("/api/discover/download-song", {
                     method: "POST",
-                    body: JSON.stringify({ song_id: parseInt(songId), name, artists, fee }),
+                    body: JSON.stringify({ song_id: parseInt(songId), name, artists, fee, platform: _currentPlatform }),
                 });
                 showToast(data.msg, "下载");
                 // 更新按钮状态
@@ -626,7 +698,7 @@ function bindAlbumDownload() {
             try {
                 const data = await api("/api/discover/album-download", {
                     method: "POST",
-                    body: JSON.stringify({ album_id: parseInt(albumId), album_name: albumName }),
+                    body: JSON.stringify({ album_id: parseInt(albumId), album_name: albumName, platform: _currentPlatform }),
                 });
                 showToast(data.msg, "专辑下载");
                 this.className = "btn btn-sm btn-secondary btn-dl-album";

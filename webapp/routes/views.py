@@ -8,9 +8,12 @@ from datetime import datetime
 from flask import Blueprint, render_template, redirect, url_for, request, session
 
 from auth import login_required, admin_required, current_user
-from models import User, db
+from models import User, db, PLATFORM_NAMES
 
 views_bp = Blueprint("views", __name__)
+
+# 当前已实现的前端可用平台（配置驱动，后续新增平台在此追加即可）
+AVAILABLE_PLATFORMS = [{"key": "netease", "name": "网易云", "icon": "music-note-beamed"}]
 
 
 # ======================================================================
@@ -60,7 +63,13 @@ def dashboard():
 @login_required()
 def playlists():
     """歌单管理页"""
-    return render_template("playlists.html", active_page="playlists", current_user=current_user())
+    return render_template(
+        "playlists.html",
+        active_page="playlists",
+        current_user=current_user(),
+        platforms=AVAILABLE_PLATFORMS,
+        platform_names=PLATFORM_NAMES,
+    )
 
 
 @views_bp.route("/accounts")
