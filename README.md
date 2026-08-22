@@ -1,10 +1,10 @@
 # Deen音乐下载器
 
-Deen音乐下载器 —— 基于 Flask 的网易云音乐下载器，支持多账号管理、定时同步歌单、断点续传下载、元数据写入、Web 界面管理。
+Deen音乐下载器 —— 基于 Flask 的多平台音乐下载器，采用 Provider 抽象架构，已内置网易云音乐完整实现；QQ 音乐与酷狗音乐的接口已预留可扩展。支持多账号管理、定时同步歌单、断点续传下载、元数据写入、Web 界面管理。
 
 ## 功能特性
 
-- **多账号管理**：支持添加多个网易云账号（Cookie 鉴权），按使用顺序调度
+- **多账号管理**：支持添加多个音乐平台账号（Cookie 鉴权），按使用顺序调度
 - **多账号调度策略**：
   - 接力模式（fallback）：当前账号达额度或失败时自动切换下一个
   - 轮询模式（round_robin）：按计数器轮流分配下载任务
@@ -33,45 +33,53 @@ Deen音乐下载器 —— 基于 Flask 的网易云音乐下载器，支持多�
 | 音频元数据 | mutagen 1.47+ |
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
 | 网易云 API | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（自动拉起对应平台二进制，不随源码分发） |
+| 多平台架构 | `core/providers/` 抽象层：`MusicProvider` ABC → `registry.py` 工厂 → `netease/`、预留 `qq/`、`kugou/` |
 
 ## 目录结构
 
 ```
-source/
+code/
 ├── .github/
 │   └── workflows/
-│       └── build.yml              # GitHub Actions 自动构建（Windows/Linux + Release）
-├── core/                          # 核心业务层
-│   ├── netease_client.py          # 网易云 API 客户端（调用 NeteaseCloudMusicApi 服务）
-│   ├── node_bridge.py             # NeteaseCloudMusicApi 二进制进程管理
-│   ├── downloader.py              # 文件下载器（断点续传 + 重试 + 路径保护）
-│   ├── metadata.py                # MP3/FLAC 元数据写入
-│   └── language_detector.py       # 基于歌词的语言检测
-├── api/                           # NeteaseCloudMusicApi 二进制（不随源码分发，需手动放置）
+│       └── build.yml                 # GitHub Actions 自动构建（Windows/Linux + Release）
+├── core/                             # 核心业务层
+│   ├── providers/                    # Provider 抽象层（多平台音乐源）
+│   │   ├── base.py                   # MusicProvider ABC（5 个窄接口方法）
+│   │   ├── registry.py               # 提供者注册与工厂（get_provider）
+│   │   └── netease/                  # 网易云音乐 Provider（已完整实现）
+│   │       ├── __init__.py           # NeteaseProvider
+│   │       ├── _transform.py         # 网易云数据格式转换
+│   │       ├── bridge.py             # NeteaseCloudMusicApi 二进制进程管理
+│   │       ├── client.py             # API 客户端
+│   │       └── parse_links.py        # 链接解析（歌单/专辑/单曲）
+│   ├── downloader.py                 # 文件下载器（断点续传 + 重试 + 路径保护）
+│   ├── metadata.py                   # MP3/FLAC 元数据写入
+│   └── language_detector.py          # 基于歌词的语言检测
+├── docs/                             # 开发过程记录（仅本地维护）
+│   ├── bug-check-report.md
+│   └── fix-plan.md
 ├── webapp/
-│   ├── app.py                     # Flask 应用入口（默认监听 *:45600）
-│   ├── models.py                  # 数据库模型（6 张表）+ 默认配置
-│   ├── auth.py                    # 登录态校验装饰器
-│   ├── task_manager.py            # 下载任务调度器（核心）
-│   ├── version.py                 # 版本号读取
-│   ├── reset_password.py          # 命令行重置密码脚本
+│   ├── app.py                        # Flask 应用入口（默认监听 *:45600）
+│   ├── models.py                     # 数据库模型（6 张表）+ 默认配置
+│   ├── auth.py                       # 登录态校验装饰器
+│   ├── task_manager.py               # 下载任务调度器（核心）
+│   ├── version.py                    # 版本号读取
+│   ├── reset_password.py             # 命令行重置密码脚本
 │   ├── routes/
-│   │   ├── views.py               # 页面路由
-│   │   └── api.py                 # JSON API 路由
-│   ├── templates/                 # Jinja2 HTML 模板
-│   └── static/                    # 静态资源（CSS/JS/vendor）
-├── doc/                           # 开发过程记录（仅本地维护，不随源码分发）
-├── downloads/                     # 下载输出目录（按歌手名分子目录）
-├── downloads.db                   # SQLite 数据库文件
-├── icon.ico                       # 打包用应用图标
-├── icon1.ico                      # 备用打包图标
-├── build.py                        # PyInstaller onefile 打包脚本（跨平台）
-├── build_win.bat                   # 一键打包入口（Windows）
-├── build_linux.sh                  # 一键打包入口（Linux，POSIX sh）
-├── requirements.txt               # Python 依赖
-├── version.txt                    # 版本号
-├── run_web.bat                    # Windows 一键启动脚本
-└── run_web.sh                     # Linux 一键启动脚本
+│   │   ├── views.py                  # 页面路由
+│   │   └── api.py                    # JSON API 路由
+│   ├── templates/                    # Jinja2 HTML 模板
+│   └── static/                       # 静态资源（CSS/JS/vendor Bootstrap 5.3.2）
+├── .gitignore
+├── README.md
+├── build.py                          # PyInstaller onefile 打包脚本（跨平台）
+├── build_win.bat                     # 一键打包入口（Windows）
+├── build_linux.sh                    # 一键打包入口（Linux，POSIX sh）
+├── icon.ico                          # 打包用应用图标
+├── requirements.txt                  # Python 依赖
+├── version.txt                       # 版本号（当前 0.3.0-alpha.1）
+├── run_web.bat                       # Windows 一键启动脚本
+└── run_web.sh                        # Linux 一键启动脚本
 ```
 
 ## 环境依赖
@@ -79,7 +87,7 @@ source/
 - **Python** 3.10+
 - **NeteaseCloudMusicApi-enhanced 二进制**（**不随源码分发**，需自行下载）
   - 官方项目：https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced
-  - 将对应平台的二进制放入 `source/api/`（当前支持 Windows / Linux x64，可按需扩展其他平台），程序启动时自动按平台选择并拉起
+  - 将对应平台的二进制放入 `code/api/`（当前支持 Windows / Linux x64，可按需扩展其他平台），程序启动时自动按平台选择并拉起
   - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
 
 ## 快速开始
@@ -139,12 +147,15 @@ python3 -m venv .venv
 
 **首次登录后请立即在「用户管理」页修改密码。**
 
-### 3. 添加网易云账号
+### 3. 添加音乐平台账号
 
 在「账号管理」页添加账号：
+- 选择平台（网易云 / QQ音乐 / 酷狗音乐）
 - 填写账号别名（如"主账号"）
-- 粘贴 Cookie（**必须包含 `MUSIC_U` 字段**，从浏览器登录网易云后从 F12 → Network → Request Headers 复制）
+- 粘贴 Cookie（**必须包含对应平台的鉴权字段**，从浏览器登录平台后从 F12 → Network → Request Headers 复制）
 - 可选设置月额度上限（0 表示不限制）
+
+> **当前已完整实现：网易云音乐**。QQ 音乐与酷狗音乐的账号可添加和管理（数据模型与 UI 已支持），实际的 Provider 接口正在开发中。
 
 ### 4. 添加歌单
 
@@ -231,13 +242,14 @@ python3 -m venv .venv
 
 数据库共 6 张表（定义在 [models.py](webapp/models.py)）：
 
-### Account（网易云账号）
+### Account（音乐平台账号）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | Integer PK | 账号 ID |
+| platform | String(20) | 所属平台：netease / qq / kugou，默认 netease |
 | name | String | 别名（如"主账号"） |
-| cookie | Text | Cookie 字符串（含 MUSIC_U） |
-| nickname | String | 网易云昵称 |
+| cookie | Text | Cookie 字符串（含鉴权字段） |
+| nickname | String | 平台昵称 |
 | vip_type | Integer | 0=非会员 / 11=黑胶VIP / 12=SVIP |
 | vip_expire_at | DateTime | 会员到期时间 |
 | quota_limit | Integer | 月额度上限（0=不限制） |
@@ -249,7 +261,8 @@ python3 -m venv .venv
 ### Playlist（关注的歌单/榜单）
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| id | Integer PK | 网易云歌单/榜单 ID |
+| id | Integer PK | 歌单/榜单 ID |
+| platform | String(20) | 所属平台：netease / qq / kugou，默认 netease |
 | name | String | 歌单名 |
 | type | String | official（官方榜单）/ user（用户歌单） |
 | enabled | Boolean | 是否启用自动同步 |
@@ -261,7 +274,8 @@ python3 -m venv .venv
 ### Song（已下载歌曲记录）
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| id | Integer PK | 网易云歌曲 ID |
+| id | Integer PK | 歌曲 ID |
+| platform | String(20) | 所属平台：netease / qq / kugou，默认 netease |
 | name | String | 歌名 |
 | artists | String | 歌手 |
 | album | String | 专辑 |
@@ -280,7 +294,8 @@ python3 -m venv .venv
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | pk | Integer PK | 自增主键 |
-| song_id | Integer | 网易云歌曲 ID |
+| song_id | Integer | 歌曲 ID |
+| platform | String(20) | 所属平台：netease / qq / kugou，默认 netease |
 | song_name | String | 歌名 |
 | artists | String | 歌手 |
 | playlist_id | Integer | 来源歌单 ID |
@@ -407,7 +422,7 @@ A: API 返回了 freeTrialInfo，表示当前账号无该歌曲完整版权，�
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
 ### Q: NeteaseCloudMusicApi 服务未启动会怎样？
-A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `source/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/netease_client.py)）。
+A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `code/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/providers/netease/client.py)）。
 
 ### Q: 修改 Web 监听地址后无法访问？
 A: `web_port` 修改后需重启 Flask 服务才生效（Windows 通过 `run_web.bat`、Linux 通过 `./run_web.sh` 重启，或手动重启 `python webapp/app.py`）。
@@ -477,4 +492,4 @@ python3 build.py
 
 ## 版本
 
-当前版本：**0.2.0**（见 [version.txt](version.txt)）
+当前版本：**0.3.0-alpha.1**（见 [version.txt](version.txt)）
