@@ -122,8 +122,7 @@ def runtime_hook_path() -> Path:
         '\n'
         'print("============================================")\n'
         'print("  music_downloader 正在启动，请等待...")\n'
-        'print("  启动完成后请访问: http://localhost:56700")\n'
-        'print("============================================")\n'
+        'print("============================================\n")\n'
         'sys.stdout.flush()\n',
         encoding="utf-8",
     )
