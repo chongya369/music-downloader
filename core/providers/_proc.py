@@ -144,10 +144,16 @@ def _attach_windows_job(proc: "subprocess.Popen") -> None:
             "（正常退出仍会关闭 API 服务）", exc_info=True)
 
 
+# Windows 进程创建标志：
+# DETACHED_PROCESS (0x00000008) 让子进程完全脱离父进程的控制台，
+# 不再创建 conhost.exe 控制台宿主进程
+_WIN_DETACHED_PROCESS = 0x00000008
+
+
 def spawn_protected(cmd, cwd=None, env=None, stdout=None, stderr=None):
     """按平台为子进程启用"父进程死亡即终止"，返回 subprocess.Popen 实例。
 
-    参数透传给 subprocess.Popen；平台差异（Windows 的 CREATE_NO_WINDOW + 作业
+    参数透传给 subprocess.Popen；平台差异（Windows 的 DETACHED_PROCESS + 作业
     对象、Linux 的 PDEATHSIG preexec）在本函数内封装。
 
     :param cmd: 可执行命令列表
@@ -157,7 +163,7 @@ def spawn_protected(cmd, cwd=None, env=None, stdout=None, stderr=None):
     """
     kwargs = {"cwd": cwd, "env": env, "stdout": stdout, "stderr": stderr}
     if sys.platform == "win32":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        kwargs["creationflags"] = _WIN_DETACHED_PROCESS
         proc = subprocess.Popen(cmd, **kwargs)
         _attach_windows_job(proc)
         return proc
