@@ -168,7 +168,8 @@ function renderPagination(total, pages) {
 function bindSongEvents() {
     document.querySelectorAll(".btn-retry").forEach(el => {
         el.addEventListener("click", async function() {
-            const id = parseInt(this.dataset.id);
+            // song_id 字符串透传（QQ songmid 为非数字字符串，parseInt 会截断）
+            const id = this.dataset.id;
             try {
                 const data = await api("/api/retry", {
                     method: "POST",

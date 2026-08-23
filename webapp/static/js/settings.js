@@ -13,6 +13,11 @@ async function loadSettings() {
         form.use_custom_api_url.checked = s.use_custom_api_url === "true";
         form.custom_api_url.value = s.custom_api_url || "";
         toggleCustomUrl();
+        form.qq_api_port.value = s.qq_api_port || "45602";
+        form.qq_api_auto_start.checked = s.qq_api_auto_start === "true";
+        form.use_custom_qq_api_url.checked = s.use_custom_qq_api_url === "true";
+        form.qq_api_base_url.value = s.qq_api_base_url || "http://127.0.0.1:45602";
+        toggleCustomQqUrl();
 
         form.output_dir.value = s.output_dir || "";
         form.level.value = s.level || "exhigh";
@@ -53,6 +58,10 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         ncm_api_auto_start: form.ncm_api_auto_start.checked ? "true" : "false",
         use_custom_api_url: form.use_custom_api_url.checked ? "true" : "false",
         custom_api_url: form.use_custom_api_url.checked ? form.custom_api_url.value.trim() : "",
+        qq_api_port: form.qq_api_port.value.trim(),
+        qq_api_auto_start: form.qq_api_auto_start.checked ? "true" : "false",
+        use_custom_qq_api_url: form.use_custom_qq_api_url.checked ? "true" : "false",
+        qq_api_base_url: form.use_custom_qq_api_url.checked ? form.qq_api_base_url.value.trim() : "",
         output_dir: form.output_dir.value.trim(),
         level: form.level.value,
         max_retries: form.max_retries.value,
@@ -81,6 +90,7 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         showToast(data.msg, "成功");
         loadSettings();
         refreshNcmStatus();  // 端口修改后自动重启完成，立即刷新状态显示
+        refreshQqStatus();
     } catch (e) {
         showToast(e.message, "错误");
     }
@@ -108,6 +118,29 @@ function toggleCustomUrl() {
 }
 
 document.getElementById("use-custom-api-url").addEventListener("change", toggleCustomUrl);
+
+// QQ音乐自定义URL切换
+function toggleCustomQqUrl() {
+    const useCustom = document.getElementById("use-custom-qq-api-url").checked;
+    const customInput = document.getElementById("qq-api-url-input");
+    const builtinSection = document.getElementById("qq-builtin-section");
+
+    if (useCustom) {
+        customInput.disabled = false;
+        customInput.required = true;
+        customInput.focus();
+        builtinSection.style.opacity = "0.5";
+        builtinSection.style.pointerEvents = "none";
+    } else {
+        customInput.disabled = true;
+        customInput.required = false;
+        customInput.value = "";
+        builtinSection.style.opacity = "";
+        builtinSection.style.pointerEvents = "";
+    }
+}
+
+document.getElementById("use-custom-qq-api-url").addEventListener("change", toggleCustomQqUrl);
 
 // 初始化
 loadSettings();
@@ -208,3 +241,100 @@ document.getElementById("btn-ncm-stop").addEventListener("click", async function
 // 3s 轮询状态
 refreshNcmStatus();
 setInterval(refreshNcmStatus, 3000);
+
+// ======================================================================
+// QQ音乐API服务状态轮询与启停
+// ======================================================================
+const qqStatusBadge = document.getElementById("qq-status-badge");
+const qqStatusDetail = document.getElementById("qq-status-detail");
+
+function renderQqStatus(data) {
+    // 自定义URL模式下显示特殊状态
+    const useCustom = document.getElementById("use-custom-qq-api-url").checked;
+    const portInput = document.querySelector('[name="qq_api_port"]');
+    if (useCustom) {
+        qqStatusBadge.className = "badge bg-info";
+        qqStatusBadge.textContent = "自定义URL";
+        qqStatusDetail.textContent = "当前使用自定义API服务URL，内置服务已禁用";
+        return;
+    }
+    if (!data) {
+        qqStatusBadge.className = "badge bg-secondary";
+        qqStatusBadge.textContent = "未知";
+        qqStatusDetail.textContent = "";
+        return;
+    }
+    if (data.running) {
+        qqStatusBadge.className = "badge bg-success";
+        qqStatusBadge.textContent = "运行中";
+        // 运行中禁止修改端口
+        portInput.disabled = true;
+        portInput.title = "请先停止API服务再修改端口";
+    } else {
+        qqStatusBadge.className = "badge bg-danger";
+        qqStatusBadge.textContent = "已停止";
+        // 停止后允许修改端口
+        portInput.disabled = false;
+        portInput.title = "";
+    }
+    const parts = [];
+    if (data.port) parts.push(`端口 ${data.port}`);
+    if (data.preferred_port && data.preferred_port !== data.port) parts.push(`配置端口 ${data.preferred_port}`);
+    if (data.pid) parts.push(`PID ${data.pid}`);
+    if (data.bin_exists === false) parts.push("未找到二进制");
+    qqStatusDetail.textContent = parts.join(" · ");
+}
+
+async function refreshQqStatus() {
+    try {
+        const resp = await api("/api/qq/status", { timeout: 5000 });
+        renderQqStatus(resp.data);
+    } catch (e) {
+        // 轮询失败保持上次状态即可，不打断操作
+    }
+}
+
+document.getElementById("btn-qq-start").addEventListener("click", async function() {
+    const useCustom = document.getElementById("use-custom-qq-api-url").checked;
+    if (useCustom) {
+        showToast("自定义URL模式下不可操作内置服务", "提示");
+        return;
+    }
+    const btn = this;
+    btn.disabled = true;
+    qqStatusBadge.className = "badge bg-warning";
+    qqStatusBadge.textContent = "启动中";
+    try {
+        // 首次启动需自解压，最长可达 60s，覆盖默认 15s 超时
+        const resp = await api("/api/qq/start", { method: "POST", timeout: 70000 });
+        showToast(resp.msg, "成功");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+        refreshQqStatus();
+    }
+});
+
+document.getElementById("btn-qq-stop").addEventListener("click", async function() {
+    const useCustom = document.getElementById("use-custom-qq-api-url").checked;
+    if (useCustom) {
+        showToast("自定义URL模式下不可操作内置服务", "提示");
+        return;
+    }
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const resp = await api("/api/qq/stop", { method: "POST" });
+        showToast(resp.msg, "成功");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+        refreshQqStatus();
+    }
+});
+
+// 3s 轮询状态
+refreshQqStatus();
+setInterval(refreshQqStatus, 3000);

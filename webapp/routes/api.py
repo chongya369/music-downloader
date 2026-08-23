@@ -15,7 +15,13 @@
 - GET    /api/stats               获取统计数据（总览页用）
 - GET    /api/settings            获取配置
 - PUT    /api/settings            保存配置
-- POST   /api/test-login          测试 Cookie 是否有效
+- GET    /api/ncm/status          获取内置网易云API服务状态
+- POST   /api/ncm/start           启动内置网易云API服务
+- POST   /api/ncm/stop            停止内置网易云API服务
+- GET    /api/qq/status           获取内置QQ音乐API服务状态
+- POST   /api/qq/start            启动内置QQ音乐API服务
+- POST   /api/qq/stop             停止内置QQ音乐API服务
+- POST   /api/accounts/<id>/test  测试账号登录（netease/qq 平台）
 """
 
 import logging
@@ -26,12 +32,14 @@ from flask import Blueprint, current_app, jsonify, request, Response, session
 from sqlalchemy import func
 
 from auth import current_user, admin_required, login_required
-from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_custom_api_url, PLATFORMS, PLATFORM_NAMES
+from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for
 from core.providers.netease import NeteaseProvider
 from core.providers.netease.client import OFFICIAL_TOPLISTS
 from core.providers.netease.parse_links import parse_playlist_id
+from core.providers.qq.parse_links import parse_qq_playlist_id
 from core.providers import get_provider
 from core.providers.netease import bridge
+from core.providers.qq import bridge as qq_bridge
 
 api_bp = Blueprint("api", __name__)
 logger = logging.getLogger(__name__)
@@ -71,20 +79,25 @@ def _monthly_downloaded(account_id: int) -> int:
     ).scalar() or 0
 
 
-def _refresh_account_info(acc: Account, cookie: str | None = None) -> None:
+def _refresh_account_info(acc: Account, cookie: str | None = None) -> str:
     """刷新账号信息：昵称、会员类型、会员到期时间
 
-    仅 netease 平台支持自动刷新；QQ/酷狗等平台跳过。
+    netease / qq 平台支持自动刷新；酷狗等平台跳过。
 
     Args:
         acc: 账号对象（会被原地修改，但不 commit）
         cookie: 用指定 cookie 测试；None 时用 acc.cookie
+
+    Returns:
+        提示信息：空串=正常；非空=部分成功提示（如 QQ 昵称未取到）
     """
+    if acc.platform == "qq":
+        return _refresh_qq_account_info(acc, cookie)
     if acc.platform != "netease":
-        return  # 非网易云平台暂不支持自动刷新
+        return ""
     use_cookie = cookie if cookie is not None else (acc.cookie or "")
     if not use_cookie:
-        return
+        return ""
     try:
         client = _create_client(cookie=use_cookie)
         info = client.get_account_info()
@@ -104,6 +117,43 @@ def _refresh_account_info(acc: Account, cookie: str | None = None) -> None:
                     pass
     except Exception as e:
         logger.warning("刷新账号信息失败 (%s): %s", acc.name, e)
+    return ""
+
+
+def _refresh_qq_account_info(acc: Account, cookie: str | None = None) -> str:
+    """刷新QQ音乐账号信息（昵称、绿钻等级、到期时间）
+
+    调 QQ API /getUserInfo。cookie 无效（HTTP 400）时保留账号原有信息
+    不覆盖（避免误清空），记日志返回空提示。
+
+    Returns:
+        提示信息：空串=完全正常；非空=部分成功提示（昵称未取到，
+        Cookie 缺 eas_sid 等完整登录字段，会员信息已更新）
+    """
+    use_cookie = cookie if cookie is not None else (acc.cookie or "")
+    if not use_cookie:
+        return ""
+    try:
+        client = _create_client(cookie=use_cookie, platform="qq")
+        info = client.get_user_info()
+        if not info.get("ok"):
+            logger.warning("刷新QQ音乐账号信息失败 (%s): %s", acc.name, info.get("msg"))
+            return ""
+        acc.nickname = info.get("nickname") or ""
+        acc.vip_type = info.get("vip_type") or 0
+        expire_ts = info.get("vip_expire_ts") or 0
+        if expire_ts > 0:
+            try:
+                acc.vip_expire_at = datetime.fromtimestamp(expire_ts)
+            except (TypeError, ValueError, OSError, OverflowError):
+                acc.vip_expire_at = None
+        else:
+            acc.vip_expire_at = None
+        acc.last_check_at = datetime.now()
+        return info.get("msg") or ""
+    except Exception as e:
+        logger.warning("刷新QQ音乐账号信息失败 (%s): %s", acc.name, e)
+    return ""
 
 
 def _get_task_manager():
@@ -111,9 +161,14 @@ def _get_task_manager():
 
 
 def _create_client(cookie: str = "", platform: str = "netease") -> NeteaseProvider:
-    """创建指定平台的 Provider（返回 provider，自动应用自定义API服务URL设置）"""
+    """创建指定平台的 Provider（返回 provider，自动按平台应用 API 服务地址设置）
+
+    API 地址按平台分流：qq → use_custom_qq_api_url + qq_api_base_url
+    （为空走内置 qqmusic-api bridge）；netease → 现有自定义 API URL
+    逻辑（为空走内置 bridge）。
+    """
     p = get_provider(platform)
-    p.set_custom_base_url(get_custom_api_url())
+    p.set_custom_base_url(get_api_base_url(platform))
     if cookie:
         p.set_cookie(cookie)
     return p
@@ -194,12 +249,16 @@ def add_playlist():
     if not source:
         return jsonify({"code": 1, "msg": "请输入歌单 ID 或链接"})
 
-    pid = parse_playlist_id(source)
+    # 链接解析按平台分流（QQ disstid 与网易云 ID 均为纯数字，可共用 int 主键）
+    if platform == "qq":
+        pid = parse_qq_playlist_id(source)
+    else:
+        pid = parse_playlist_id(source)
     if pid is None:
         return jsonify({"code": 1, "msg": "无法解析歌单 ID，请检查输入"})
 
-    # 检查是否已存在
-    existing = Playlist.query.get(pid)
+    # 检查是否已存在（同平台同 ID 视为重复）
+    existing = Playlist.query.filter_by(id=pid, platform=platform).first()
     if existing:
         return jsonify({"code": 1, "msg": f"歌单已存在: {existing.name}"})
 
@@ -308,10 +367,11 @@ def get_songs():
     # download_tasks.status: done/skipped/failed/pending/downloading
     # 前端筛选 status: success/failed/skipped
     # 映射：success → done, skipped → skipped, failed → failed
+    # JOIN 补 platform 条件：两平台并存后防止跨平台 song_id 撞号导致文件信息张冠李戴
     query = db.session.query(
         DownloadTask, Song
     ).outerjoin(
-        Song, DownloadTask.song_id == Song.id
+        Song, db.and_(DownloadTask.song_id == Song.id, DownloadTask.platform == Song.platform)
     )
 
     if status:
@@ -473,6 +533,10 @@ def save_settings():
         if bridge.get_bridge()._is_alive():
             return jsonify({"code": 1,
                             "msg": "API服务运行中，请先停止服务再修改端口"}), 400
+    if str(data.get("qq_api_port", "")) != Setting.get("qq_api_port", ""):
+        if qq_bridge.get_bridge()._is_alive():
+            return jsonify({"code": 1,
+                            "msg": "QQ音乐API服务运行中，请先停止服务再修改端口"}), 400
 
     port_changed = False
     for key, value in data.items():
@@ -518,6 +582,32 @@ def ncm_stop():
 
 
 # ======================================================================
+# 内置 API 服务（qqmusic-api）控制
+# ======================================================================
+@api_bp.route("/qq/status")
+def qq_status():
+    """获取内置 QQ音乐API 服务状态"""
+    return jsonify({"code": 0, "data": qq_bridge.get_bridge().status()})
+
+
+@api_bp.route("/qq/start", methods=["POST"])
+def qq_start():
+    """启动内置 QQ音乐API 服务（幂等）"""
+    try:
+        url = qq_bridge.get_bridge().start()
+        return jsonify({"code": 0, "msg": "QQ音乐API服务已启动", "data": {"base_url": url}})
+    except RuntimeError as e:
+        return jsonify({"code": 1, "msg": str(e)}), 500
+
+
+@api_bp.route("/qq/stop", methods=["POST"])
+def qq_stop():
+    """停止内置 QQ音乐API 服务（幂等）"""
+    qq_bridge.get_bridge().stop()
+    return jsonify({"code": 0, "msg": "QQ音乐API服务已停止"})
+
+
+# ======================================================================
 # 账号管理（多账号）
 # ======================================================================
 @api_bp.route("/accounts")
@@ -544,7 +634,7 @@ def add_account():
 
     请求体：{"platform", "name", "cookie", "quota_limit"}
     platform: netease(网易云,默认) / qq(QQ音乐) / kugou(酷狗音乐)
-    网易云添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
+    网易云/QQ添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
     """
     data = request.get_json(force=True)
     platform = data.get("platform", "netease").strip() or "netease"
@@ -557,10 +647,13 @@ def add_account():
     if not name:
         return jsonify({"code": 1, "msg": "请填写账号别名"})
 
-    # 网易云要求 Cookie 含 MUSIC_U；其他平台暂不强校验
+    # 网易云要求 Cookie 含 MUSIC_U；QQ 要求 Cookie 含 uin；其他平台暂不强校验
     if platform == "netease":
         if not cookie or "MUSIC_U" not in cookie:
             return jsonify({"code": 1, "msg": "Cookie 必须包含 MUSIC_U"})
+    if platform == "qq":
+        if not cookie or "uin" not in cookie:
+            return jsonify({"code": 1, "msg": "Cookie 必须包含 uin"})
 
     # 新账号的 sort_order = 当前平台内最大值 + 1
     max_order = db.session.query(db.func.max(Account.sort_order)).filter(
@@ -573,20 +666,24 @@ def add_account():
         quota_limit=quota_limit,
         sort_order=max_order + 1,
         enabled=True,
-        last_check_at=datetime.now() if platform == "netease" else None,
+        last_check_at=datetime.now() if platform in ("netease", "qq") else None,
     )
-    # 网易云自动刷新账号信息
-    if platform == "netease":
-        _refresh_account_info(acc, cookie=cookie)
+    # 网易云/QQ自动刷新账号信息
+    refresh_hint = ""
+    if platform in ("netease", "qq"):
+        refresh_hint = _refresh_account_info(acc, cookie=cookie)
     db.session.add(acc)
     db.session.commit()
     platform_name = PLATFORM_NAMES.get(platform, platform)
     extra = f" ({acc.nickname})" if acc.nickname else ""
     logger.info("添加账号: [%s] %s (nickname=%s, vip=%s, sort_order=%d)", platform_name, name, acc.nickname, acc.vip_type, acc.sort_order)
+    msg = f"已添加: [{platform_name}] {name}" + extra
+    if refresh_hint:
+        msg += f"；{refresh_hint}"
     return jsonify({
         "code": 0,
         "data": acc.to_dict(monthly_downloaded=0),
-        "msg": f"已添加: [{platform_name}] {name}" + extra,
+        "msg": msg,
     })
 
 
@@ -766,11 +863,14 @@ def export_accounts():
 def test_account_login(aid: int):
     """测试指定账号的登录状态，并刷新会员信息
 
-    仅 netease 平台支持自动登录测试；其他平台返回暂不支持。
+    netease / qq 平台支持登录测试；其他平台返回暂不支持。
     """
     acc = Account.query.get(aid)
     if not acc:
         return jsonify({"code": 1, "msg": "账号不存在"})
+
+    if acc.platform == "qq":
+        return _test_qq_account_login(acc)
 
     if acc.platform != "netease":
         return jsonify({
@@ -786,7 +886,7 @@ def test_account_login(aid: int):
         # 刷新昵称/会员类型/到期时间
         _refresh_account_info(acc)
         db.session.commit()
-        vip_text = {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}.get(acc.vip_type, f"vipType={acc.vip_type}")
+        vip_text = vip_text_for(acc.platform, acc.vip_type)
         return jsonify({
             "code": 0,
             "msg": f"登录成功: {acc.nickname or '未知'} ({vip_text})",
@@ -794,6 +894,30 @@ def test_account_login(aid: int):
         })
     except Exception as e:
         return jsonify({"code": 1, "msg": f"连接网易云API服务失败: {e}"})
+
+
+def _test_qq_account_login(acc: Account) -> Response:
+    """QQ音乐账号登录测试（调 /getUserInfo 并刷新会员信息）"""
+    try:
+        client = _create_client(cookie=acc.cookie, platform="qq")
+        info = client.get_user_info()
+        if not info.get("ok"):
+            return jsonify({"code": 1, "msg": f"Cookie 无效: {info.get('msg', '未知错误')}"})
+        # 刷新昵称/绿钻等级/到期时间
+        hint = _refresh_qq_account_info(acc)
+        db.session.commit()
+        vip_text = vip_text_for(acc.platform, acc.vip_type)
+        nickname = acc.nickname or "未知"
+        msg = f"登录成功: {nickname} ({vip_text})"
+        if hint:
+            msg += f"；{hint}"
+        return jsonify({
+            "code": 0,
+            "msg": msg,
+            "data": acc.to_dict(monthly_downloaded=_monthly_downloaded(acc.id)),
+        })
+    except Exception as e:
+        return jsonify({"code": 1, "msg": f"连接QQ音乐API服务失败: {e}"})
 
 
 @api_bp.route("/accounts/stats")
@@ -809,7 +933,7 @@ def accounts_stats():
             "platform_name": PLATFORM_NAMES.get(acc.platform, acc.platform),
             "name": acc.name,
             "nickname": acc.nickname,
-            "vip_text": {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}.get(acc.vip_type, f"vipType={acc.vip_type}"),
+            "vip_text": vip_text_for(acc.platform, acc.vip_type),
             "vip_expire_at": acc.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S") if acc.vip_expire_at else None,
             "monthly_downloaded": downloaded,
             "quota_limit": acc.quota_limit,
@@ -900,6 +1024,7 @@ def discover_search():
     """
     data = request.get_json(force=True) or {}
     keyword = (data.get("keyword") or "").strip()
+    platform = _req_platform()
     search_type = (data.get("type") or "song").strip()
     if search_type not in ("song", "artist", "album"):
         search_type = "song"
@@ -910,7 +1035,7 @@ def discover_search():
         return jsonify({"code": 1, "msg": "请输入搜索关键词"})
 
     try:
-        client = _get_client(_req_platform())
+        client = _get_client(platform)
         if search_type == "album":
             res = client.search_albums(keyword, limit=limit, offset=offset)
             items = res.get("items", [])
@@ -935,17 +1060,18 @@ def discover_search():
         logger.exception("搜索失败: %s", e)
         return jsonify({"code": 1, "msg": str(e)})
 
-    # 标记已下载/进行中（仅歌曲模式需要）
+    # 标记已下载/进行中（仅歌曲模式需要；song_id 统一 str + platform 维度查询）
     with db.session.no_autoflush:
         downloaded_ids = set()
         if items:
-            ids = [t["id"] for t in items if t.get("id")]
+            ids = [str(t["id"]) for t in items if t.get("id")]
             rows = db.session.query(Song.id).filter(
-                Song.id.in_(ids), Song.status == "success"
+                Song.id.in_(ids), Song.platform == platform, Song.status == "success"
             ).all()
             downloaded_ids = {r[0] for r in rows}
             pending_rows = db.session.query(DownloadTask.song_id).filter(
                 DownloadTask.song_id.in_(ids),
+                DownloadTask.platform == platform,
                 DownloadTask.status.in_(["pending", "downloading"]),
             ).all()
             downloaded_ids |= {r[0] for r in pending_rows}
@@ -994,18 +1120,19 @@ def discover_search_download():
 def discover_album_download():
     """下载专辑内全部歌曲（应用搜索场景的排除过滤）
 
-    请求体：{"album_id":123, "album_name":"范特西"}
+    请求体：{"album_id":"123" 或 "0041WVfh2vtlJE", "album_name":"范特西", "platform":...}
+    album_id 字符串透传：netease 为数字 ID，QQ 为 albummid（非数字字符串）
     返回：{"code":0, "data":{"enqueued","excluded","skipped","total"}, "msg":"..."}
     """
     data = request.get_json(force=True) or {}
-    album_id = data.get("album_id")
+    album_id = (data.get("album_id") or "").strip() or None
     album_name = (data.get("album_name") or "").strip()
     if not album_id:
         return jsonify({"code": 1, "msg": "缺少 album_id"})
 
     tm = _get_task_manager()
     try:
-        result = tm.download_album(int(album_id), album_name, platform=_req_platform())
+        result = tm.download_album(album_id, album_name, platform=_req_platform())
     except ValueError as e:
         return jsonify({"code": 1, "msg": str(e)})
     msg = f"专辑共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，跳过 {result['skipped']}"
@@ -1016,10 +1143,12 @@ def discover_album_download():
 def discover_download_song():
     """下载单首歌曲（用户主动选择，不应用排除过滤）
 
-    请求体：{"song_id":123, "name":"...", "artists":"...", "fee":0}
+    请求体：{"song_id":"123" 或 "003rJSwm3TechU", "name":"...", "artists":"...", "fee":0, "platform":...}
+    song_id 字符串透传：netease 为数字 ID，QQ 为 songmid（非数字字符串）
     """
     data = request.get_json(force=True) or {}
     song_id = data.get("song_id")
+    song_id = str(song_id).strip() if song_id is not None else ""
     name = (data.get("name") or "").strip()
     artists = (data.get("artists") or "").strip()
     fee = _safe_int(data.get("fee", 0), 0, lo=0, hi=100)
@@ -1027,7 +1156,7 @@ def discover_download_song():
         return jsonify({"code": 1, "msg": "缺少 song_id"})
 
     tm = _get_task_manager()
-    ok = tm.download_single_song(int(song_id), name, artists, fee, platform=_req_platform())
+    ok = tm.download_single_song(song_id, name, artists, fee, platform=_req_platform())
     if ok:
         return jsonify({"code": 0, "msg": f"已加入下载队列: {name}"})
     return jsonify({"code": 1, "msg": "该歌曲已下载或正在下载中"})

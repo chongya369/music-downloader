@@ -5,10 +5,12 @@
 """
 
 from .netease import NeteaseProvider
+from .qq import QqProvider
 
 # 已知平台注册表
 _KNOWN_PROVIDERS = {
     "netease": NeteaseProvider,
+    "qq": QqProvider,
 }
 
 

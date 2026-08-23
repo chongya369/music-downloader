@@ -26,11 +26,23 @@ PLATFORM_NAMES = {
 }
 
 
+def vip_text_for(platform: str, vip_type: int) -> str:
+    """会员类型文本（按平台区分）
+
+    - netease: 0=非会员, 11=黑胶VIP, 12=SVIP
+    - qq: 0=非会员, 1-8=绿钻VIP等级
+    - 其他平台: 透传数字
+    """
+    if platform == "qq":
+        return f"绿钻VIP Lv.{vip_type}" if vip_type > 0 else "非会员"
+    return {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}.get(vip_type, f"vipType={vip_type}")
+
+
 class Account(db.Model):
     """多平台账号
 
     platform: netease(网易云) / qq(QQ音乐) / kugou(酷狗音乐)
-    vip_type: 0=非会员, 11=黑胶VIP, 12=SVIP（网易云语义，其他平台待定）
+    vip_type: 网易云 0=非会员/11=黑胶VIP/12=SVIP；QQ 0=非会员/1-8=绿钻等级
     quota_limit: 总额度，0=不限制
     vip_expire_at: 会员到期时间（来自 API，可能为空）
     sort_order: 使用顺序（升序），账号选择器按此排序（按平台独立）
@@ -57,7 +69,7 @@ class Account(db.Model):
             "name": self.name,
             "nickname": self.nickname,
             "vip_type": self.vip_type,
-            "vip_text": {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}.get(self.vip_type, f"vipType={self.vip_type}"),
+            "vip_text": vip_text_for(self.platform, self.vip_type),
             "vip_expire_at": self.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S") if self.vip_expire_at else None,
             "quota_limit": self.quota_limit,
             "sort_order": self.sort_order,
@@ -108,9 +120,10 @@ class Song(db.Model):
 
     status: success / failed / skipped
     platform: 平台标识（netease / qq / kugou）
+    id: 平台歌曲 ID（netease 为数字 ID 字符串，QQ 为 songmid 字符串）
     """
     __tablename__ = "songs"
-    id = db.Column(db.Integer, primary_key=True)           # 平台歌曲 ID
+    id = db.Column(db.String(64), primary_key=True)        # 平台歌曲 ID（统一 str）
     platform = db.Column(db.String(20), default="netease", nullable=False)
     name = db.Column(db.String(300), nullable=False)
     artists = db.Column(db.String(300), default="")
@@ -159,7 +172,7 @@ class DownloadTask(db.Model):
     __tablename__ = "download_tasks"
     pk = db.Column(db.Integer, primary_key=True, autoincrement=True)
     platform = db.Column(db.String(20), default="netease", nullable=False)
-    song_id = db.Column(db.Integer, nullable=False)
+    song_id = db.Column(db.String(64), nullable=False)      # 平台歌曲 ID（统一 str）
     song_name = db.Column(db.String(300), default="")
     artists = db.Column(db.String(300), default="")
     playlist_id = db.Column(db.Integer, nullable=True)
@@ -257,6 +270,12 @@ DEFAULT_SETTINGS = {
     # 自定义API服务URL（勾选 use_custom_api_url 时生效）
     "use_custom_api_url": "false",
     "custom_api_url": "",
+    # QQ音乐API服务相关（内置 qqmusic-api 二进制）
+    "qq_api_auto_start": "false",
+    "qq_api_port": "45602",
+    # QQ音乐自定义API服务URL（勾选 use_custom_qq_api_url 时生效）
+    "use_custom_qq_api_url": "false",
+    "qq_api_base_url": "http://127.0.0.1:45602",
     # Web 服务监听地址（host:port，* 表示监听所有网卡）
     "web_port": "*:45600",
     "output_dir": "downloads",
@@ -294,9 +313,131 @@ def get_custom_api_url() -> str:
     return Setting.get("custom_api_url", "").rstrip("/")
 
 
+def get_qq_custom_api_url() -> str:
+    """读取QQ音乐自定义API服务URL（需在 app context 内调用）
+
+    未勾选 use_custom_qq_api_url 时返回空串（走内置 qqmusic-api bridge）。
+    反环硬约束：此函数不得 import core.providers.*。
+    """
+    if Setting.get("use_custom_qq_api_url", "false") != "true":
+        return ""
+    return Setting.get("qq_api_base_url", "").rstrip("/")
+
+
+def get_api_base_url(platform: str) -> str:
+    """按平台读取 API 服务地址（需在 app context 内调用）
+
+    返回空串表示走平台内置 bridge：
+    - qq：use_custom_qq_api_url 勾选时返回 qq_api_base_url，否则空（内置服务）
+    - 其他（netease 等）：沿用网易云自定义 API 逻辑（含 use_custom_api_url
+      开关，为空时走内置 bridge）
+
+    反环硬约束：此函数不得 import core.providers.*。
+    """
+    if platform == "qq":
+        return get_qq_custom_api_url()
+    return get_custom_api_url()
+
+
 def _column_exists(inspector, table: str, column: str) -> bool:
     """检查某列是否已存在（用于 ALTER TABLE 迁移）"""
     return column in {c["name"] for c in inspector.get_columns(table)}
+
+
+def _column_is_integer(inspector, table: str, column: str) -> bool:
+    """检查某列是否为 INTEGER 类型（用于触发表重建迁移）"""
+    if not inspector.has_table(table):
+        return False
+    for c in inspector.get_columns(table):
+        if c["name"] == column:
+            return "INTEGER" in str(c["type"]).upper()
+    return False
+
+
+def _migrate_song_ids_to_text(engine) -> None:
+    """songs.id / download_tasks.song_id 列 Integer → VARCHAR(64)（SQLite 表重建迁移）
+
+    QQ 音乐歌曲 ID（songmid）为字符串（如 003rJSwm3TechU），数据库需以文本存储；
+    且 SQLite 中 INTEGER 值与 TEXT 值不相等，旧数字 id 必须 CAST 为 TEXT 才能被
+    str 化后的查询命中。SQLite 不支持 ALTER COLUMN，采用建新表 → 复制 → 删旧表
+    → 改名，单事务执行，失败整体回滚。新库由 create_all 直接建出 VARCHAR 列，
+    本迁移自动跳过。必须在补列迁移（platform/account_id 等）之后执行。
+    """
+    inspector = inspect(engine)
+
+    if _column_is_integer(inspector, "songs", "id"):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE songs_new (
+                    id VARCHAR(64) NOT NULL,
+                    platform VARCHAR(20) DEFAULT 'netease' NOT NULL,
+                    name VARCHAR(300) NOT NULL,
+                    artists VARCHAR(300),
+                    album VARCHAR(300),
+                    duration_ms INTEGER,
+                    quality VARCHAR(20),
+                    file_path VARCHAR(500),
+                    file_size INTEGER,
+                    playlist_id INTEGER,
+                    downloaded_at DATETIME,
+                    status VARCHAR(20),
+                    error_msg VARCHAR(500),
+                    source_name VARCHAR(200),
+                    account_id INTEGER,
+                    PRIMARY KEY (id),
+                    FOREIGN KEY(playlist_id) REFERENCES playlists (id)
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO songs_new
+                    (id, platform, name, artists, album, duration_ms, quality,
+                     file_path, file_size, playlist_id, downloaded_at, status,
+                     error_msg, source_name, account_id)
+                SELECT CAST(id AS TEXT), platform, name, artists, album, duration_ms,
+                       quality, file_path, file_size, playlist_id, downloaded_at,
+                       status, error_msg, source_name, account_id
+                FROM songs
+            """))
+            conn.execute(text("DROP TABLE songs"))
+            conn.execute(text("ALTER TABLE songs_new RENAME TO songs"))
+        print("[init_db] songs.id 已迁移为 VARCHAR(64)（song_id 字符串化）")
+
+    # 重新 inspect（上一张表的结构变更已生效）
+    inspector = inspect(engine)
+    if _column_is_integer(inspector, "download_tasks", "song_id"):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE download_tasks_new (
+                    pk INTEGER NOT NULL,
+                    platform VARCHAR(20) DEFAULT 'netease' NOT NULL,
+                    song_id VARCHAR(64) NOT NULL,
+                    song_name VARCHAR(300),
+                    artists VARCHAR(300),
+                    playlist_id INTEGER,
+                    playlist_name VARCHAR(200),
+                    status VARCHAR(20),
+                    progress INTEGER,
+                    error_msg VARCHAR(500),
+                    account_id INTEGER,
+                    fee INTEGER,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    PRIMARY KEY (pk)
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO download_tasks_new
+                    (pk, platform, song_id, song_name, artists, playlist_id,
+                     playlist_name, status, progress, error_msg, account_id, fee,
+                     created_at, updated_at)
+                SELECT pk, platform, CAST(song_id AS TEXT), song_name, artists,
+                       playlist_id, playlist_name, status, progress, error_msg,
+                       account_id, fee, created_at, updated_at
+                FROM download_tasks
+            """))
+            conn.execute(text("DROP TABLE download_tasks"))
+            conn.execute(text("ALTER TABLE download_tasks_new RENAME TO download_tasks"))
+        print("[init_db] download_tasks.song_id 已迁移为 VARCHAR(64)（song_id 字符串化）")
 
 
 def init_db(app, db_path: str = "downloads.db") -> None:
@@ -333,6 +474,9 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         if inspector.has_table("playlists") and not _column_exists(inspector, "playlists", "platform"):
             with db.engine.begin() as conn:
                 conn.execute(text("ALTER TABLE playlists ADD COLUMN platform VARCHAR(20) DEFAULT 'netease' NOT NULL"))
+        # 兼容迁移：songs.id / download_tasks.song_id Integer → VARCHAR(64)
+        # （QQ songmid 字符串化，须在上述补列迁移之后执行）
+        _migrate_song_ids_to_text(db.engine)
         # 更新历史数据：确保所有记录都有正确的平台标记
         if inspector.has_table("songs") and _column_exists(inspector, "songs", "platform"):
             with db.engine.begin() as conn:

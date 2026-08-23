@@ -25,7 +25,7 @@ from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func
 
-from models import Account, DownloadTask, Playlist, Setting, Song, db, get_custom_api_url
+from models import Account, DownloadTask, Playlist, Setting, Song, db, get_api_base_url
 from core.downloader import Downloader, build_filename, sanitize_filename
 from core.metadata import write_tags
 from core.providers.netease import NeteaseProvider
@@ -396,13 +396,14 @@ class TaskManager:
     def _get_client_for_account(self, account: Account) -> NeteaseProvider:
         """用指定账号的 cookie 创建 provider（仅用已传入 cookie，不查库）
 
-        P1 薄包装：返回已注入凭证与自定义地址的 provider。
-        按账号所属平台分发，避免不同平台请求互相串用。
+        P1 薄包装：返回已注入凭证与 API 地址的 provider。
+        按账号所属平台分发（API 地址按平台分流：qq → 自定义URL或内置
+        qqmusic-api bridge；netease → 自定义URL或内置 bridge）。
         """
         p = get_provider(account.platform or "netease")
         p.set_cookie(account.cookie or "")
         with self.app.app_context():
-            p.set_custom_base_url(get_custom_api_url())
+            p.set_custom_base_url(get_api_base_url(account.platform or "netease"))
         return p
 
     def _get_client_default(self, platform: str = "netease") -> NeteaseProvider:
@@ -411,11 +412,13 @@ class TaskManager:
         用于同步歌单等公开接口。无启用账号时用空 cookie。
         此函数被调度线程调用（_sync_all_playlists 等），后台线程无 request
         context，Account.query 必须包 app_context。
+        API 地址按平台分流：qq → 自定义URL或内置 qqmusic-api bridge；
+        netease → 自定义 API/内置 bridge。
         """
         with self.app.app_context():
             acc = Account.query.filter_by(platform=platform, enabled=True).order_by(Account.sort_order, Account.id).first()
             cookie = acc.cookie if acc else ""
-            custom_url = get_custom_api_url()
+            custom_url = get_api_base_url(platform)
         p = get_provider(platform)
         p.set_cookie(cookie or "")
         p.set_custom_base_url(custom_url)
@@ -484,8 +487,8 @@ class TaskManager:
             new_tracks = []
             excluded_count = 0
             for t in tracks:
-                sid = t["id"]
-                existing = Song.query.filter_by(id=sid, status="success").first()
+                sid = str(t["id"])
+                existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
                 if existing:
                     # 已下载：在当前歌单记录一条"已下载"任务（不重复下载）
                     already = DownloadTask.query.filter_by(
@@ -507,6 +510,7 @@ class TaskManager:
                     continue
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
+                    DownloadTask.platform == platform,
                     DownloadTask.status.in_(["pending", "downloading"]),
                 ).first()
                 if pending:
@@ -521,7 +525,7 @@ class TaskManager:
             for t in new_tracks:
                 task = DownloadTask(
                     platform=platform,
-                    song_id=t["id"],
+                    song_id=str(t["id"]),
                     song_name=t["name"],
                     artists=t.get("artists", ""),
                     playlist_id=playlist_id,
@@ -649,7 +653,7 @@ class TaskManager:
 
         with self.app.app_context():
             for t in tracks:
-                sid = t.get("id")
+                sid = str(t["id"]) if t.get("id") else ""
                 if not sid:
                     continue
                 # 排除关键字过滤（仅当 scope 包含 search 时）
@@ -658,13 +662,14 @@ class TaskManager:
                     logger.info("搜索下载跳过(命中排除关键字): %s - %s", t.get("artists", ""), t.get("name", ""))
                     continue
                 # 过滤已下载成功
-                existing = Song.query.filter_by(id=sid, status="success").first()
+                existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
                 if existing:
                     skipped += 1
                     continue
                 # 过滤进行中任务
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
+                    DownloadTask.platform == platform,
                     DownloadTask.status.in_(["pending", "downloading"]),
                 ).first()
                 if pending:
@@ -691,11 +696,11 @@ class TaskManager:
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
 
-    def download_album(self, album_id: int, album_name: str = "", platform: str = "netease") -> dict:
+    def download_album(self, album_id: str, album_name: str = "", platform: str = "netease") -> dict:
         """下载专辑内全部歌曲（应用搜索场景排除过滤）
 
         Args:
-            album_id: 专辑 ID
+            album_id: 专辑 ID（str：netease 为数字 ID，QQ 为 albummid 字符串）
             album_name: 专辑名（用于任务记录）
             platform: 平台标识，默认 netease
 
@@ -716,7 +721,7 @@ class TaskManager:
 
         with self.app.app_context():
             for t in tracks:
-                sid = t.get("id")
+                sid = str(t["id"]) if t.get("id") else ""
                 if not sid:
                     continue
                 # 排除关键字过滤（与搜索下载一致，受 search 场景配置控制）
@@ -724,12 +729,13 @@ class TaskManager:
                     excluded += 1
                     logger.info("专辑下载跳过(命中排除关键字): %s - %s", t.get("artists", ""), t.get("name", ""))
                     continue
-                existing = Song.query.filter_by(id=sid, status="success").first()
+                existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
                 if existing:
                     skipped += 1
                     continue
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
+                    DownloadTask.platform == platform,
                     DownloadTask.status.in_(["pending", "downloading"]),
                 ).first()
                 if pending:
@@ -756,11 +762,11 @@ class TaskManager:
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
 
-    def download_single_song(self, song_id: int, name: str, artists: str, fee: int = 0, platform: str = "netease") -> bool:
+    def download_single_song(self, song_id: str, name: str, artists: str, fee: int = 0, platform: str = "netease") -> bool:
         """下载单首歌曲（用户主动选择，不应用排除过滤）
 
         Args:
-            song_id: 歌曲ID
+            song_id: 歌曲ID（str：netease 为数字 ID，QQ 为 songmid 字符串）
             name: 歌曲名
             artists: 歌手名
             fee: 费用类型（0=免费 1=VIP 4=购买专辑 8=低音质免费）
@@ -769,12 +775,14 @@ class TaskManager:
         Returns:
             True=已入队，False=已存在或失败
         """
+        song_id = str(song_id)
         with self.app.app_context():
-            existing = Song.query.filter_by(id=song_id, status="success").first()
+            existing = Song.query.filter_by(id=song_id, platform=platform, status="success").first()
             if existing:
                 return False
             pending = DownloadTask.query.filter(
                 DownloadTask.song_id == song_id,
+                DownloadTask.platform == platform,
                 DownloadTask.status.in_(["pending", "downloading"]),
             ).first()
             if pending:
@@ -798,21 +806,35 @@ class TaskManager:
     # ------------------------------------------------------------------
     # 重试
     # ------------------------------------------------------------------
-    def retry_failed(self, song_ids: list[int] | None = None) -> int:
+    def retry_failed(self, song_ids: list[str] | None = None) -> int:
         with self.app.app_context():
             query = Song.query.filter_by(status="failed")
             if song_ids:
-                query = query.filter(Song.id.in_(song_ids))
+                query = query.filter(Song.id.in_([str(s) for s in song_ids]))
             failed_songs = query.all()
 
             count = 0
             for song in failed_songs:
+                platform = song.platform or "netease"
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == song.id,
+                    DownloadTask.platform == platform,
                     DownloadTask.status.in_(["pending", "downloading"]),
                 ).first()
                 if pending:
                     continue
+                # 删除该(歌曲,平台,歌单)的旧失败/跳过记录，重试后只保留最新一条
+                # （下载历史按 download_tasks 展示，旧失败行不删会与新建任务并存）
+                deleting = DownloadTask.query.filter(
+                    DownloadTask.song_id == song.id,
+                    DownloadTask.platform == platform,
+                    DownloadTask.status.in_(["failed", "skipped"]),
+                )
+                if song.playlist_id is not None:
+                    deleting = deleting.filter(DownloadTask.playlist_id == song.playlist_id)
+                else:
+                    deleting = deleting.filter(DownloadTask.playlist_id.is_(None))
+                deleting.delete(synchronize_session=False)
                 task = DownloadTask(
                     platform=song.platform or "netease",
                     song_id=song.id,
@@ -921,7 +943,7 @@ class TaskManager:
         self,
         task_pk: int,
         account: Account,
-        sid: int,
+        sid: str,
         sname: str,
         artists: str,
         pl_id: int | None,
@@ -951,8 +973,8 @@ class TaskManager:
         if not url:
             reason = "试听片段" if url_info.get("is_trial") else "无版权或需VIP"
             if switch_on_fail:
-                # 接力模式：切换下一个账号
-                next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee)
+                # 接力模式：切换下一个账号（限定同平台账号池，避免跨平台切号）
+                next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee, platform=account.platform or "netease")
                 if next_acc and next_acc.id != account.id:
                     logger.info("账号 %s 失败(%s)，切换到 %s 重试", account.name, reason, next_acc.name)
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
@@ -977,9 +999,12 @@ class TaskManager:
         if write_lyric:
             lyric = client.get_lyric(str(sid)).get("lrc", "")
 
-        # 取主歌手作为下载子目录（多歌手取第一个，文件名仍保留全部歌手）
-        primary_artist = meta.get("artist", "群星")
-        primary_artist = sanitize_filename(primary_artist) if primary_artist.strip() else "群星"
+        # 取主歌手作为下载子目录（多歌手取第一个，文件名仍保留全部歌手）。
+        # meta.artist 为空时回退任务记录的 artists 首个歌手：
+        # QQ 无单曲详情接口（meta 为空占位），不回退会导致全部落入 群星/ 目录
+        primary_artist = (meta.get("artist") or "").strip() \
+            or (artists.split("/")[0].strip() if artists else "")
+        primary_artist = sanitize_filename(primary_artist) if primary_artist else "群星"
 
         # 下载文件
         downloader = self._get_downloader()
@@ -1018,7 +1043,7 @@ class TaskManager:
 
         if not path:
             if switch_on_fail:
-                next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee)
+                next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee, platform=account.platform or "netease")
                 if next_acc and next_acc.id != account.id:
                     logger.info("账号 %s 下载失败，切换到 %s 重试", account.name, next_acc.name)
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
@@ -1044,7 +1069,7 @@ class TaskManager:
 
         # 标记成功（记录 account_id 用于额度统计）
         with self.app.app_context():
-            Song.query.filter_by(id=sid, status="failed").delete()
+            Song.query.filter_by(id=sid, platform=account.platform, status="failed").delete()
             song = Song(
                 id=sid,
                 platform=account.platform,
@@ -1073,7 +1098,7 @@ class TaskManager:
     def _mark_failed(
         self,
         task_pk: int,
-        sid: int,
+        sid: str,
         name: str,
         artists: str,
         pl_id: int | None,
@@ -1088,7 +1113,7 @@ class TaskManager:
             platform: 平台标识，默认 netease
         """
         with self.app.app_context():
-            Song.query.filter_by(id=sid).delete()
+            Song.query.filter_by(id=sid, platform=platform).delete()
             song = Song(
                 id=sid,
                 platform=platform,

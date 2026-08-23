@@ -224,7 +224,8 @@ function renderTable(list) {
 
         const isFirst = idx === 0;
         const isLast = idx === list.length - 1;
-        const testBtn = a.platform === "netease"
+        const testable = a.platform === "netease" || a.platform === "qq";
+        const testBtn = testable
             ? `<button class="btn btn-sm btn-outline-success btn-test" data-id="${a.id}">
                    <i class="bi bi-check2-all"></i> 测试
                </button>`
@@ -370,7 +371,7 @@ document.getElementById("add-platform").addEventListener("change", function() {
     if (platform === "netease") {
         hint.textContent = "网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U";
     } else if (platform === "qq") {
-        hint.textContent = "QQ音乐：暂不支持自动登录，Cookie 将保存备用";
+        hint.textContent = "QQ音乐：浏览器登录 y.qq.com → F12 → Network → 任选 y.qq.com 请求 → 复制完整 Cookie（须含 uin，昵称还需 eas_sid）";
     } else {
         hint.textContent = "酷狗音乐：暂不支持自动登录，Cookie 将保存备用";
     }

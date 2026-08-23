@@ -665,7 +665,7 @@ function bindSingleDownload() {
             try {
                 const data = await api("/api/discover/download-song", {
                     method: "POST",
-                    body: JSON.stringify({ song_id: parseInt(songId), name, artists, fee, platform: _currentPlatform }),
+                    body: JSON.stringify({ song_id: songId, name, artists, fee, platform: _currentPlatform }),
                 });
                 showToast(data.msg, "下载");
                 // 更新按钮状态
@@ -698,7 +698,7 @@ function bindAlbumDownload() {
             try {
                 const data = await api("/api/discover/album-download", {
                     method: "POST",
-                    body: JSON.stringify({ album_id: parseInt(albumId), album_name: albumName, platform: _currentPlatform }),
+                    body: JSON.stringify({ album_id: albumId, album_name: albumName, platform: _currentPlatform }),
                 });
                 showToast(data.msg, "专辑下载");
                 this.className = "btn btn-sm btn-secondary btn-dl-album";

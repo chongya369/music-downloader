@@ -13,7 +13,10 @@ from models import User, db, PLATFORM_NAMES
 views_bp = Blueprint("views", __name__)
 
 # 当前已实现的前端可用平台（配置驱动，后续新增平台在此追加即可）
-AVAILABLE_PLATFORMS = [{"key": "netease", "name": "网易云", "icon": "music-note-beamed"}]
+AVAILABLE_PLATFORMS = [
+    {"key": "netease", "name": "网易云", "icon": "music-note-beamed"},
+    {"key": "qq", "name": "QQ音乐", "icon": "music-note-list"},
+]
 
 
 # ======================================================================

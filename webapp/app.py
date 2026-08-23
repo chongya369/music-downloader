@@ -28,6 +28,7 @@ from flask import Flask
 from models import init_db, Setting
 from task_manager import TaskManager
 from core.providers.netease import bridge
+from core.providers.qq import bridge as qq_bridge
 from routes.api import api_bp
 from routes.views import views_bp
 from version import get_version
@@ -112,16 +113,29 @@ def main() -> None:
             ncm_api_port = int(Setting.get("ncm_api_port", "45601"))
         except (TypeError, ValueError):
             ncm_api_port = 45601
+        qq_auto_start = Setting.get("qq_api_auto_start", "false") == "true"
+        try:
+            qq_api_port = int(Setting.get("qq_api_port", "45602"))
+        except (TypeError, ValueError):
+            qq_api_port = 45602
     ncm_bridge = bridge.get_bridge(auto_start=auto_start, port=ncm_api_port)
     # atexit 注册必须写在 main() 内（此时单例已用真实 auto_start 创建）；
     # 若放模块顶层会在 import 时以默认 auto_start=True 先建单例，忽略用户配置
     atexit.register(ncm_bridge.stop)
+    qq_bridge_inst = qq_bridge.get_bridge(auto_start=qq_auto_start, port=qq_api_port)
+    atexit.register(qq_bridge_inst.stop)
     if ncm_bridge.auto_start:
         try:
             ncm_bridge.start()
             logger.info("网易云API服务就绪: %s", ncm_bridge.base_url)
         except RuntimeError as e:
             logger.warning("网易云API服务启动失败: %s", e)
+    if qq_bridge_inst.auto_start:
+        try:
+            qq_bridge_inst.start()
+            logger.info("QQ音乐API服务就绪: %s", qq_bridge_inst.base_url)
+        except RuntimeError as e:
+            logger.warning("QQ音乐API服务启动失败: %s", e)
     task_manager.start()
     logger.info("=" * 50)
     logger.info("Deen音乐下载器 Web 服务启动 (v%s)", __version__)
@@ -132,6 +146,7 @@ def main() -> None:
     finally:
         task_manager.stop()
         ncm_bridge.stop()          # 主程序退出 -> 自动关闭 API 服务
+        qq_bridge_inst.stop()      # 主程序退出 -> 自动关闭 QQ音乐API 服务
 
 
 if __name__ == "__main__":

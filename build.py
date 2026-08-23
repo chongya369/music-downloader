@@ -14,8 +14,9 @@
 注意：PyInstaller 不支持交叉编译，Linux 产物必须在 Linux 上构建，
 Windows 产物必须在 Windows 上构建。
 
-打包后用户需手动把 api 二进制（ncm-api-win-x64.exe / ncm-api-linux-x64）
-放到 dist/NeteaseMusicDownloader/api/ 目录。
+打包后用户需手动把 api 二进制（ncm-api-win-x64.exe / ncm-api-linux-x64 与
+qqmusic-api-win-x64.exe / qqmusic-api-linux-x64）放到
+dist/music_downloader/api/ 目录。
 """
 
 import shutil
@@ -55,9 +56,11 @@ def exe_suffix() -> str:
     return ".exe" if is_win() else ""
 
 
-def api_binary_name() -> str:
-    """内置 API 二进制文件名，须与 core/providers/netease/bridge.py 的 _BINARIES 保持一致"""
-    return "ncm-api-win-x64.exe" if is_win() else "ncm-api-linux-x64"
+def api_binary_names() -> list[str]:
+    """内置 API 二进制文件名列表（网易云 + QQ音乐），须与各 bridge 模块的 _BINARIES 保持一致"""
+    if is_win():
+        return ["ncm-api-win-x64.exe", "qqmusic-api-win-x64.exe"]
+    return ["ncm-api-linux-x64", "qqmusic-api-linux-x64"]
 
 
 def venv_python() -> Path:
@@ -229,14 +232,14 @@ def post_pack() -> None:
         sys.exit(1)
 
     # 创建空 api/ 占位目录（用户手动放入二进制）
-    # 占位提示的文件名与内容均按平台参数化，与 node_bridge._BINARIES 对齐
+    # 占位提示的文件名与内容均按平台参数化，与各 bridge 模块的 _BINARIES 对齐
     api_dir = DIST_APP_DIR / "api"
     api_dir.mkdir(exist_ok=True)
-    api_bin = api_binary_name()
-    (api_dir / f"Please put {api_bin} here.txt").write_text(
-        f"Please download {api_bin} from official release and place it here.\n",
-        encoding="utf-8",
-    )
+    for api_bin in api_binary_names():
+        (api_dir / f"Please put {api_bin} here.txt").write_text(
+            f"Please download {api_bin} from official release and place it here.\n",
+            encoding="utf-8",
+        )
     print("[INFO] 已创建空 api/ 占位目录")
 
     # 创建空 downloads/ 占位目录
@@ -270,12 +273,16 @@ def main() -> None:
     print(f"[INFO] 产物目录: {DIST_APP_DIR}")
     print(f"[INFO] 启动程序: {DIST_APP_DIR / bin_name}")
     print("[INFO] 下一步:")
-    print(f"  1. 把 {api_binary_name()} 放到 {DIST_APP_DIR / 'api'}")
+    step = 1
+    for api_bin in api_binary_names():
+        print(f"  {step}. 把 {api_bin} 放到 {DIST_APP_DIR / 'api'}")
+        step += 1
     if is_win():
-        print(f"  2. 双击 {bin_name}")
+        print(f"  {step}. 双击 {bin_name}")
     else:
-        print(f"  2. 运行 ./{bin_name}")
-    print("  3. 访问 http://localhost:45600")
+        print(f"  {step}. 运行 ./{bin_name}")
+    step += 1
+    print(f"  {step}. 访问 http://localhost:45600")
     print("=" * 60)
 
 

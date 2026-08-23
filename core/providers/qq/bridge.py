@@ -1,7 +1,13 @@
-"""内置 NeteaseCloudMusicApi-enhanced 二进制进程管理（跨平台单例）
+"""内置 qqmusic-api 二进制进程管理（跨平台单例）
 
-负责拉起/停止官方预编译二进制（ncm-api-win-x64.exe / ncm-api-linux-x64），
-对外提供幂等的 start/stop/status。单个进程仅监听 127.0.0.1 随机空闲端口。
+负责拉起/停止预编译二进制（qqmusic-api-win-x64.exe / qqmusic-api-linux-x64），
+对外提供幂等的 start/stop/status。单个进程仅监听 127.0.0.1 端口（默认 45602）。
+
+与 netease/bridge.py 结构对齐，差异点：
+- 二进制为 PyInstaller onefile 打包的 Flask 应用，监听地址经环境变量
+  QQMUSIC_API_HOST / QQMUSIC_API_PORT 控制（非 PORT/HOST）
+- 就绪探测走 /health 端点（服务自身端点，不碰上游）
+- onefile 首次启动需自解压，就绪等待 timeout 默认 60s
 
 此模块为基础设施层，不经过 Provider 抽象。
 """
@@ -23,12 +29,12 @@ logger = logging.getLogger(__name__)
 
 # 平台 -> 二进制文件名
 _BINARIES = {
-    "win32": "ncm-api-win-x64.exe",
-    "linux": "ncm-api-linux-x64",
+    "win32": "qqmusic-api-win-x64.exe",
+    "linux": "qqmusic-api-linux-x64",
 }
 
 
-class NodeBridge:
+class QqApiBridge:
     def __init__(self, bin_dir: Path, auto_start: bool = True, timeout: float = 60.0, port: int = 0):
         self.bin_dir = Path(bin_dir).resolve()
         self.bin_path = self.bin_dir / _BINARIES.get(sys.platform, "")
@@ -42,7 +48,7 @@ class NodeBridge:
 
     def status(self) -> dict:
         # 不加 self._lock——首次 start() 持锁最长 60s，共用锁会让设置页
-        # 3s 轮询 /api/ncm/status 全部挂起。仅读原子引用，瞬时不一致可接受。
+        # 3s 轮询 /api/qq/status 全部挂起。仅读原子引用，瞬时不一致可接受。
         # 局部快照 p = self.proc，避免与 stop() 并发时两次读 self.proc
         # 中间被置 None 而抛 AttributeError。
         p = self.proc
@@ -68,15 +74,18 @@ class NodeBridge:
             self.base_url = None
             if not self.bin_path.exists():
                 raise RuntimeError(
-                    f"未找到 API 二进制: {self.bin_path}\n"
-                    "请从官方 Release 下载对应平台版本放到 source/api/ 目录"
+                    f"未找到QQ音乐API二进制: {self.bin_path}\n"
+                    "请将 qqmusic-api 对应平台版本放到 api/ 目录"
                 )
             if sys.platform == "linux":
                 self.bin_path.chmod(0o755)
             self.port = self._find_free_port(self._preferred_port)
-            # 显式 HOST=127.0.0.1——server.js 中 HOST 缺省为空字符串，
-            # 等效监听所有网卡；内置 API 无鉴权，暴露局域网有安全风险
-            env = {**os.environ, "PORT": str(self.port), "HOST": "127.0.0.1"}
+            # 服务默认监听 0.0.0.0，内置 API 无鉴权，显式绑定 127.0.0.1
+            # 避免暴露局域网（经 QQMUSIC_API_HOST/PORT 环境变量传入，
+            # 该二进制不识别 PORT/HOST）
+            env = {**os.environ,
+                   "QQMUSIC_API_HOST": "127.0.0.1",
+                   "QQMUSIC_API_PORT": str(self.port)}
             for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
                 env.pop(k, None)
             # spawn_protected 启用"父进程死亡即杀"（Win 作业对象 / Linux PDEATHSIG），
@@ -133,33 +142,33 @@ class NodeBridge:
             return s.getsockname()[1]
 
     def _wait_ready(self, timeout: float) -> None:
-        # 探测根路由（纯本地静态，最快、不碰上游）；判定标准与状态码解耦：
-        # 收到任意 HTTP 响应即视为服务已监听就绪（index.html 将来被移除返回
-        # 404 同样证明服务活着），连接拒绝/超时才视为未就绪继续轮询。
-        # requests.get 对 4xx/5xx 不抛异常，仅连接层错误抛 RequestException。
-        # 同时清空代理 env 只作用于子进程，此处需显式 proxies 强制直连 127.0.0.1。
+        # 探测 /health（服务自身端点，不碰上游）；判定标准与状态码解耦：
+        # 收到任意 HTTP 响应即视为服务已监听就绪，连接拒绝/超时才视为
+        # 未就绪继续轮询。requests.get 对 4xx/5xx 不抛异常，仅连接层
+        # 错误抛 RequestException。清空代理 env 只作用于子进程，此处需
+        # 显式 proxies 强制直连 127.0.0.1。
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise RuntimeError("API 进程异常退出，请检查二进制完整性")
+                raise RuntimeError("QQ音乐API进程异常退出，请检查二进制完整性")
             try:
                 requests.get(
-                    f"{self.base_url}/", timeout=2,
+                    f"{self.base_url}/health", timeout=2,
                     proxies={"http": None, "https": None},
                 )
                 return  # 收到任意 HTTP 响应即就绪
             except requests.exceptions.RequestException:
                 pass  # 未就绪，继续轮询
             time.sleep(0.5)
-        raise RuntimeError("API 服务启动超时")
+        raise RuntimeError("QQ音乐API服务启动超时")
 
 
 # ---------------- 模块级单例 ----------------
-_bridge: NodeBridge | None = None
+_bridge: QqApiBridge | None = None
 _bridge_lock = threading.Lock()
 
 
-def get_bridge(auto_start: bool | None = None, port: int | None = None) -> NodeBridge:
+def get_bridge(auto_start: bool | None = None, port: int | None = None) -> QqApiBridge:
     """获取全局唯一 bridge（不访问数据库，无需 app context）
 
     auto_start / port 由 main() 在 app context 内读出后显式传入；main() 总是
@@ -173,9 +182,9 @@ def get_bridge(auto_start: bool | None = None, port: int | None = None) -> NodeB
                 if getattr(sys, "frozen", False):
                     root = Path(sys.executable).resolve().parent
                 else:
-                    # netease(0) → providers(1) → core(2) → source(3)
+                    # qq(0) → providers(1) → core(2) → source(3)
                     root = Path(__file__).resolve().parents[3]
-                _bridge = NodeBridge(
+                _bridge = QqApiBridge(
                     bin_dir=root / "api",
                     auto_start=(True if auto_start is None else auto_start),
                     port=(0 if port is None else port),

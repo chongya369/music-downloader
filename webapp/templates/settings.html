@@ -66,10 +66,46 @@
                     <input type="text" class="form-control flex-grow-1" name="custom_api_url" id="custom-api-url-input" placeholder="http://127.0.0.1:3000" style="max-width:400px;" disabled>
                 </div>
 
-                <!-- 其他API服务占位 -->
+                <!-- QQ音乐API服务（内置 + 可选自定义URL） -->
                 <hr class="my-3">
-                <h6 class="mb-2">其他API服务</h6>
-                <p class="text-muted small mb-0">其他平台待开发</p>
+                <h6 class="mb-3">QQ音乐API服务</h6>
+
+                <!-- 状态 -->
+                <div class="d-flex align-items-center mb-3">
+                    <label class="form-label mb-0 me-2">状态:</label>
+                    <span id="qq-status-badge" class="badge bg-secondary me-3">未知</span>
+                    <span id="qq-status-detail" class="text-muted small"></span>
+                </div>
+
+                <!-- 端口 + 自动启动 + 启停按钮（同一行） -->
+                <div id="qq-builtin-section">
+                    <div class="d-flex align-items-center flex-wrap gap-2 mb-3">
+                        <div class="d-flex align-items-center">
+                            <label class="form-label mb-0 me-1 small">端口</label>
+                            <input type="number" class="form-control" name="qq_api_port" min="1024" max="65535" value="45602" style="width:100px;">
+                        </div>
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="qq_api_auto_start" id="qq-auto-start" value="true">
+                            <label class="form-check-label small" for="qq-auto-start">随程序启动自动启动</label>
+                        </div>
+                        <button type="button" id="btn-qq-start" class="btn btn-sm btn-success">
+                            <i class="bi bi-play"></i> 启动
+                        </button>
+                        <button type="button" id="btn-qq-stop" class="btn btn-sm btn-danger">
+                            <i class="bi bi-stop"></i> 停止
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 自定义URL：容器外，勾选后不受内置服务禁用影响 -->
+                <div class="d-flex align-items-center mb-2">
+                    <div class="form-check me-2">
+                        <input type="checkbox" class="form-check-input" name="use_custom_qq_api_url" id="use-custom-qq-api-url" value="true">
+                        <label class="form-check-label" for="use-custom-qq-api-url">使用自定义API服务URL</label>
+                    </div>
+                    <span class="me-1">:</span>
+                    <input type="text" class="form-control flex-grow-1" name="qq_api_base_url" id="qq-api-url-input" placeholder="http://127.0.0.1:45602" style="max-width:400px;" disabled>
+                </div>
             </div>
         </div>
     </div>

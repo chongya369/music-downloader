@@ -82,9 +82,12 @@ docs/
 Thumbs.db
 Desktop.ini
 
-# 内置 NeteaseCloudMusicApi 二进制（体积大，不入库）
+# 内置 API 服务二进制（体积大，不入库）
 api/
 ncm-api-*
+qqmusic-cli*
+qq-music-api*
+*.exe
 
 # 临时/误生成文件
 $null
