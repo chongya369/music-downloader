@@ -145,15 +145,17 @@ def _attach_windows_job(proc: "subprocess.Popen") -> None:
 
 
 # Windows 进程创建标志：
-# DETACHED_PROCESS (0x00000008) 让子进程完全脱离父进程的控制台，
-# 不再创建 conhost.exe 控制台宿主进程
-_WIN_DETACHED_PROCESS = 0x00000008
+# CREATE_NO_WINDOW (0x08000000) 让控制台程序的子进程运行时不显示命令行窗口。
+# 不要改用 DETACHED_PROCESS：QQ 音乐 API（PyInstaller onefile console 模式）在
+# 脱离控制台时会新建独立控制台窗口导致弹窗。CREATE_NO_WINDOW 会被 PyInstaller
+# inner 进程继承，从而保持不弹窗（代价是产生隐藏的 conhost.exe 宿主进程）。
+_WIN_CREATE_NO_WINDOW = 0x08000000
 
 
 def spawn_protected(cmd, cwd=None, env=None, stdout=None, stderr=None):
     """按平台为子进程启用"父进程死亡即终止"，返回 subprocess.Popen 实例。
 
-    参数透传给 subprocess.Popen；平台差异（Windows 的 DETACHED_PROCESS + 作业
+    参数透传给 subprocess.Popen；平台差异（Windows 的 CREATE_NO_WINDOW + 作业
     对象、Linux 的 PDEATHSIG preexec）在本函数内封装。
 
     :param cmd: 可执行命令列表
@@ -163,7 +165,7 @@ def spawn_protected(cmd, cwd=None, env=None, stdout=None, stderr=None):
     """
     kwargs = {"cwd": cwd, "env": env, "stdout": stdout, "stderr": stderr}
     if sys.platform == "win32":
-        kwargs["creationflags"] = _WIN_DETACHED_PROCESS
+        kwargs["creationflags"] = _WIN_CREATE_NO_WINDOW
         proc = subprocess.Popen(cmd, **kwargs)
         _attach_windows_job(proc)
         return proc
