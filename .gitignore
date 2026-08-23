@@ -82,11 +82,9 @@ docs/
 Thumbs.db
 Desktop.ini
 
-# 内置 API 服务二进制（体积大，不入库）
-api/
+# 内置 API 服务二进制（体积大，不入库；保留 api/ 目录与说明文件 readme.txt）
 ncm-api-*
-qqmusic-cli*
-qq-music-api*
+qqmusic-api*
 *.exe
 
 # 临时/误生成文件
