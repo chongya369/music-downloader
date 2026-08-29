@@ -130,10 +130,6 @@ class NeteaseClient:
     # ------------------------------------------------------------------
     # 业务接口
     # ------------------------------------------------------------------
-    def login_status(self) -> dict:
-        """检查登录状态（快速检查：5s 超时，不重试）"""
-        return self._request("/login/status", timeout=5, retries=1)
-
     def get_account_info(self) -> dict:
         """获取当前登录账号详情（快速检查：5s 超时，不重试）"""
         return self._request("/user/account", timeout=5, retries=1)

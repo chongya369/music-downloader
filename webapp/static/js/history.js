@@ -40,12 +40,16 @@ async function loadTasks() {
         list.innerHTML = tasks.map(t => {
             const pct = t.progress || 0;
             const status = t.status === "downloading" ? "下载中" : "等待中";
+            const errMsg = t.error_msg
+                ? `<small class="text-warning d-block mb-1">${escapeHtml(t.error_msg)}</small>`
+                : "";
             return `
                 <div class="task-item mb-2">
                     <div class="d-flex justify-content-between align-items-center mb-1">
-                        <span>${t.artists} - ${t.song_name}</span>
+                        <span>${escapeHtml(t.artists)} - ${escapeHtml(t.song_name)}</span>
                         <span class="badge ${t.status === 'downloading' ? 'bg-primary' : 'bg-info'}">${status}</span>
                     </div>
+                    ${errMsg}
                     <div class="progress">
                         <div class="progress-bar" style="width: ${pct}%">${pct}%</div>
                     </div>
@@ -186,7 +190,7 @@ function bindSongEvents() {
     document.querySelectorAll(".btn-delete-song").forEach(el => {
         el.addEventListener("click", async function() {
             const id = this.dataset.id;
-            if (!confirm("确定删除这条记录？（不删除文件）")) return;
+            if (!confirm("确定删除这条记录？\n不删除文件；歌曲仍会视为已下载，不会重复下载。")) return;
             try {
                 await api(`/api/songs/${id}`, { method: "DELETE" });
                 showToast("已删除");
@@ -230,37 +234,8 @@ document.getElementById("filter-keyword").addEventListener("keypress", e => {
     if (e.key === "Enter") loadSongs(1);
 });
 
-// 简单 HTML 转义
-function escapeHtml(str) {
-    if (str === null || str === undefined) return "";
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-}
-
-// 格式化大小
-function formatSize(bytes) {
-    if (!bytes) return "--";
-    if (bytes < 1024) return bytes + " B";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-    if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
-    return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
-}
-
-// 状态徽章
-function statusBadge(status) {
-    const map = {
-        success: '<span class="badge bg-success">成功</span>',
-        failed: '<span class="badge bg-danger">失败</span>',
-        skipped: '<span class="badge bg-secondary">已下载</span>',
-        pending: '<span class="badge bg-warning">等待中</span>',
-        downloading: '<span class="badge bg-primary">下载中</span>',
-    };
-    return map[status] || '<span class="badge bg-secondary">' + status + '</span>';
-}
+// escapeHtml / formatSize / statusBadge 已收敛至全局 app.js（L8），
+// 此处不再定义本地副本。
 
 // 初始化
 loadTasks();

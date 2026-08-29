@@ -49,16 +49,25 @@ async function api(url, options = {}) {
     }
 }
 
+// 简单 HTML 转义（防 XSS）
+// app.js 经 base.html 先于各页脚本加载，全局可用（页内不再各自定义）
+function escapeHtml(str) {
+    if (str === null || str === undefined) return "";
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
 // 文件大小格式化
 function formatSize(bytes) {
-    if (!bytes) return "0 B";
-    const units = ["B", "KB", "MB", "GB"];
-    let i = 0;
-    while (bytes >= 1024 && i < units.length - 1) {
-        bytes /= 1024;
-        i++;
-    }
-    return bytes.toFixed(1) + " " + units[i];
+    if (!bytes) return "--";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+    return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
 }
 
 // 时长格式化
@@ -74,12 +83,12 @@ function statusBadge(status) {
     const map = {
         success: '<span class="badge bg-success">成功</span>',
         failed: '<span class="badge bg-danger">失败</span>',
-        skipped: '<span class="badge bg-info">已下载</span>',
-        pending: '<span class="badge bg-info">等待</span>',
+        skipped: '<span class="badge bg-secondary">已下载</span>',
+        pending: '<span class="badge bg-warning">等待中</span>',
         downloading: '<span class="badge bg-primary">下载中</span>',
         done: '<span class="badge bg-success">完成</span>',
     };
-    return map[status] || '<span class="badge bg-secondary">' + status + "</span>";
+    return map[status] || '<span class="badge bg-secondary">' + status + '</span>';
 }
 
 // 更新同步指示器

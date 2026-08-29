@@ -56,6 +56,15 @@ def _hour_start() -> datetime:
     return now.replace(minute=0, second=0, microsecond=0)
 
 
+def _setting_int(key: str, default: int) -> int:
+    """读取整型设置项；坏值记日志并回退默认值。"""
+    try:
+        return int(Setting.get(key, str(default)))
+    except (TypeError, ValueError):
+        logger.warning("设置项 %s 值非法，回退默认 %s", key, default)
+        return default
+
+
 def _parse_sync_times(raw: str) -> list[tuple[int, int]]:
     """解析 "03:00,09:00,21:00" 为 [(3,0),(9,0),(21,0)]
 
@@ -124,7 +133,7 @@ class AccountSelector:
     def _hourly_limit(self) -> int:
         """读取每小时单账号下载限额配置（0=不限制）"""
         with self.app.app_context():
-            return int(Setting.get("hourly_limit_per_account", "50"))
+            return _setting_int("hourly_limit_per_account", 50)
 
     def is_quota_exceeded(self, account_id: int) -> bool:
         """检查账号本月是否已达额度
@@ -224,7 +233,8 @@ class AccountSelector:
                         return Account.query.get(aid)
             return None
 
-    def switch_to_next(self, current_id: int, prefer_non_vip: bool = False, fee: int = 0, platform: str = "netease") -> Account | None:
+    def switch_to_next(self, current_id: int, prefer_non_vip: bool = False, fee: int = 0, platform: str = "netease",
+                       exclude: set[int] | None = None) -> Account | None:
         """接力模式：强制切到下一个账号（失败时调用）
 
         Args:
@@ -232,6 +242,7 @@ class AccountSelector:
             prefer_non_vip: 是否优先非VIP账号
             fee: 歌曲费用类型（1=VIP歌曲）
             platform: 平台标识，默认 netease
+            exclude: 已尝试过的账号 ID 集合（防止接力链路无限递归）
 
         Returns:
             下一个可用账号，无则 None
@@ -244,6 +255,10 @@ class AccountSelector:
             if not accounts:
                 return None
             ids = [a.id for a in accounts]
+            if exclude:
+                ids = [i for i in ids if i not in exclude]
+                if not ids:
+                    return None
             try:
                 idx = ids.index(current_id)
             except ValueError:
@@ -334,7 +349,7 @@ class TaskManager:
         with self.app.app_context():
             enabled = Setting.get("auto_sync_enabled", "true") == "true"
             times_raw = Setting.get("sync_times", "03:00,09:00,21:00")
-            jitter = int(Setting.get("sync_jitter", "600"))
+            jitter = _setting_int("sync_jitter", 600)
 
         # 清掉旧的同步任务（旧版单 job id=auto_sync + 新版多 job auto_sync_N）
         try:
@@ -427,7 +442,7 @@ class TaskManager:
     def _get_downloader(self) -> Downloader:
         with self.app.app_context():
             output_dir = Setting.get("output_dir", "downloads")
-            max_retries = int(Setting.get("max_retries", "3"))
+            max_retries = _setting_int("max_retries", 3)
         p = Path(output_dir)
         if not p.is_absolute():
             p = _ROOT / output_dir
@@ -486,13 +501,14 @@ class TaskManager:
 
             new_tracks = []
             excluded_count = 0
+            failed_skipped = 0
             for t in tracks:
                 sid = str(t["id"])
                 existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
                 if existing:
                     # 已下载：在当前歌单记录一条"已下载"任务（不重复下载）
                     already = DownloadTask.query.filter_by(
-                        song_id=sid, playlist_id=playlist_id, status="skipped"
+                        song_id=sid, playlist_id=playlist_id, platform=platform
                     ).first()
                     if not already:
                         task = DownloadTask(
@@ -508,12 +524,24 @@ class TaskManager:
                         db.session.add(task)
                         db.session.commit()
                     continue
+                # ① 既有全局在途去重（语义不变：pending/downloading 跨歌单拦截，防止重复下载）
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
                     DownloadTask.platform == platform,
                     DownloadTask.status.in_(["pending", "downloading"]),
                 ).first()
                 if pending:
+                    continue
+                # ② 同歌单内已有 failed 终态 → 自动同步不再重试
+                # （限定本歌单：A 歌单失败过的歌，B 歌单首次同步仍可尝试；手动 /api/retry 不受影响）
+                failed = DownloadTask.query.filter(
+                    DownloadTask.song_id == sid,
+                    DownloadTask.platform == platform,
+                    DownloadTask.playlist_id == playlist_id,
+                    DownloadTask.status == "failed",
+                ).first()
+                if failed:
+                    failed_skipped += 1
                     continue
                 # 排除关键字过滤（仅当 scope 包含 playlist 时）
                 if self._exclude_enabled("playlist") and self._should_exclude(t.get("name", ""), t.get("artists", "")):
@@ -537,7 +565,8 @@ class TaskManager:
                 db.session.commit()
                 self._task_queue.put(task.pk)
 
-            logger.info("歌单 [%s] 新增 %d 首到下载队列（排除 %d 首）", pl_name, len(new_tracks), excluded_count)
+            logger.info("歌单 [%s] 新增 %d 首到下载队列（排除 %d 首，曾失败跳过 %d 首）",
+                        pl_name, len(new_tracks), excluded_count, failed_skipped)
             return len(new_tracks)
 
     def sync_playlist(self, playlist_id: int, platform: str = "netease") -> int:
@@ -675,6 +704,16 @@ class TaskManager:
                 if pending:
                     skipped += 1
                     continue
+                # 搜索任务的 playlist_id 恒为 None：同命名空间已有 failed 终态 → 不再自动重试
+                failed = DownloadTask.query.filter(
+                    DownloadTask.song_id == sid,
+                    DownloadTask.platform == platform,
+                    DownloadTask.playlist_id.is_(None),
+                    DownloadTask.status == "failed",
+                ).first()
+                if failed:
+                    skipped += 1
+                    continue
                 task = DownloadTask(
                     platform=platform,
                     song_id=sid,
@@ -691,7 +730,7 @@ class TaskManager:
                 enqueued += 1
 
         logger.info(
-            "搜索 [%s] 共 %d 首：入队 %d，排除 %d，跳过(已下载/进行中) %d",
+            "搜索 [%s] 共 %d 首：入队 %d，排除 %d，跳过(已下载/进行中/曾失败) %d",
             keyword, total, enqueued, excluded, skipped,
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
@@ -741,6 +780,17 @@ class TaskManager:
                 if pending:
                     skipped += 1
                     continue
+                # 专辑任务的 playlist_id 恒为 None：同命名空间已有 failed 终态 → 不再自动重试
+                # （与搜索共享命名空间：搜索失败过的歌在专辑下载里也会被跳过，反之亦然）
+                failed = DownloadTask.query.filter(
+                    DownloadTask.song_id == sid,
+                    DownloadTask.platform == platform,
+                    DownloadTask.playlist_id.is_(None),
+                    DownloadTask.status == "failed",
+                ).first()
+                if failed:
+                    skipped += 1
+                    continue
                 task = DownloadTask(
                     platform=platform,
                     song_id=sid,
@@ -757,7 +807,7 @@ class TaskManager:
                 enqueued += 1
 
         logger.info(
-            "专辑 [%s](id=%s) 共 %d 首：入队 %d，排除 %d，跳过(已下载/进行中) %d",
+            "专辑 [%s](id=%s) 共 %d 首：入队 %d，排除 %d，跳过(已下载/进行中/曾失败) %d",
             album_name, album_id, total, enqueued, excluded, skipped,
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
@@ -825,6 +875,15 @@ class TaskManager:
                     continue
                 # 删除该(歌曲,平台,歌单)的旧失败/跳过记录，重试后只保留最新一条
                 # （下载历史按 download_tasks 展示，旧失败行不删会与新建任务并存）
+                # 删除前先取原 fee，重试任务保留 VIP 标记（丢 fee 会导致 VIP 歌选错账号）
+                fee_rows = db.session.query(DownloadTask.fee).filter(
+                    DownloadTask.song_id == song.id,
+                    DownloadTask.platform == platform,
+                    DownloadTask.status.in_(["failed", "skipped"]),
+                    *( [DownloadTask.playlist_id == song.playlist_id] if song.playlist_id is not None
+                       else [DownloadTask.playlist_id.is_(None)] ),
+                ).all()
+                fee = next((int(f[0]) for f in fee_rows if f[0] is not None), 0)
                 deleting = DownloadTask.query.filter(
                     DownloadTask.song_id == song.id,
                     DownloadTask.platform == platform,
@@ -843,6 +902,7 @@ class TaskManager:
                     playlist_id=song.playlist_id,
                     playlist_name=song.source_name or "",
                     status="pending",
+                    fee=fee,
                 )
                 db.session.add(task)
                 db.session.commit()
@@ -908,20 +968,32 @@ class TaskManager:
         if not account:
             # 无可用账号：区分"全部因小时限额满"和"无账号/月额度满"
             if self._account_selector.all_hourly_limited(platform=platform):
-                # 所有账号当前自然小时下载限额已满，暂停 30 分钟后重新入队
+                # 所有账号当前自然小时下载限额已满：挂起任务等待限额恢复，
+                # 每 60 秒复查一次，自然小时切换/有账号恢复即提前结束等待
                 logger.warning(
-                    "所有账号当前自然小时下载限额已满，暂停 %d 秒后继续下载",
+                    "所有账号当前自然小时下载限额已满，任务等待限额恢复（最长 %d 秒）",
                     _HOURLY_PAUSE_SECONDS,
                 )
-                # 先把任务状态回退为 pending，避免前端一直显示 downloading
+                # 先把任务状态回退为 pending 并写入提示（前端任务列表可见），
+                # 避免前端一直显示 downloading
                 with self.app.app_context():
                     t = DownloadTask.query.get(task_pk)
                     if t:
                         t.status = "pending"
                         t.progress = 0
+                        t.error_msg = "所有账号小时限额已满，等待恢复后自动继续"
                         db.session.commit()
-                # 暂停（停止事件置位时立即中断）
-                self._stop_event.wait(_HOURLY_PAUSE_SECONDS)
+                deadline = time.time() + _HOURLY_PAUSE_SECONDS
+                while time.time() < deadline and not self._stop_event.is_set():
+                    if not self._account_selector.all_hourly_limited(platform=platform):
+                        break                                   # 自然小时切换/有账号恢复，提前结束
+                    self._stop_event.wait(min(60.0, max(1.0, deadline - time.time())))
+                # 重新入队前清掉提示
+                with self.app.app_context():
+                    t = DownloadTask.query.get(task_pk)
+                    if t and t.error_msg:
+                        t.error_msg = ""
+                        db.session.commit()
                 # 暂停结束后把任务重新放回队列
                 self._task_queue.put(task_pk)
                 return
@@ -954,6 +1026,7 @@ class TaskManager:
         switch_on_fail: bool,
         prefer_non_vip: bool = False,
         fee: int = 0,
+        tried: set[int] | None = None,
     ) -> None:
         """用指定账号下载一首歌
 
@@ -961,7 +1034,10 @@ class TaskManager:
             switch_on_fail: True=接力模式（失败时切换下一个账号重试），False=轮询模式（失败直接标记）
             prefer_non_vip: 是否优先非VIP账号
             fee: 歌曲费用类型（1=VIP歌曲）
+            tried: 本次接力链路已尝试的账号 ID 集合（递归透传，防止无限切换）
         """
+        tried = tried if tried is not None else set()
+        tried.add(account.id)
         client = self._get_client_for_account(account)
         logger.info("下载 [%s - %s] 使用账号: %s", artists, sname, account.name)
 
@@ -973,15 +1049,18 @@ class TaskManager:
         if not url:
             reason = "试听片段" if url_info.get("is_trial") else "无版权或需VIP"
             if switch_on_fail:
-                # 接力模式：切换下一个账号（限定同平台账号池，避免跨平台切号）
-                next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee, platform=account.platform or "netease")
+                # 接力模式：切换下一个账号（限定同平台账号池，排除已尝试过的账号）
+                next_acc = self._account_selector.switch_to_next(
+                    account.id, prefer_non_vip, fee,
+                    platform=account.platform or "netease", exclude=tried)
                 if next_acc and next_acc.id != account.id:
                     logger.info("账号 %s 失败(%s)，切换到 %s 重试", account.name, reason, next_acc.name)
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
                                                 level, write_meta, write_lyric, switch_on_fail=True,
-                                                prefer_non_vip=prefer_non_vip, fee=fee)
+                                                prefer_non_vip=prefer_non_vip, fee=fee, tried=tried)
                     return
-            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, reason, account_id=account.id, platform=account.platform)
+            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
+                              f"{reason}（已尝试 {len(tried)} 个账号）", account_id=account.id, platform=account.platform)
             return
 
         # 只有有 url 时才取扩展名和大小
@@ -1043,14 +1122,18 @@ class TaskManager:
 
         if not path:
             if switch_on_fail:
-                next_acc = self._account_selector.switch_to_next(account.id, prefer_non_vip, fee, platform=account.platform or "netease")
+                next_acc = self._account_selector.switch_to_next(
+                    account.id, prefer_non_vip, fee,
+                    platform=account.platform or "netease", exclude=tried)
                 if next_acc and next_acc.id != account.id:
                     logger.info("账号 %s 下载失败，切换到 %s 重试", account.name, next_acc.name)
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
                                                 level, write_meta, write_lyric, switch_on_fail=True,
-                                                prefer_non_vip=prefer_non_vip, fee=fee)
+                                                prefer_non_vip=prefer_non_vip, fee=fee, tried=tried)
                     return
-            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "下载失败（重试耗尽）", account_id=account.id, platform=account.platform)
+            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
+                              f"下载失败（重试耗尽）（已尝试 {len(tried)} 个账号）",
+                              account_id=account.id, platform=account.platform)
             return
 
         # 写入元数据
@@ -1113,19 +1196,23 @@ class TaskManager:
             platform: 平台标识，默认 netease
         """
         with self.app.app_context():
-            Song.query.filter_by(id=sid, platform=platform).delete()
-            song = Song(
-                id=sid,
-                platform=platform,
-                name=name,
-                artists=artists,
-                playlist_id=pl_id,
-                source_name=pl_name,
-                status="failed",
-                error_msg=reason,
-                account_id=account_id,
-            )
-            db.session.merge(song)
+            # 按 (id, platform) 查询（N1 复合主键后天然防跨平台撞号）：
+            # 已有 success 记录时不覆盖（跳过 delete + merge），只更新任务行
+            existing = Song.query.filter_by(id=sid, platform=platform).first()
+            if existing is None or existing.status != "success":
+                Song.query.filter_by(id=sid, platform=platform).delete()
+                song = Song(
+                    id=sid,
+                    platform=platform,
+                    name=name,
+                    artists=artists,
+                    playlist_id=pl_id,
+                    source_name=pl_name,
+                    status="failed",
+                    error_msg=reason,
+                    account_id=account_id,
+                )
+                db.session.merge(song)
 
             task = DownloadTask.query.get(task_pk)
             if task:

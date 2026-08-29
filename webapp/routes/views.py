@@ -3,6 +3,8 @@
 包含登录/登出/用户管理路由，以及受 @login_required 保护的页面路由。
 """
 
+import threading
+import time
 from datetime import datetime
 
 from flask import Blueprint, render_template, redirect, url_for, request, session
@@ -11,6 +13,43 @@ from auth import login_required, admin_required, current_user
 from models import User, db, PLATFORM_NAMES
 
 views_bp = Blueprint("views", __name__)
+
+# 登录失败限速（内存计数，键 username+IP）：失败 5 次锁 10 分钟。
+# app.run(threaded=True)，计数必须加锁。
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_LOCK_SECONDS = 600
+_login_failures: dict[str, tuple[int, float]] = {}
+_login_lock = threading.Lock()
+
+
+def _login_key(username: str) -> str:
+    return f"{username}|{request.remote_addr or ''}"
+
+
+def _login_blocked(key: str) -> bool:
+    """该 key 是否处于锁定窗口内；窗口过期则清除记录"""
+    with _login_lock:
+        entry = _login_failures.get(key)
+        if not entry:
+            return False
+        count, ts = entry
+        if time.time() - ts >= _LOGIN_LOCK_SECONDS:
+            del _login_failures[key]
+            return False
+        return count >= _LOGIN_MAX_FAILURES
+
+
+def _record_login_failure(key: str) -> None:
+    with _login_lock:
+        count, ts = _login_failures.get(key, (0, 0.0))
+        if time.time() - ts >= _LOGIN_LOCK_SECONDS:
+            count = 0
+        _login_failures[key] = (count + 1, time.time())
+
+
+def _clear_login_failures(key: str) -> None:
+    with _login_lock:
+        _login_failures.pop(key, None)
 
 # 当前已实现的前端可用平台（配置驱动，后续新增平台在此追加即可）
 AVAILABLE_PLATFORMS = [
@@ -31,16 +70,23 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        key = _login_key(username)
+        if _login_blocked(key):
+            return render_template("login.html", error="失败次数过多，请 10 分钟后再试")
         user = User.query.filter_by(username=username).first()
         if user and user.enabled and user.check_password(password):
+            _clear_login_failures(key)
             session["uid"] = user.id
             user.last_login_at = datetime.now()
             db.session.commit()
-            # 支持 next 参数跳回原页面
+            # 支持 next 参数跳回原页面（拦协议相对 // 与反斜杠 /\\ 变体，防开放重定向）
             next_url = request.args.get("next")
-            if next_url and next_url.startswith("/"):
+            if (next_url and next_url.startswith("/")
+                    and not next_url.startswith("//")
+                    and not next_url.startswith("/\\")):
                 return redirect(next_url)
             return redirect(url_for("views.dashboard"))
+        _record_login_failure(key)
         return render_template("login.html", error="用户名或密码错误")
     return render_template("login.html")
 

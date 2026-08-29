@@ -16,9 +16,11 @@
         <button class="btn btn-outline-secondary btn-sm" id="btn-import-accounts">
             <i class="bi bi-upload"></i> 导入
         </button>
+        {% if current_user.is_admin %}
         <button class="btn btn-outline-secondary btn-sm" id="btn-export-accounts">
             <i class="bi bi-download"></i> 导出
         </button>
+        {% endif %}
         <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add-account-modal">
             <i class="bi bi-plus-circle"></i> 添加账号
         </button>
@@ -47,7 +49,7 @@
         <button class="nav-link" data-platform="qq" data-bs-toggle="tab">QQ音乐 <span class="badge bg-secondary" id="count-qq">0</span></button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" data-platform="kugou" data-bs-toggle="tab">酷狗音乐 <span class="badge bg-secondary" id="count-kugou">0</span></button>
+        <button class="nav-link" data-platform="kugou" data-bs-toggle="tab">酷狗音乐（预留） <span class="badge bg-secondary" id="count-kugou">0</span></button>
     </li>
 </ul>
 
@@ -99,7 +101,7 @@
                     <select class="form-select" id="add-platform">
                         <option value="netease" selected>网易云</option>
                         <option value="qq">QQ音乐</option>
-                        <option value="kugou">酷狗音乐</option>
+                        <option value="kugou" disabled>酷狗音乐（预留，暂不支持）</option>
                     </select>
                 </div>
                 <div class="mb-3">

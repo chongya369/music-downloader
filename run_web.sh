@@ -127,7 +127,7 @@ if [ -f "$API_BIN" ]; then
     echo "[信息] API 二进制就绪: $API_BIN"
 else
     echo "[警告] 缺少 API 二进制: $API_BIN"
-    echo "[警告] 发现页等功能将不可用。请从官方 Release 下载后放回 source/api/ 目录"
+    echo "[警告] 发现页等功能将不可用。请从官方 Release 下载后放回 api/ 目录"
 fi
 
 echo ""

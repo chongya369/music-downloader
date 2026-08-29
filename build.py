@@ -117,15 +117,16 @@ def runtime_hook_path() -> Path:
     """
     hook = BUILD_DIR / "runtime_hook.py"
     hook.parent.mkdir(parents=True, exist_ok=True)
-    hook.write_text(
+    text = (
         'import sys\n'
         '\n'
         'print("============================================")\n'
         'print("  music_downloader 正在启动，请等待...")\n'
-        'print("============================================\n")\n'
-        'sys.stdout.flush()\n',
-        encoding="utf-8",
+        'print("============================================")\n'
+        'sys.stdout.flush()\n'
     )
+    compile(text, "runtime_hook.py", "exec")   # 语法自检，坏 hook 构建期即报错
+    hook.write_text(text, encoding="utf-8")
     return hook
 
 

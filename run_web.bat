@@ -2,64 +2,92 @@
 REM ============================================
 REM NeteaseCloudMusicApi Downloader Web (Windows)
 REM Prerequisite: Python 3.10+ installed
-REM DIAGNOSTIC BUILD: STEP markers added, pause removed
 REM ============================================
 
 cd /d "%~dp0"
 echo [STEP] START
 
-REM Locate Python
-set PYTHON_CMD=
-where python3 >nul 2>nul
-if not errorlevel 1 (
-    set PYTHON_CMD=python3
-) else (
-    where python >nul 2>nul
-    if not errorlevel 1 (
-        set PYTHON_CMD=python
-    )
+REM ---- Locate Python ----
+REM Order: PATH (python3/python/py) - registry (PythonCore) - common folders.
+REM PYTHON_CMD always ends up as a full executable path, so it is quoted below.
+set "PYTHON_CMD="
+
+for %%P in (python3 python py) do if not defined PYTHON_CMD (
+    for /f "delims=" %%F in ('where %%P 2^>nul') do if not defined PYTHON_CMD set "PYTHON_CMD=%%F"
 )
+
+REM Drop a candidate that cannot actually run (e.g. the Microsoft Store stub)
+if defined PYTHON_CMD (
+    "%PYTHON_CMD%" --version >nul 2>nul
+    if errorlevel 1 set "PYTHON_CMD="
+)
+
+REM Registry: python.org and the Python install manager both write PythonCore
+if not defined PYTHON_CMD (
+    for /f "tokens=2*" %%a in ('reg query "HKCU\SOFTWARE\Python\PythonCore" /s /v ExecutablePath 2^>nul ^| findstr /i "ExecutablePath"') do set "PYTHON_CMD=%%b"
+)
+if not defined PYTHON_CMD (
+    for /f "tokens=2*" %%a in ('reg query "HKLM\SOFTWARE\Python\PythonCore" /s /v ExecutablePath 2^>nul ^| findstr /i "ExecutablePath"') do set "PYTHON_CMD=%%b"
+)
+
+REM Common install folders as a last resort
+if not defined PYTHON_CMD for /d %%D in ("%LocalAppData%\Python\pythoncore-*-64") do set "PYTHON_CMD=%%D\python.exe"
+if not defined PYTHON_CMD for /d %%D in ("%LocalAppData%\Programs\Python\Python3*") do set "PYTHON_CMD=%%D\python.exe"
+if not defined PYTHON_CMD for /d %%D in ("%ProgramFiles%\Python3*") do set "PYTHON_CMD=%%D\python.exe"
+
 echo [STEP] Locate Python done: PYTHON_CMD=%PYTHON_CMD%
 
-if "%PYTHON_CMD%"=="" (
+if not defined PYTHON_CMD (
     echo [ERRO] Python not found. Please install Python 3.10+
+    echo        from https://www.python.org/downloads/ or the Microsoft Store,
+    echo        or set PYTHON_CMD to the full path of python.exe first.
     exit /b 1
 )
 
-REM Check Python version >= 3.10
+REM ---- Check Python version ----
 echo [STEP] Check Python version...
-for /f "delims=" %%i in ('%PYTHON_CMD% -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PY_VERSION=%%i
-for /f "delims=. tokens=1,2" %%a in ("%PY_VERSION%") do (
-    set PY_MAJOR=%%a
-    set PY_MINOR=%%b
+set "PY_VERSION="
+"%PYTHON_CMD%" -V > "%TEMP%\py_version_check.txt" 2>nul
+if not errorlevel 1 (
+    for /f "usebackq tokens=2" %%i in ("%TEMP%\py_version_check.txt") do set "PY_VERSION=%%i"
+)
+if not defined PY_VERSION (
+    echo [ERRO] "%PYTHON_CMD%" exists but failed to run.
+    exit /b 1
+)
+for /f "tokens=1,2 delims=." %%a in ("%PY_VERSION%") do (
+    set "PY_MAJOR=%%a"
+    set "PY_MINOR=%%b"
 )
 echo [STEP] PY_VERSION=%PY_VERSION% PY_MAJOR=%PY_MAJOR% PY_MINOR=%PY_MINOR%
 
 set /a PY_VER_ERR=0
-if %PY_MAJOR% LSS 3 set PY_VER_ERR=1
-if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 set PY_VER_ERR=1
-if %PY_VER_ERR% EQU 1 echo [ERRO] Python version too old: %PY_VERSION% (need 3.10+)
-if %PY_VER_ERR% EQU 1 exit /b 1
+if %PY_MAJOR% LSS 3 set /a PY_VER_ERR=1
+if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 set /a PY_VER_ERR=1
+if %PY_VER_ERR% EQU 1 (
+    echo [ERRO] Python version too old: %PY_VERSION% ^(need 3.10+^)
+    exit /b 1
+)
 echo [INFO] Python %PY_VERSION% found
 
-REM Check system Python has venv and pip
+REM ---- Check venv and pip ----
 echo [STEP] Check venv/pip...
-%PYTHON_CMD% -m venv --help >nul 2>nul
+"%PYTHON_CMD%" -m venv --help >nul 2>nul
 if errorlevel 1 (
     echo [ERRO] venv module missing. Please reinstall Python.
     exit /b 1
 )
-%PYTHON_CMD% -m pip --version >nul 2>nul
+"%PYTHON_CMD%" -m pip --version >nul 2>nul
 if errorlevel 1 (
     echo [ERRO] pip module missing. Please reinstall Python.
     exit /b 1
 )
 echo [STEP] venv/pip check done
 
-REM Create virtual environment
+REM ---- Create virtual environment ----
 if not exist ".venv\Scripts\python.exe" (
     echo [INFO] Creating virtual environment...
-    %PYTHON_CMD% -m venv .venv
+    "%PYTHON_CMD%" -m venv .venv
     if errorlevel 1 (
         echo [ERRO] Failed to create virtual environment
         exit /b 1
@@ -67,14 +95,13 @@ if not exist ".venv\Scripts\python.exe" (
 )
 echo [STEP] venv ready
 
-REM Ensure pip in venv
 ".venv\Scripts\python.exe" -m pip --version >nul 2>nul
 if errorlevel 1 (
     echo [ERRO] pip missing in venv. Please recreate it.
     exit /b 1
 )
 
-REM Check dependencies
+REM ---- Check dependencies ----
 echo [STEP] Checking Python dependencies...
 set MISSING_DEPS=0
 
@@ -121,13 +148,13 @@ if "%MISSING_DEPS%"=="1" (
     echo [INFO] All dependencies ready
 )
 
-REM Check built-in API binary (0.2.0+)
+REM ---- Check built-in API binary (0.2.0+) ----
 set API_BIN=api\ncm-api-win-x64.exe
 set API_BIN_OK=1
 if not exist "%API_BIN%" (
     echo [WARN] Missing API binary: %API_BIN%
     echo [WARN] Discover/playlist features may be unavailable.
-    echo [WARN] Download the matching release and put it in source\api\ .
+    echo [WARN] Download the matching release and put it in api\ .
     set API_BIN_OK=0
 ) else (
     echo [INFO] API binary ready: %API_BIN%

@@ -140,13 +140,13 @@ async function loadPlaylists() {
                 <tr>
                     <td>
                         <div class="form-check form-switch">
-                            <input class="form-check-input toggle-enabled" type="checkbox" ${checked} data-id="${p.id}">
+                            <input class="form-check-input toggle-enabled" type="checkbox" ${checked} data-id="${p.id}" data-platform="${p.platform}">
                         </div>
                     </td>
-                    <td>${platformBadge}${p.name}</td>
+                    <td>${platformBadge}${escapeHtml(p.name)}</td>
                     <td><span class="badge ${p.type === 'official' ? 'bg-info' : 'bg-secondary'}">${typeText}</span></td>
                     <td>
-                        <input type="number" class="form-control form-control-sm limit-input" value="${p.limit_count}" data-id="${p.id}" min="1" max="1000" style="width:70px">
+                        <input type="number" class="form-control form-control-sm limit-input" value="${p.limit_count}" data-id="${p.id}" data-platform="${p.platform}" min="1" max="1000" style="width:70px">
                     </td>
                     <td>${p.track_count || 0}</td>
                     <td><small class="text-muted">${syncTime}</small></td>
@@ -154,7 +154,7 @@ async function loadPlaylists() {
                         <button class="btn btn-sm btn-outline-primary btn-sync" data-id="${p.id}">
                             <i class="bi bi-arrow-repeat"></i> 同步
                         </button>
-                        <button class="btn btn-sm btn-outline-danger btn-delete" data-id="${p.id}" data-name="${p.name}">
+                        <button class="btn btn-sm btn-outline-danger btn-delete" data-id="${p.id}" data-name="${escapeHtml(p.name)}" data-platform="${p.platform}">
                             <i class="bi bi-trash"></i>
                         </button>
                     </td>
@@ -175,7 +175,7 @@ function bindPlaylistEvents() {
             try {
                 await api(`/api/playlists/${id}`, {
                     method: "PUT",
-                    body: JSON.stringify({ enabled: this.checked }),
+                    body: JSON.stringify({ enabled: this.checked, platform: this.dataset.platform }),
                 });
                 showToast(this.checked ? "已启用" : "已禁用");
             } catch (e) {
@@ -191,7 +191,7 @@ function bindPlaylistEvents() {
             try {
                 await api(`/api/playlists/${id}`, {
                     method: "PUT",
-                    body: JSON.stringify({ limit_count: parseInt(this.value) }),
+                    body: JSON.stringify({ limit_count: parseInt(this.value), platform: this.dataset.platform }),
                 });
                 showToast("已更新下载数量");
             } catch (e) {
@@ -223,7 +223,7 @@ function bindPlaylistEvents() {
             const name = this.dataset.name;
             if (!confirm(`确定取消关注「${name}」吗？（已下载的歌曲不受影响）`)) return;
             try {
-                await api(`/api/playlists/${id}`, { method: "DELETE" });
+                await api(`/api/playlists/${id}?platform=${encodeURIComponent(this.dataset.platform)}`, { method: "DELETE" });
                 showToast("已删除");
                 loadPlaylists();
             } catch (e) {
@@ -306,7 +306,7 @@ async function loadCategories() {
         const data = await api("/api/discover/categories?platform=" + _currentPlatform);
         const sel = document.getElementById("discover-cat");
         const cats = data.data || [];
-        sel.innerHTML = cats.map(c => `<option value="${c}">${c}</option>`).join("");
+        sel.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
     } catch (e) {
         console.error("加载分类失败:", e);
     }
@@ -325,7 +325,7 @@ async function loadToplists() {
         grid.innerHTML = list.map(t => renderCard(t, "official", "toplist")).join("");
         bindAddButtons();
     } catch (e) {
-        grid.innerHTML = `<div class="col-12 text-center text-danger">加载失败: ${e.message}</div>`;
+        grid.innerHTML = `<div class="col-12 text-center text-danger">加载失败: ${escapeHtml(e.message)}</div>`;
     }
 }
 
@@ -354,7 +354,7 @@ async function loadHotPlaylists() {
         // 更新翻页控件
         updatePagination(curPage, pages, total);
     } catch (e) {
-        grid.innerHTML = `<div class="col-12 text-center text-danger">加载失败: ${e.message}</div>`;
+        grid.innerHTML = `<div class="col-12 text-center text-danger">加载失败: ${escapeHtml(e.message)}</div>`;
         updatePagination(1, 0, 0);
     }
 }
@@ -372,7 +372,7 @@ function renderCard(item, type, source) {
     const added = myPlaylistIds.has(item.id);
     const playCount = item.play_count ? formatPlayCount(item.play_count) : "";
     const cover = item.cover_img_url
-        ? `<img src="${item.cover_img_url}" class="card-img-top discover-cover" alt="${item.name}">`
+        ? `<img src="${escapeHtml(item.cover_img_url)}" class="card-img-top discover-cover" alt="${escapeHtml(item.name)}">`
         : `<div class="discover-cover-placeholder"><i class="bi bi-music-note-beamed"></i></div>`;
     const meta = source === "toplist"
         ? (item.update_frequency || "排行榜")
@@ -382,12 +382,12 @@ function renderCard(item, type, source) {
             <div class="card discover-card h-100">
                 ${cover}
                 <div class="card-body p-2">
-                    <h6 class="card-title text-truncate mb-1" title="${item.name}">${item.name}</h6>
+                    <h6 class="card-title text-truncate mb-1" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</h6>
                     <small class="text-muted d-block text-truncate">${meta}</small>
                 </div>
                 <div class="card-footer p-2 text-center">
                     <button class="btn btn-sm ${added ? 'btn-secondary' : 'btn-outline-primary'} w-100 btn-add-discover"
-                        data-id="${item.id}" data-name="${item.name}" data-type="${type}" ${added ? 'disabled' : ''}>
+                        data-id="${item.id}" data-name="${escapeHtml(item.name)}" data-type="${type}" ${added ? 'disabled' : ''}>
                         ${added ? '<i class="bi bi-check2"></i> 已添加' : '<i class="bi bi-plus"></i> 添加'}
                     </button>
                 </div>
@@ -711,15 +711,4 @@ function bindAlbumDownload() {
             }
         });
     });
-}
-
-// 简单 HTML 转义（防 XSS）
-function escapeHtml(str) {
-    if (!str) return "";
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
 }

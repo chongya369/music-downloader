@@ -65,7 +65,10 @@ ENV.bak/
 *.swo
 
 # Project specific
-downloads.db
+# downloads.db* ：含本体与任意后缀副本（如 downloads.db.bak-*，备份含明文 Cookie，严禁入库）
+# accounts_export_*.json ：账号导出文件含全部明文 Cookie，严禁入库
+downloads.db*
+accounts_export_*.json
 downloads/
 log/
 *.log

@@ -11,7 +11,6 @@ from .client import NeteaseClient, OFFICIAL_TOPLISTS
 from ._transform import (
     transform_song_urls,
     transform_song_detail,
-    transform_account_info,
     is_vip_song as _is_vip_song,
 )
 
@@ -60,20 +59,6 @@ class NeteaseProvider(MusicProvider):
     # ------------------------------------------------------------------
     # 窄接口方法（走 _transform 转换为统一结构）
     # ------------------------------------------------------------------
-    def verify_account(self, cred: str) -> dict:
-        """验证凭证并返回账号信息
-
-        临时建带 cred 的 client，调 get_account_info + get_vip_info，
-        产出含 vip_text 的 AccountInfo。
-        """
-        client = NeteaseClient(cookie=cred)
-        info = client.get_account_info()
-        if info.get("code") != 200:
-            return {"ok": False, "nickname": "", "vip_type": 0, "vip_expire_at": None, "vip_text": "凭证无效"}
-        account_data = info.get("account") or {}
-        vip_info = client.get_vip_info()
-        return transform_account_info(account_data, vip_info)
-
     def get_song_urls(self, song_ids: list[str], level: str) -> list[dict]:
         """批量获取歌曲下载链接（转换为 UrlInfo 列表）"""
         client = self._ensure_client()
@@ -139,7 +124,3 @@ class NeteaseProvider(MusicProvider):
     def get_album_songs(self, *args, **kwargs):
         """获取专辑内歌曲（旁路代理）"""
         return self._ensure_client().get_album_songs(*args, **kwargs)
-
-    def login_status(self, *args, **kwargs):
-        """检查登录状态（旁路代理）"""
-        return self._ensure_client().login_status(*args, **kwargs)

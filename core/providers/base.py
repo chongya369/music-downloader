@@ -16,15 +16,6 @@ class MusicProvider(ABC):
     platform: str = ""
 
     @abstractmethod
-    def verify_account(self, cred: str) -> dict:
-        """验证凭证并返回账号信息
-
-        Returns:
-            AccountInfo 结构（见下方统一数据结构）
-        """
-        ...
-
-    @abstractmethod
     def get_song_urls(self, song_ids: list[str], level: str) -> list[dict]:
         """批量获取歌曲下载链接
 

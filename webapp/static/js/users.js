@@ -150,16 +150,7 @@ document.getElementById("btn-reset-pwd").addEventListener("click", async functio
     }
 });
 
-// 简单 HTML 转义
-function escapeHtml(str) {
-    if (!str) return "";
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-}
+// escapeHtml 已收敛至全局 app.js（L8），此处不再定义本地副本。
 
 // 初始化
 loadUsers();

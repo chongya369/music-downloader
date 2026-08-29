@@ -9,8 +9,10 @@ let allAccounts = [];
 const PLATFORM_NAMES = { netease: "网易云", qq: "QQ音乐", kugou: "酷狗音乐" };
 const PLATFORM_COLORS = { netease: "#C20C0C", qq: "#31C27C", kugou: "#0062FF" };
 
-// 导出账号信息（含 cookie，敏感）
-document.getElementById("btn-export-accounts").addEventListener("click", function() {
+// 导出账号信息（含 cookie，敏感；按钮仅管理员可见，需判存在性——
+// 普通用户页面无此元素，无条件绑定会使整个 accounts.js 崩溃）
+const exportBtn = document.getElementById("btn-export-accounts");
+if (exportBtn) exportBtn.addEventListener("click", function() {
     if (!confirm("导出文件包含 Cookie 等敏感信息，请妥善保管。是否继续？")) return;
     window.location.href = "/api/accounts/export";
 });
@@ -154,7 +156,7 @@ function renderCards(list) {
                         <div class="card-body">
                             <div class="d-flex align-items-center gap-2 mb-2">
                                 <span class="badge" style="background-color:${platformColor};color:#ffffff;font-size:0.75rem;">${platformName}</span>
-                                <span class="fw-semibold text-truncate" style="font-size:0.875rem;" title="${a.name}">${a.name}</span>
+                                <span class="fw-semibold text-truncate" style="font-size:0.875rem;" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>
                             </div>
                             <hr class="my-1" style="opacity:0.5;">
                             <div class="d-flex align-items-center gap-2 mb-1" style="font-size:0.8rem;">
@@ -250,9 +252,9 @@ function renderTable(list) {
                     </div>
                 </td>
                 <td><span class="badge" style="background-color:${platformColor};color:#ffffff;">${platformName}</span></td>
-                <td>${a.name}</td>
-                <td>${a.nickname || '<span class="text-muted">未获取</span>'}</td>
-                <td><span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}">${a.vip_text}</span></td>
+                <td>${escapeHtml(a.name)}</td>
+                <td>${escapeHtml(a.nickname) || '<span class="text-muted">未获取</span>'}</td>
+                <td><span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}">${escapeHtml(a.vip_text)}</span></td>
                 <td><small>${expireText}</small></td>
                 <td><strong class="${quotaColor}">${quotaText}</strong></td>
                 <td><small class="text-muted">${checkTime}</small></td>
@@ -261,7 +263,7 @@ function renderTable(list) {
                     <button class="btn btn-sm btn-outline-primary btn-edit" data-id="${a.id}">
                         <i class="bi bi-pencil"></i> 编辑
                     </button>
-                    <button class="btn btn-sm btn-outline-danger btn-delete" data-id="${a.id}" data-name="${a.name}">
+                    <button class="btn btn-sm btn-outline-danger btn-delete" data-id="${a.id}" data-name="${escapeHtml(a.name)}">
                         <i class="bi bi-trash"></i>
                     </button>
                 </td>
@@ -373,7 +375,7 @@ document.getElementById("add-platform").addEventListener("change", function() {
     } else if (platform === "qq") {
         hint.textContent = "QQ音乐：浏览器登录 y.qq.com → F12 → Network → 任选 y.qq.com 请求 → 复制完整 Cookie（须含 uin，昵称还需 eas_sid）";
     } else {
-        hint.textContent = "酷狗音乐：暂不支持自动登录，Cookie 将保存备用";
+        hint.textContent = "酷狗音乐：预留平台，暂不支持添加";
     }
 });
 

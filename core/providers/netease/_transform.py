@@ -1,6 +1,6 @@
 """网易云字段 → 统一结构转换层
 
-仅被窄接口方法调用（get_song_urls / get_song_detail / verify_account）。
+仅被窄接口方法调用（get_song_urls / get_song_detail）。
 上层永不 import/调用此模块。
 """
 
@@ -97,32 +97,6 @@ def transform_song_detail(raw_list: list[dict], song_ids: list[str]) -> list[dic
             "duration_ms": 0,
         }))
     return result
-
-
-def transform_account_info(account_data: dict, vip_info: dict) -> dict:
-    """将网易云账号+会员信息转换为 AccountInfo
-
-    Args:
-        account_data: get_account_info() 返回的 account 部分
-        vip_info: get_vip_info() 返回的 vip 信息
-
-    Returns:
-        AccountInfo 结构
-    """
-    vip_type = vip_info.get("vip_type", 0)
-    expire_time = vip_info.get("expire_time")
-
-    # VIP 类型文本映射
-    vip_text_map = {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}
-    vip_text = vip_text_map.get(vip_type, f"vipType={vip_type}")
-
-    return {
-        "ok": True,
-        "nickname": account_data.get("userName") or account_data.get("nickname") or "",
-        "vip_type": vip_type,
-        "vip_expire_at": expire_time,
-        "vip_text": vip_text,
-    }
 
 
 def is_vip_song(fee) -> bool:

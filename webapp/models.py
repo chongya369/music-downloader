@@ -121,10 +121,12 @@ class Song(db.Model):
     status: success / failed / skipped
     platform: 平台标识（netease / qq / kugou）
     id: 平台歌曲 ID（netease 为数字 ID 字符串，QQ 为 songmid 字符串）
+    主键为 (id, platform) 复合主键：netease 数字 ID 与 QQ songmid 理论上可撞号，
+    单列主键下会互相覆盖（N1 修复，旧库由 _migrate_song_pk_to_composite 重建迁移）
     """
     __tablename__ = "songs"
     id = db.Column(db.String(64), primary_key=True)        # 平台歌曲 ID（统一 str）
-    platform = db.Column(db.String(20), default="netease", nullable=False)
+    platform = db.Column(db.String(20), primary_key=True, default="netease", nullable=False)
     name = db.Column(db.String(300), nullable=False)
     artists = db.Column(db.String(300), default="")
     album = db.Column(db.String(300), default="")
@@ -440,6 +442,57 @@ def _migrate_song_ids_to_text(engine) -> None:
         print("[init_db] download_tasks.song_id 已迁移为 VARCHAR(64)（song_id 字符串化）")
 
 
+def _migrate_song_pk_to_composite(engine) -> None:
+    """songs.id 单列主键 → (id, platform) 复合主键（SQLite 表重建迁移，幂等）
+
+    表重建写法复用 _migrate_song_ids_to_text 的既有套路：建新表 → 显式列名
+    复制 → DROP → RENAME，单事务失败整体回滚。必须在 platform 归一化 UPDATE
+    之后调用（songs_new.platform 为 NOT NULL，遗留 NULL/空 platform 的行会让
+    INSERT 失败、整体回滚）。
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("songs"):
+        return
+    pk_cols = set(inspector.get_pk_constraint("songs").get("constrained_columns") or [])
+    if pk_cols == {"id", "platform"}:
+        return                      # 已是复合主键，幂等跳过
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE songs_new (
+                id VARCHAR(64) NOT NULL,
+                platform VARCHAR(20) DEFAULT 'netease' NOT NULL,
+                name VARCHAR(300) NOT NULL,
+                artists VARCHAR(300),
+                album VARCHAR(300),
+                duration_ms INTEGER,
+                quality VARCHAR(20),
+                file_path VARCHAR(500),
+                file_size INTEGER,
+                playlist_id INTEGER,
+                downloaded_at DATETIME,
+                status VARCHAR(20),
+                error_msg VARCHAR(500),
+                source_name VARCHAR(200),
+                account_id INTEGER,
+                PRIMARY KEY (id, platform),
+                FOREIGN KEY(playlist_id) REFERENCES playlists (id)
+            )
+        """))
+        conn.execute(text("""
+            INSERT INTO songs_new
+                (id, platform, name, artists, album, duration_ms, quality,
+                 file_path, file_size, playlist_id, downloaded_at, status,
+                 error_msg, source_name, account_id)
+            SELECT id, platform, name, artists, album, duration_ms, quality,
+                   file_path, file_size, playlist_id, downloaded_at, status,
+                   error_msg, source_name, account_id
+            FROM songs
+        """))                       # 显式列名（不依赖列顺序）；现数据按 id 唯一，无冲突
+        conn.execute(text("DROP TABLE songs"))
+        conn.execute(text("ALTER TABLE songs_new RENAME TO songs"))
+    print("[init_db] songs 主键已迁移为 (id, platform) 复合主键")
+
+
 def init_db(app, db_path: str = "downloads.db") -> None:
     """初始化数据库：配置 SQLAlchemy、创建表、写入默认配置、兼容迁移"""
     abs_db_path = Path(db_path).resolve()
@@ -492,6 +545,14 @@ def init_db(app, db_path: str = "downloads.db") -> None:
             if not db.session.get(Setting, key):
                 db.session.add(Setting(key=key, value=value))
         db.session.commit()
+        # 兼容迁移：songs.id 单列主键 → (id, platform) 复合主键
+        # （必须在 platform 归一化 UPDATE 之后：songs_new.platform 为 NOT NULL）
+        _migrate_song_pk_to_composite(db.engine)
+        # N4c：常用查询索引（download_tasks 表重建迁移会删掉先建的索引，
+        # 故必须在 _migrate_song_ids_to_text 之后执行）
+        with db.engine.begin() as conn:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_platform_song ON download_tasks (platform, song_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_tasks_status ON download_tasks (status)"))
         # 初始化默认管理员账号（仅当 users 表为空时）
         if not User.query.first():
             admin = User(username="admin", is_admin=True, enabled=True)

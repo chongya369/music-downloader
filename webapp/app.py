@@ -46,6 +46,8 @@ __version__ = get_version()
 app = Flask(__name__)
 # Session 签名密钥：优先使用环境变量，未设置则用默认值
 app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "netease-downloader-secret-key-v060")
+# 版本号入 config（账号导出文件等处经 current_app.config 读取）
+app.config["APP_VERSION"] = __version__
 
 
 @app.context_processor

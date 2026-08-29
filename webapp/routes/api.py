@@ -31,7 +31,7 @@ import json as _json
 from flask import Blueprint, current_app, jsonify, request, Response, session
 from sqlalchemy import func
 
-from auth import current_user, admin_required, login_required
+from auth import current_user
 from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for
 from core.providers.netease import NeteaseProvider
 from core.providers.netease.client import OFFICIAL_TOPLISTS
@@ -187,7 +187,7 @@ def _get_client(platform: str = "netease") -> NeteaseProvider:
 def _req_platform() -> str:
     """从请求中读取平台标识（POST 取 body.platform，GET 取 query.platform），默认 netease"""
     if request.method == "POST":
-        data = request.get_json(force=True, silent=True) or {}
+        data = _json_body()
         return (data.get("platform") or "").strip().lower() or "netease"
     return (request.args.get("platform") or "").strip().lower() or "netease"
 
@@ -203,6 +203,12 @@ def _safe_int(value, default: int, lo: int | None = None, hi: int | None = None)
     if hi is not None and n > hi:
         n = hi
     return n
+
+
+def _json_body() -> dict:
+    """安全解析 JSON 请求体；非对象（数组/字符串/非法 JSON）一律返回空 dict"""
+    data = request.get_json(force=True, silent=True)
+    return data if isinstance(data, dict) else {}
 
 
 # ======================================================================
@@ -240,7 +246,7 @@ def add_playlist():
          "limit": 100,
          "platform": "netease" / "qq" / "kugou"}
     """
-    data = request.get_json(force=True)
+    data = _json_body()
     source = data.get("source", "").strip()
     pl_type = data.get("type", "user")
     limit = _safe_int(data.get("limit", 100), 100, lo=1, hi=1000)
@@ -257,10 +263,14 @@ def add_playlist():
     if pid is None:
         return jsonify({"code": 1, "msg": "无法解析歌单 ID，请检查输入"})
 
-    # 检查是否已存在（同平台同 ID 视为重复）
-    existing = Playlist.query.filter_by(id=pid, platform=platform).first()
-    if existing:
-        return jsonify({"code": 1, "msg": f"歌单已存在: {existing.name}"})
+    # 检查是否已存在（同平台同 ID 视为重复）；按纯主键维度取行，
+    # 同 ID 已被另一平台占用时给出明确提示而非 commit 时 IntegrityError 500
+    existing_any = db.session.get(Playlist, pid)
+    if existing_any:
+        if existing_any.platform == platform:
+            return jsonify({"code": 1, "msg": f"歌单已存在: {existing_any.name}"})
+        return jsonify({"code": 1,
+                        "msg": f"ID {pid} 已被平台「{PLATFORM_NAMES.get(existing_any.platform, existing_any.platform)}」的歌单占用"}), 400
 
     # 拉取歌单信息确认有效
     try:
@@ -293,11 +303,16 @@ def add_playlist():
 @api_bp.route("/playlists/<int:pid>", methods=["PUT"])
 def update_playlist(pid: int):
     """更新歌单设置（enabled / limit_count / name）"""
-    pl = Playlist.query.get(pid)
+    # platform 优先从 body 取、缺失回退 query（向后兼容，老脚本不传 platform
+    # 仍按原逻辑 Playlist.query.get(pid)），避免同 ID 跨平台歌单混淆
+    data = request.get_json(force=True)
+    body = data if isinstance(data, dict) else {}
+    platform = (body.get("platform") or request.args.get("platform") or "").strip()
+    pl = (Playlist.query.filter_by(id=pid, platform=platform).first()
+          if platform else Playlist.query.get(pid))
     if not pl:
         return jsonify({"code": 1, "msg": "歌单不存在"})
 
-    data = request.get_json(force=True)
     if "enabled" in data:
         pl.enabled = bool(data["enabled"])
     if "limit_count" in data:
@@ -311,7 +326,10 @@ def update_playlist(pid: int):
 @api_bp.route("/playlists/<int:pid>", methods=["DELETE"])
 def delete_playlist(pid: int):
     """取消关注歌单（不删除已下载的歌曲记录）"""
-    pl = Playlist.query.get(pid)
+    # DELETE 无 body，platform 从 query 取；缺失时回退纯主键查询（向后兼容）
+    platform = request.args.get("platform", "").strip()
+    pl = (Playlist.query.filter_by(id=pid, platform=platform).first()
+          if platform else Playlist.query.get(pid))
     if not pl:
         return jsonify({"code": 1, "msg": "歌单不存在"})
     name = pl.name
@@ -448,7 +466,7 @@ def retry_failed():
         {"song_ids": [1,2,3]}  指定重试
         {} 或 {"song_ids": null}  全部重试
     """
-    data = request.get_json(force=True, silent=True) or {}
+    data = _json_body()
     song_ids = data.get("song_ids")
     tm = _get_task_manager()
     count = tm.retry_failed(song_ids)
@@ -516,6 +534,17 @@ def get_settings():
     return jsonify({"code": 0, "data": data})
 
 
+# 数值型设置项的合法区间（web_port 是 host:port 字符串，刻意不在表内）
+_NUMERIC_SETTINGS = {
+    "ncm_api_port":             (1024, 65535),
+    "qq_api_port":              (1024, 65535),
+    "max_retries":              (1, 10),
+    "default_playlist_limit":   (1, 1000),
+    "hourly_limit_per_account": (0, 10000),
+    "sync_jitter":              (0, 3600),
+}
+
+
 @api_bp.route("/settings", methods=["PUT"])
 def save_settings():
     """保存配置
@@ -526,22 +555,40 @@ def save_settings():
     """
     from models import DEFAULT_SETTINGS
     data = request.get_json(force=True)
+    if not isinstance(data, dict):          # JSON 数组体会让后续 data.items() 抛 500
+        return jsonify({"code": 1, "msg": "请求体必须是 JSON 对象"}), 400
     allowed = set(DEFAULT_SETTINGS.keys())
 
-    # 端口变化时校验：API服务运行中禁止修改端口
-    if str(data.get("ncm_api_port", "")) != Setting.get("ncm_api_port", ""):
+    # 端口变化时校验：API服务运行中禁止修改端口（仅当请求体携带该字段时校验，
+    # 避免裸 API 部分更新被误拦）
+    if "ncm_api_port" in data and str(data["ncm_api_port"]) != Setting.get("ncm_api_port", ""):
         if bridge.get_bridge()._is_alive():
             return jsonify({"code": 1,
                             "msg": "API服务运行中，请先停止服务再修改端口"}), 400
-    if str(data.get("qq_api_port", "")) != Setting.get("qq_api_port", ""):
+    if "qq_api_port" in data and str(data["qq_api_port"]) != Setting.get("qq_api_port", ""):
         if qq_bridge.get_bridge()._is_alive():
             return jsonify({"code": 1,
                             "msg": "QQ音乐API服务运行中，请先停止服务再修改端口"}), 400
 
     port_changed = False
+    warns = []
     for key, value in data.items():
         if key not in allowed:
             continue
+        if key in _NUMERIC_SETTINGS:
+            lo, hi = _NUMERIC_SETTINGS[key]
+            try:
+                n = int(str(value).strip())
+            except (TypeError, ValueError):
+                n = int(DEFAULT_SETTINGS[key])
+                warns.append(f"{key} 已回退为默认值 {n}")
+            if n < lo:
+                n = lo
+                warns.append(f"{key} 已钳制到下限 {lo}")
+            elif n > hi:
+                n = hi
+                warns.append(f"{key} 已钳制到上限 {hi}")
+            value = str(n)
         if key == "web_port" and str(value) != Setting.get("web_port", ""):
             port_changed = True
         Setting.set(key, str(value))
@@ -552,6 +599,8 @@ def save_settings():
     msg = "设置已保存"
     if port_changed:
         msg += "（Web监听地址修改需重启服务生效）"
+    if warns:
+        msg += "；" + "；".join(warns)
     return jsonify({"code": 0, "msg": msg})
 
 
@@ -636,13 +685,15 @@ def add_account():
     platform: netease(网易云,默认) / qq(QQ音乐) / kugou(酷狗音乐)
     网易云/QQ添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
     """
-    data = request.get_json(force=True)
+    data = _json_body()
     platform = data.get("platform", "netease").strip() or "netease"
     if platform not in PLATFORMS:
         return jsonify({"code": 1, "msg": f"不支持的平台: {platform}，可选: {PLATFORM_NAMES}"})
+    if platform == "kugou":
+        return jsonify({"code": 1, "msg": "酷狗音乐为预留平台，暂不支持添加账号"})
     name = data.get("name", "").strip()
     cookie = data.get("cookie", "").strip()
-    quota_limit = int(data.get("quota_limit", 0))
+    quota_limit = _safe_int(data.get("quota_limit", 0), 0, lo=0, hi=1000000)
 
     if not name:
         return jsonify({"code": 1, "msg": "请填写账号别名"})
@@ -698,11 +749,11 @@ def update_account(aid: int):
     if not acc:
         return jsonify({"code": 1, "msg": "账号不存在"})
 
-    data = request.get_json(force=True)
+    data = _json_body()
     if "name" in data:
         acc.name = data["name"]
     if "quota_limit" in data:
-        acc.quota_limit = int(data["quota_limit"])
+        acc.quota_limit = _safe_int(data["quota_limit"], acc.quota_limit, lo=0, hi=1000000)
     if "enabled" in data:
         acc.enabled = bool(data["enabled"])
     if "cookie" in data and data["cookie"]:
@@ -741,7 +792,7 @@ def move_account(aid: int):
     acc = Account.query.get(aid)
     if not acc:
         return jsonify({"code": 1, "msg": "账号不存在"})
-    direction = (request.get_json(force=True) or {}).get("direction", "")
+    direction = _json_body().get("direction", "")
     if direction not in ("up", "down"):
         return jsonify({"code": 1, "msg": "direction 必须为 up 或 down"})
 
@@ -776,7 +827,7 @@ def import_accounts():
     platform 缺省为 netease；旧版导出文件无 platform 字段时自动归为网易云。
     返回：{"code":0, "data":{"imported":N, "skipped":N, "total":N}, "msg":"..."}
     """
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     accounts = data.get("accounts") or []
     if not isinstance(accounts, list):
         return jsonify({"code": 1, "msg": "accounts 字段必须是数组"})
@@ -801,9 +852,9 @@ def import_accounts():
             name=name,
             cookie=cookie,
             nickname=a.get("nickname", ""),
-            vip_type=a.get("vip_type", 0),
-            quota_limit=a.get("quota_limit", 0),
-            sort_order=a.get("sort_order", 0),
+            vip_type=_safe_int(a.get("vip_type", 0), 0, lo=0),
+            quota_limit=_safe_int(a.get("quota_limit", 0), 0, lo=0, hi=1000000),
+            sort_order=_safe_int(a.get("sort_order", 0), 0, lo=0),
             enabled=a.get("enabled", True),
         )
         # 解析会员到期时间
@@ -828,14 +879,14 @@ def import_accounts():
 
 @api_bp.route("/accounts/export")
 def export_accounts():
-    """导出所有账号信息为 JSON 文件（含 cookie，敏感）
-
-    返回 attachment 文件下载，文件名 accounts_export_YYYYMMDD_HHMMSS.json
-    """
+    """导出所有账号信息为 JSON 文件（含 cookie，敏感）——仅管理员"""
+    err = _require_admin()
+    if err:
+        return err
     accounts = Account.query.order_by(Account.platform, Account.sort_order, Account.id).all()
     payload = {
         "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "version": "0.5.0",
+        "version": current_app.config.get("APP_VERSION", ""),
         "accounts": [
             {
                 "platform": a.platform,
@@ -933,6 +984,7 @@ def accounts_stats():
             "platform_name": PLATFORM_NAMES.get(acc.platform, acc.platform),
             "name": acc.name,
             "nickname": acc.nickname,
+            "vip_type": acc.vip_type,
             "vip_text": vip_text_for(acc.platform, acc.vip_type),
             "vip_expire_at": acc.vip_expire_at.strftime("%Y-%m-%d %H:%M:%S") if acc.vip_expire_at else None,
             "monthly_downloaded": downloaded,
@@ -970,9 +1022,9 @@ def discover_playlists():
         {data: [...], total, page, limit, pages}
     """
     cat = request.args.get("cat", "全部")
-    limit = int(request.args.get("limit", 20))
+    limit = _safe_int(request.args.get("limit", 20), 20, lo=1, hi=100)
     order = request.args.get("order", "hot")
-    page = max(1, int(request.args.get("page", 1)))
+    page = _safe_int(request.args.get("page", 1), 1, lo=1, hi=10000)
     offset = (page - 1) * limit
     try:
         client = _get_client(_req_platform())
@@ -1022,7 +1074,7 @@ def discover_search():
         {"code":0, "data":{"items":[{"id","name","artist","size","publish_time"}],
                             "total":N, "page":P, "pages":P, "type":"album"}}
     """
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     keyword = (data.get("keyword") or "").strip()
     platform = _req_platform()
     search_type = (data.get("type") or "song").strip()
@@ -1079,7 +1131,8 @@ def discover_search():
     result_items = []
     for t in items:
         t2 = dict(t)
-        t2["downloaded"] = t.get("id") in downloaded_ids
+        # 统一 str 化后比较：网易云 search_songs 返回 int id，不 str 化会恒 False
+        t2["downloaded"] = str(t.get("id")) in downloaded_ids
         result_items.append(t2)
     return jsonify({
         "code": 0,
@@ -1100,7 +1153,7 @@ def discover_search_download():
     请求体：{"keyword":"周杰伦", "limit":50, "offset":0}
     返回：{"code":0, "data":{"enqueued","excluded","skipped","total"}, "msg":"..."}
     """
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     keyword = (data.get("keyword") or "").strip()
     limit = _safe_int(data.get("limit", 50), 50, lo=1, hi=100)
     offset = _safe_int(data.get("offset", 0), 0, lo=0)
@@ -1112,7 +1165,8 @@ def discover_search_download():
         result = tm.search_and_download(keyword, limit=limit, offset=offset, platform=_req_platform())
     except ValueError as e:
         return jsonify({"code": 1, "msg": str(e)})
-    msg = f"共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，跳过 {result['skipped']}"
+    msg = (f"共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，"
+           f"跳过(已下载/进行中/曾失败) {result['skipped']}")
     return jsonify({"code": 0, "data": result, "msg": msg})
 
 
@@ -1124,7 +1178,7 @@ def discover_album_download():
     album_id 字符串透传：netease 为数字 ID，QQ 为 albummid（非数字字符串）
     返回：{"code":0, "data":{"enqueued","excluded","skipped","total"}, "msg":"..."}
     """
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     album_id = (data.get("album_id") or "").strip() or None
     album_name = (data.get("album_name") or "").strip()
     if not album_id:
@@ -1135,7 +1189,8 @@ def discover_album_download():
         result = tm.download_album(album_id, album_name, platform=_req_platform())
     except ValueError as e:
         return jsonify({"code": 1, "msg": str(e)})
-    msg = f"专辑共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，跳过 {result['skipped']}"
+    msg = (f"专辑共 {result['total']} 首：入队 {result['enqueued']}，排除 {result['excluded']}，"
+           f"跳过(已下载/进行中/曾失败) {result['skipped']}")
     return jsonify({"code": 0, "data": result, "msg": msg})
 
 
@@ -1146,7 +1201,7 @@ def discover_download_song():
     请求体：{"song_id":"123" 或 "003rJSwm3TechU", "name":"...", "artists":"...", "fee":0, "platform":...}
     song_id 字符串透传：netease 为数字 ID，QQ 为 songmid（非数字字符串）
     """
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     song_id = data.get("song_id")
     song_id = str(song_id).strip() if song_id is not None else ""
     name = (data.get("name") or "").strip()
@@ -1192,7 +1247,7 @@ def add_user():
     err = _require_admin()
     if err:
         return err
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     is_admin = bool(data.get("is_admin", False))
@@ -1226,7 +1281,7 @@ def update_user(uid: int):
     if not user:
         return jsonify({"code": 1, "msg": "用户不存在"})
 
-    data = request.get_json(force=True) or {}
+    data = _json_body()
     me = current_user()
 
     # 修改密码

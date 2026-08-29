@@ -340,10 +340,13 @@ class QqClient:
         play_url = self._fetch_play_url(songmids, quality)
 
         # 目标音质拿不到 url 的歌，降级 128 再试（免费歌匿名可拿 128）
+        # downgraded 记录实际靠 128 降级拿到 url 的歌，用于输出循环修正扩展名
+        downgraded: set[str] = set()
         if quality != "128":
             missing = [m for m in songmids if not (play_url.get(str(m)) or {}).get("url")]
             if missing:
                 fallback = self._fetch_play_url(missing, "128")
+                downgraded = {m for m in missing if (fallback.get(str(m)) or {}).get("url")}
                 for mid in missing:
                     if (fallback.get(str(mid)) or {}).get("url"):
                         play_url[str(mid)] = fallback[str(mid)]
@@ -354,9 +357,7 @@ class QqClient:
             item = play_url.get(str(mid)) or {}
             url = item.get("url") or None
             # 降级拿到 128 时扩展名同步降为 mp3
-            item_ext = ext
-            if url and quality != "128" and url.split("?")[0].split(".")[-1].lower() in ("mp3", "m4a"):
-                item_ext = QUALITY_EXT.get("128", "mp3")
+            item_ext = "mp3" if str(mid) in downgraded else ext
             out.append({
                 "url": url,
                 "ext": item_ext,
@@ -506,7 +507,7 @@ class QqClient:
         result = self._request("/getRanks", params={"topId": top_id, "limit": 100, "page": 0})
         data = result.get("data") or {}
         songs = result.get("songInfoList") or []
-        if not songs and not data:
+        if not songs:
             return {}
         tracks = []
         for s in songs[:limit]:

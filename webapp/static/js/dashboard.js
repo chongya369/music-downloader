@@ -53,10 +53,10 @@ async function loadAccountsStats() {
                     <div class="card border-light">
                         <div class="card-body p-3">
                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                <strong>${a.name}</strong>
-                                <span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}">${a.vip_text}</span>
+                                <strong>${escapeHtml(a.name)}</strong>
+                                <span class="badge ${a.vip_type > 0 ? 'bg-warning' : 'bg-secondary'}">${escapeHtml(a.vip_text)}</span>
                             </div>
-                            <small class="text-muted d-block mb-2">${a.nickname || '未获取昵称'}</small>
+                            <small class="text-muted d-block mb-2">${escapeHtml(a.nickname || '未获取昵称')}</small>
                             <div class="d-flex justify-content-between mb-1">
                                 <small>本月已下载</small>
                                 <small class="fw-bold">${quotaText}</small>

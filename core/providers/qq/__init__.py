@@ -59,38 +59,6 @@ class QqProvider(MusicProvider):
     # ------------------------------------------------------------------
     # 窄接口方法（返回统一结构）
     # ------------------------------------------------------------------
-    def verify_account(self, cred: str) -> dict:
-        """验证凭证并返回账号信息
-
-        临时建带 cred 的 client 调 /getUserInfo，产出含 vip_text 的
-        AccountInfo。QQ 的 vip_type 为绿钻等级（0=非会员，1-8），
-        vip_expire_at 转为毫秒时间戳与网易云语义对齐。
-        """
-        if not cred or not cred.strip():
-            return {"ok": False, "nickname": "", "vip_type": 0,
-                    "vip_expire_at": None, "vip_text": "凭证为空"}
-        client = QqClient(cookie=cred, custom_base_url=self._custom_base_url)
-        try:
-            info = client.get_user_info()
-        except RuntimeError as e:
-            return {"ok": False, "nickname": "", "vip_type": 0,
-                    "vip_expire_at": None, "vip_text": str(e)}
-        if not info.get("ok"):
-            return {"ok": False, "nickname": "", "vip_type": 0,
-                    "vip_expire_at": None,
-                    "vip_text": info.get("msg") or "Cookie 无效"}
-        vip_type = info.get("vip_type") or 0
-        vip_text = f"绿钻VIP Lv.{vip_type}" if vip_type > 0 else "非会员"
-        expire_ts = info.get("vip_expire_ts") or 0
-        return {
-            "ok": True,
-            "nickname": info.get("nickname") or "",
-            "vip_type": vip_type,
-            # 秒 → 毫秒，与网易云 AccountInfo 的 vip_expire_at 语义一致
-            "vip_expire_at": expire_ts * 1000 if expire_ts > 0 else None,
-            "vip_text": vip_text,
-        }
-
     def get_song_urls(self, song_ids: list[str], level: str) -> list[dict]:
         """批量获取歌曲下载链接（返回 UrlInfo 列表，与 song_ids 顺序对齐）"""
         client = self._ensure_client()
