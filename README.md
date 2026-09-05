@@ -32,9 +32,9 @@ Deen音乐下载器 —— 基于 Flask 的多平台音乐下载器，采用 Pro
 | HTTP 客户端 | requests 2.31+ |
 | 音频元数据 | mutagen 1.47+ |
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
-| 网易云 API | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（自动拉起对应平台二进制，不随源码分发） |
-| QQ 音乐 API | qqmusic-api（预编译二进制，自动拉起，不随源码分发） |
-| 酷狗音乐 API | [KuGouMusicApi](https://github.com/Lines98/KuGouMusicApi)（预编译二进制，自动拉起，不随源码分发） |
+| 网易云 API | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（自动拉起对应平台二进制，已随仓库内置） |
+| QQ 音乐 API | qqmusic-api（预编译二进制，自动拉起，已随仓库内置） |
+| 酷狗音乐 API | [KuGouMusicApi](https://github.com/Lines98/KuGouMusicApi)（预编译二进制，自动拉起，已随仓库内置） |
 | 多平台架构 | `core/providers/` 抽象层：`MusicProvider` ABC → `registry.py` 工厂 → `netease/`、`qq/`、`kugou/` 均已实现 |
 
 ## 目录结构
@@ -76,8 +76,11 @@ code/
 │   ├── 酷狗Provider实施方案.md
 │   ├── 酷狗Provider落地改造方案.md
 │   └── 酷狗音乐API接口文档.md
-├── api/                              # 外部 API 服务二进制目录（不随源码分发）
-│   └── readme.txt                    # 各平台 API 二进制获取与放置说明
+├── api/                              # 内置 API 服务二进制（已随仓库内置/分发）
+│   ├── ncm-api-win-x64.exe / ncm-api-linux-x64      # 网易云
+│   ├── qqmusic-api-win-x64.exe / qqmusic-api-linux-x64 # QQ 音乐
+│   ├── kugou_api_win.exe / kugou_api_linux          # 酷狗音乐
+│   └── readme.txt                    # 各平台 API 二进制放置与更新说明
 ├── webapp/
 │   ├── app.py                        # Flask 应用入口（默认监听 *:45600）
 │   ├── models.py                     # 数据库模型（6 张表）+ 默认配置
@@ -105,17 +108,17 @@ code/
 ## 环境依赖
 
 - **Python** 3.10+
-- **NeteaseCloudMusicApi-enhanced 二进制**（**不随源码分发**，需自行下载）
+- **NeteaseCloudMusicApi-enhanced 二进制**（**已随仓库内置**）
   - 官方项目：https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced
-  - 将对应平台的二进制放入 `code/api/`（当前支持 Windows / Linux x64，可按需扩展其他平台），程序启动时自动按平台选择并拉起
-  - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
-- **qqmusic-api 二进制**（**不随源码分发**，需自行准备）
+  - 预编译二进制随仓库分发在 `api/` 目录（Windows / Linux x64），程序启动时自动按平台选择并拉起
+  - 如需更新或替换，直接从官方 Release 下载同名文件覆盖 `api/` 下对应文件即可
+- **qqmusic-api 二进制**（**已随仓库内置**）
   - 内置 QQ 音乐 Provider 依赖该二进制（`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`），程序启动时自动按平台选择并拉起
-  - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
-- **kugou-api 二进制**（**不随源码分发**，需自行准备）
+  - 如需更新或替换，直接覆盖 `api/` 下对应文件即可
+- **kugou-api 二进制**（**已随仓库内置**）
   - 官方项目：https://github.com/Lines98/KuGouMusicApi
   - 内置酷狗音乐 Provider 依赖该二进制（`kugou_api_win.exe` / `kugou_api_linux`），程序启动时自动按平台选择并拉起
-  - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
+  - 如需更新或替换，直接覆盖 `api/` 下对应文件即可
 
 > 三个平台的 API 二进制放置与版本对应关系详见 [api/readme.txt](api/readme.txt)。
 
@@ -474,16 +477,16 @@ A: API 返回了 freeTrialInfo，表示当前账号无该歌曲完整版权，�
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
 ### Q: NeteaseCloudMusicApi 服务未启动会怎样？
-A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `code/api/` 下有对应平台二进制（**不随源码分发，需从官方项目下载放置**）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/providers/netease/client.py)）。
+A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（或从官方 Release 补放同名文件）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/providers/netease/client.py)）。
 
 ### Q: QQ 音乐 API 服务未启动会怎样？
-A: `qq_api_auto_start` 默认关闭，程序启动时不主动拉起；首次 QQ 业务请求会经 `base_url` 自动拉起（需要几秒，onefile 二进制首次自解压就绪稍慢），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `code/api/` 下有 `qqmusic-api-win-x64.exe` 或 `qqmusic-api-linux-x64`（**不随源码分发**）。QQ 服务未就绪时，QQ 平台相关功能（添加 QQ 账号校验、发现页榜单/搜索/下载、QQ 歌单同步）不可用。
+A: `qq_api_auto_start` 默认关闭，程序启动时不主动拉起；首次 QQ 业务请求会经 `base_url` 自动拉起（需要几秒，onefile 二进制首次自解压就绪稍慢），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`）。QQ 服务未就绪时，QQ 平台相关功能（添加 QQ 账号校验、发现页榜单/搜索/下载、QQ 歌单同步）不可用。
 
 ### Q: QQ 音乐歌词无法下载？
 A: QQ 音乐 API 服务端未提供歌词接口，属已知能力限制，下载时会跳过歌词，不影响音频文件与封面的写入。
 
 ### Q: 酷狗音乐 API 服务未启动会怎样？
-A: `kugou_api_auto_start` 默认关闭，程序启动时不主动拉起；首次酷狗业务请求会经 `base_url` 自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `code/api/` 下有 `kugou_api_win.exe` 或 `kugou_api_linux`（**不随源码分发**）。酷狗服务未就绪时，酷狗平台相关功能（扫码登录、发现页榜单/搜索/下载、酷狗歌单同步）不可用。
+A: `kugou_api_auto_start` 默认关闭，程序启动时不主动拉起；首次酷狗业务请求会经 `base_url` 自动拉起（需要几秒），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（`kugou_api_win.exe` / `kugou_api_linux`）。酷狗服务未就绪时，酷狗平台相关功能（扫码登录、发现页榜单/搜索/下载、酷狗歌单同步）不可用。
 
 ### Q: 酷狗匿名下载只能 128kbps？
 A: 酷狗音乐 API 对匿名（无登录 Cookie）请求强制封顶 128kbps MP3。如需 320/FLAC/Hi-Res 音质，请在「账号管理」页添加酷狗账号（支持扫码登录），登录态下走 v5 取流接口返回真实高音质。
@@ -552,12 +555,10 @@ python3 build.py
 打包脚本会自动：
 - 优先使用项目 `.venv` 的 Python（避免漏包第三方依赖）
 - 清理旧的 `dist/`、`build/` 与生成的 spec 文件
-- 创建空的 `api/`、`downloads/` 占位目录
+- 将源码 `api/` 目录中对应平台的三个 API 二进制复制进产物 `dist/music_downloader/api/`（缺失时生成占位提示文件，不中断打包）
+- 创建空的 `downloads/` 占位目录
 
-打包后需将对应平台的三个 API 二进制放入 `dist/music_downloader/api/`，然后运行产物并访问 `http://localhost:45600`：
-- 网易云：`ncm-api-win-x64.exe` / `ncm-api-linux-x64`（从 [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) Release 下载）
-- QQ 音乐：`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`
-- 酷狗音乐：`kugou_api_win.exe` / `kugou_api_linux`（从 [KuGouMusicApi](https://github.com/Lines98/KuGouMusicApi) Release 下载）
+打包产物 `dist/music_downloader/` 已内置当前平台所需的 API 二进制，直接运行产物并访问 `http://localhost:45600` 即可，无需手动放置。
 
 ### GitHub Actions 自动构建
 
