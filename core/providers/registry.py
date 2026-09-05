@@ -4,6 +4,7 @@
 并发多账号下载时，实例需随调用结束丢弃，避免 cookie 串号。
 """
 
+from .kugou import KuGouProvider
 from .netease import NeteaseProvider
 from .qq import QqProvider
 
@@ -11,6 +12,7 @@ from .qq import QqProvider
 _KNOWN_PROVIDERS = {
     "netease": NeteaseProvider,
     "qq": QqProvider,
+    "kugou": KuGouProvider,
 }
 
 

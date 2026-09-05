@@ -287,5 +287,5 @@
 <script>
 window._AVAILABLE_PLATFORMS = {{ platforms | tojson | safe }};
 </script>
-<script src="{{ url_for('static', filename='js/playlists.js') }}"></script>
+<script src="{{ static_v('js/playlists.js') }}"></script>
 {% endblock %}

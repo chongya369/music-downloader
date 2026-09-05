@@ -1,10 +1,10 @@
 # Deen音乐下载器
 
-Deen音乐下载器 —— 基于 Flask 的多平台音乐下载器，采用 Provider 抽象架构，已内置网易云音乐与 QQ 音乐的完整实现；酷狗音乐接口已预留可扩展。支持多账号管理、定时同步歌单、断点续传下载、元数据写入、Web 界面管理。
+Deen音乐下载器 —— 基于 Flask 的多平台音乐下载器，采用 Provider 抽象架构，已内置网易云音乐、QQ 音乐与酷狗音乐的完整实现。支持多账号管理、定时同步歌单、断点续传下载、元数据写入、Web 界面管理。
 
 ## 功能特性
 
-- **多账号管理**：支持添加多个音乐平台账号（Cookie 鉴权），按使用顺序调度
+- **多账号管理**：支持添加多个音乐平台账号（Cookie 鉴权），按使用顺序调度；酷狗音乐支持扫码登录（自动生成二维码并填入 Cookie）
 - **多账号调度策略**：
   - 接力模式（fallback）：当前账号达额度或失败时自动切换下一个
   - 轮询模式（round_robin）：按计数器轮流分配下载任务
@@ -13,7 +13,7 @@ Deen音乐下载器 —— 基于 Flask 的多平台音乐下载器，采用 Pro
 - **定时同步**：APScheduler 多时间点 cron 触发，支持抖动延迟（避免固定时刻请求）
 - **断点续传**：HTTP Range 协议，下载失败自动重试，支持临时文件续传
 - **元数据写入**：MP3（ID3v2）/ FLAC（Vorbis Comment）标签，含封面、歌词、专辑信息
-- **API 服务控制**：Web「设置」页实时查看网易云（NeteaseCloudMusicApi）与 QQ 音乐（qqmusic-api）服务状态，支持各自配置端口、一键启动/停止、`auto_start` 开关与自定义 API 服务 URL
+- **API 服务控制**：Web「设置」页实时查看网易云（NeteaseCloudMusicApi）、QQ 音乐（qqmusic-api）与酷狗音乐（kugou-api）服务状态，支持各自配置端口、一键启动/停止、`auto_start` 开关与自定义 API 服务 URL
 - **排除过滤**：按关键字过滤歌曲（如 live、伴奏、remix），playlist 和 search 两个场景独立配置
 - **发现页**：官方排行榜、热门分类歌单、搜索歌曲/专辑、单曲/专辑批量下载
 - **下载历史**：完整记录下载任务（成功/失败/跳过），支持失败重试
@@ -34,7 +34,8 @@ Deen音乐下载器 —— 基于 Flask 的多平台音乐下载器，采用 Pro
 | 前端 | Bootstrap 5.3.2 + Bootstrap Icons 1.11.3 |
 | 网易云 API | [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)（自动拉起对应平台二进制，不随源码分发） |
 | QQ 音乐 API | qqmusic-api（预编译二进制，自动拉起，不随源码分发） |
-| 多平台架构 | `core/providers/` 抽象层：`MusicProvider` ABC → `registry.py` 工厂 → `netease/`、`qq/` 已实现，`kugou/` 预留 |
+| 酷狗音乐 API | [KuGouMusicApi](https://github.com/Lines98/KuGouMusicApi)（预编译二进制，自动拉起，不随源码分发） |
+| 多平台架构 | `core/providers/` 抽象层：`MusicProvider` ABC → `registry.py` 工厂 → `netease/`、`qq/`、`kugou/` 均已实现 |
 
 ## 目录结构
 
@@ -54,10 +55,16 @@ code/
 │   │   │   ├── bridge.py             # NeteaseCloudMusicApi 二进制进程管理
 │   │   │   ├── client.py             # API 客户端
 │   │   │   └── parse_links.py        # 链接解析（歌单/专辑/单曲）
-│   │   └── qq/                       # QQ 音乐 Provider（已完整实现）
-│   │       ├── __init__.py           # QqProvider
-│   │       ├── _transform.py         # QQ 数据格式转换
-│   │       ├── bridge.py             # qqmusic-api 二进制进程管理
+│   │   ├── qq/                       # QQ 音乐 Provider（已完整实现）
+│   │   │   ├── __init__.py           # QqProvider
+│   │   │   ├── _transform.py         # QQ 数据格式转换
+│   │   │   ├── bridge.py             # qqmusic-api 二进制进程管理
+│   │   │   ├── client.py             # API 客户端
+│   │   │   └── parse_links.py        # 链接解析（歌单/专辑/单曲）
+│   │   └── kugou/                    # 酷狗音乐 Provider（已完整实现）
+│   │       ├── __init__.py           # KuGouProvider
+│   │       ├── _transform.py         # 酷狗数据格式转换
+│   │       ├── bridge.py             # kugou-api 二进制进程管理
 │   │       ├── client.py             # API 客户端
 │   │       └── parse_links.py        # 链接解析（歌单/专辑/单曲）
 │   ├── downloader.py                 # 文件下载器（断点续传 + 重试 + 路径保护）
@@ -65,8 +72,12 @@ code/
 │   └── language_detector.py          # 基于歌词的语言检测
 ├── docs/                             # 开发过程记录（仅本地维护）
 │   ├── CHANGELOG.md                  # 版本更新日志
-│   ├── QQ音乐平台接入方案.md
-│   └── QQmusic-API调用说明.md
+│   ├── API调用说明.md
+│   ├── 酷狗Provider实施方案.md
+│   ├── 酷狗Provider落地改造方案.md
+│   └── 酷狗音乐API接口文档.md
+├── api/                              # 外部 API 服务二进制目录（不随源码分发）
+│   └── readme.txt                    # 各平台 API 二进制获取与放置说明
 ├── webapp/
 │   ├── app.py                        # Flask 应用入口（默认监听 *:45600）
 │   ├── models.py                     # 数据库模型（6 张表）+ 默认配置
@@ -86,7 +97,7 @@ code/
 ├── build_linux.sh                    # 一键打包入口（Linux，POSIX sh）
 ├── icon.ico                          # 打包用应用图标
 ├── requirements.txt                  # Python 依赖
-├── version.txt                       # 版本号（当前 0.3.0）
+├── version.txt                       # 版本号（当前 0.4.0）
 ├── run_web.bat                       # Windows 一键启动脚本
 └── run_web.sh                        # Linux 一键启动脚本
 ```
@@ -101,6 +112,12 @@ code/
 - **qqmusic-api 二进制**（**不随源码分发**，需自行准备）
   - 内置 QQ 音乐 Provider 依赖该二进制（`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`），程序启动时自动按平台选择并拉起
   - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
+- **kugou-api 二进制**（**不随源码分发**，需自行准备）
+  - 官方项目：https://github.com/Lines98/KuGouMusicApi
+  - 内置酷狗音乐 Provider 依赖该二进制（`kugou_api_win.exe` / `kugou_api_linux`），程序启动时自动按平台选择并拉起
+  - 二进制仅在打包发布的分发包（dist/）内附带，源码仓库不包含
+
+> 三个平台的 API 二进制放置与版本对应关系详见 [api/readme.txt](api/readme.txt)。
 
 ## 快速开始
 
@@ -110,7 +127,7 @@ Windows 用户直接双击 `run_web.bat`，脚本会自动：
 - 检测 Python 环境
 - 创建虚拟环境（首次运行）
 - 安装 Python 依赖（首次运行）
-- 启动 Flask 服务（网易云 / QQ 音乐 API 服务按需自动拉起）
+- 启动 Flask 服务（网易云 / QQ 音乐 / 酷狗音乐 API 服务按需自动拉起）
 
 手动启动方式：
 
@@ -164,19 +181,20 @@ python3 -m venv .venv
 在「账号管理」页添加账号：
 - 选择平台（网易云 / QQ音乐 / 酷狗音乐）
 - 填写账号别名（如"主账号"）
-- 粘贴 Cookie（**必须包含对应平台的鉴权字段**，从浏览器登录平台后从 F12 → Network → Request Headers 复制）
+- 粘贴 Cookie（**必须包含对应平台的鉴权字段**：网易云须含 `MUSIC_U`，QQ 须含 `uin`，酷狗须含 `token`；从浏览器登录平台后从 F12 → Network → Request Headers 复制）
 - 可选设置月额度上限（0 表示不限制）
 
-> **当前已完整实现：网易云音乐、QQ 音乐**。酷狗音乐的账号可添加和管理（数据模型与 UI 已支持），实际的 Provider 接口正在开发中。
+> **当前已完整实现：网易云音乐、QQ 音乐、酷狗音乐**。酷狗支持账号页扫码登录（添加弹窗「扫码登录」用酷狗 APP 扫码自动填入 Cookie）；登录后可下 VIP 歌曲与高音质（320/FLAC/Hi-Res），匿名状态封顶 128kbps。
 
 ### 4. 添加歌单
 
-在「歌单管理」页添加要同步的歌单，先在弹窗中选择平台（网易云 / QQ音乐），支持：
+在「歌单管理」页添加要同步的歌单，先在弹窗中选择平台（网易云 / QQ音乐 / 酷狗音乐），支持：
 - 网易云：纯数字歌单 ID、分享链接、短链接
   - `3778678`
   - `https://music.163.com/playlist?id=3778678`
   - `https://y.music.163.com/m/playlist?id=3778678`
 - QQ 音乐：歌单分享链接（`https://y.qq.com/n/ryqq/playlist/...`）
+- 酷狗音乐：歌单分享链接（`https://www.kugou.com/yy/special/single/...` 或纯数字 ID）
 - 官方榜单：从各平台「发现」页选择
 
 ## 配置说明
@@ -193,6 +211,10 @@ python3 -m venv .venv
 | `qq_api_port` | `45602` | QQ 音乐 API 服务端口（0 表示随机空闲端口） |
 | `use_custom_qq_api_url` | `false` | 是否使用自定义 QQ 音乐 API 服务 URL（勾选时内置服务禁用） |
 | `qq_api_base_url` | `http://127.0.0.1:45602` | 自定义 QQ 音乐 API 服务 URL，`use_custom_qq_api_url` 为 `true` 时生效 |
+| `kugou_api_auto_start` | `false` | 是否随程序启动自动拉起酷狗音乐 API 服务（`false` 为按需懒启动，重启生效） |
+| `kugou_api_port` | `45603` | 酷狗音乐 API 服务端口（0 表示随机空闲端口） |
+| `use_custom_kugou_api_url` | `false` | 是否使用自定义酷狗音乐 API 服务 URL（勾选时内置服务禁用） |
+| `kugou_api_base_url` | `http://127.0.0.1:45603` | 自定义酷狗音乐 API 服务 URL，`use_custom_kugou_api_url` 为 `true` 时生效 |
 | `web_port` | `*:45600` | Web 服务监听地址（`host:port` 格式，如 `*:45600` 或 `127.0.0.1:45600`，`*` 表示所有网卡，修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录） |
 | `level` | `exhigh` | 音质等级：standard / higher / exhigh / lossless / hires |
@@ -268,7 +290,7 @@ python3 -m venv .venv
 | name | String | 别名（如"主账号"） |
 | cookie | Text | Cookie 字符串（含鉴权字段） |
 | nickname | String | 平台昵称 |
-| vip_type | Integer | 0=非会员 / 11=黑胶VIP / 12=SVIP |
+| vip_type | Integer | 网易云 0=非会员/11=黑胶VIP/12=SVIP；QQ 0=非会员/1-8=绿钻；酷狗 0=非会员/1=VIP |
 | vip_expire_at | DateTime | 会员到期时间 |
 | quota_limit | Integer | 月额度上限（0=不限制） |
 | sort_order | Integer | 使用顺序（升序） |
@@ -402,6 +424,15 @@ python3 -m venv .venv
 | GET | `/api/qq/status` | 内置 QQ 音乐 API 服务状态 |
 | POST | `/api/qq/start` | 启动内置 QQ 音乐 API 服务 |
 | POST | `/api/qq/stop` | 停止内置 QQ 音乐 API 服务 |
+| GET | `/api/kugou/status` | 内置酷狗音乐 API 服务状态 |
+| POST | `/api/kugou/start` | 启动内置酷狗音乐 API 服务 |
+| POST | `/api/kugou/stop` | 停止内置酷狗音乐 API 服务 |
+
+### 酷狗扫码登录
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/kugou/qr/create` | 生成酷狗扫码登录二维码 |
+| POST | `/api/kugou/qr/check` | 轮询扫码状态（status=4 返回 Cookie） |
 
 ### 用户管理（仅管理员）
 | 方法 | 路径 | 说明 |
@@ -450,6 +481,18 @@ A: `qq_api_auto_start` 默认关闭，程序启动时不主动拉起；首次 QQ
 
 ### Q: QQ 音乐歌词无法下载？
 A: QQ 音乐 API 服务端未提供歌词接口，属已知能力限制，下载时会跳过歌词，不影响音频文件与封面的写入。
+
+### Q: 酷狗音乐 API 服务未启动会怎样？
+A: `kugou_api_auto_start` 默认关闭，程序启动时不主动拉起；首次酷狗业务请求会经 `base_url` 自动拉起（需要几秒），也可在 Web「设置」页手动启动。若二进制缺失，请在 Web「设置」页查看状态并确认 `code/api/` 下有 `kugou_api_win.exe` 或 `kugou_api_linux`（**不随源码分发**）。酷狗服务未就绪时，酷狗平台相关功能（扫码登录、发现页榜单/搜索/下载、酷狗歌单同步）不可用。
+
+### Q: 酷狗匿名下载只能 128kbps？
+A: 酷狗音乐 API 对匿名（无登录 Cookie）请求强制封顶 128kbps MP3。如需 320/FLAC/Hi-Res 音质，请在「账号管理」页添加酷狗账号（支持扫码登录），登录态下走 v5 取流接口返回真实高音质。
+
+### Q: 酷狗账号显示"酷狗未提供"到期时间？
+A: 酷狗音乐 API 的 `/user/detail` 未返回到期时间字段，属上游限制，账号卡片/列表中会员到期时间显示「酷狗未提供」属正常现象，不影响下载。
+
+### Q: 酷狗音乐歌词无翻译？
+A: 酷狗 API 仅返回纯歌词（lrc），翻译歌词（tlyric）接口固定为空，属已知能力限制。
 
 ### Q: 修改 Web 监听地址后无法访问？
 A: `web_port` 修改后需重启 Flask 服务才生效（Windows 通过 `run_web.bat`、Linux 通过 `./run_web.sh` 重启，或手动重启 `python webapp/app.py`）。
@@ -511,7 +554,10 @@ python3 build.py
 - 清理旧的 `dist/`、`build/` 与生成的 spec 文件
 - 创建空的 `api/`、`downloads/` 占位目录
 
-打包后需将对应平台的 API 二进制（Windows: `ncm-api-win-x64.exe`, Linux: `ncm-api-linux-x64`，从官方项目 Release 下载）放入 `dist/music_downloader/api/`，然后运行产物并访问 `http://localhost:45600`。
+打包后需将对应平台的三个 API 二进制放入 `dist/music_downloader/api/`，然后运行产物并访问 `http://localhost:45600`：
+- 网易云：`ncm-api-win-x64.exe` / `ncm-api-linux-x64`（从 [NeteaseCloudMusicApi-enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) Release 下载）
+- QQ 音乐：`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`
+- 酷狗音乐：`kugou_api_win.exe` / `kugou_api_linux`（从 [KuGouMusicApi](https://github.com/Lines98/KuGouMusicApi) Release 下载）
 
 ### GitHub Actions 自动构建
 
@@ -519,4 +565,4 @@ python3 build.py
 
 ## 版本
 
-当前版本：**0.3.0**（见 [version.txt](version.txt)）
+当前版本：**0.4.0**（见 [version.txt](version.txt)）

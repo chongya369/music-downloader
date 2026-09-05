@@ -106,6 +106,47 @@
                     <span class="me-1">:</span>
                     <input type="text" class="form-control flex-grow-1" name="qq_api_base_url" id="qq-api-url-input" placeholder="http://127.0.0.1:45602" style="max-width:400px;" disabled>
                 </div>
+
+                <!-- 酷狗音乐API服务（内置 + 可选自定义URL） -->
+                <hr class="my-3">
+                <h6 class="mb-3">酷狗音乐API服务</h6>
+
+                <!-- 状态 -->
+                <div class="d-flex align-items-center mb-3">
+                    <label class="form-label mb-0 me-2">状态:</label>
+                    <span id="kugou-status-badge" class="badge bg-secondary me-3">未知</span>
+                    <span id="kugou-status-detail" class="text-muted small"></span>
+                </div>
+
+                <!-- 端口 + 自动启动 + 启停按钮（同一行） -->
+                <div id="kugou-builtin-section">
+                    <div class="d-flex align-items-center flex-wrap gap-2 mb-3">
+                        <div class="d-flex align-items-center">
+                            <label class="form-label mb-0 me-1 small">端口</label>
+                            <input type="number" class="form-control" name="kugou_api_port" min="1024" max="65535" value="45603" style="width:100px;">
+                        </div>
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="kugou_api_auto_start" id="kugou-auto-start" value="true">
+                            <label class="form-check-label small" for="kugou-auto-start">随程序启动自动启动</label>
+                        </div>
+                        <button type="button" id="btn-kugou-start" class="btn btn-sm btn-success">
+                            <i class="bi bi-play"></i> 启动
+                        </button>
+                        <button type="button" id="btn-kugou-stop" class="btn btn-sm btn-danger">
+                            <i class="bi bi-stop"></i> 停止
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 自定义URL：容器外，勾选后不受内置服务禁用影响 -->
+                <div class="d-flex align-items-center mb-2">
+                    <div class="form-check me-2">
+                        <input type="checkbox" class="form-check-input" name="use_custom_kugou_api_url" id="use-custom-kugou-api-url" value="true">
+                        <label class="form-check-label" for="use-custom-kugou-api-url">使用自定义API服务URL</label>
+                    </div>
+                    <span class="me-1">:</span>
+                    <input type="text" class="form-control flex-grow-1" name="kugou_api_base_url" id="kugou-api-url-input" placeholder="http://127.0.0.1:45603" style="max-width:400px;" disabled>
+                </div>
             </div>
         </div>
     </div>
@@ -240,5 +281,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+<script src="{{ static_v('js/settings.js') }}"></script>
 {% endblock %}

@@ -31,10 +31,13 @@ def vip_text_for(platform: str, vip_type: int) -> str:
 
     - netease: 0=非会员, 11=黑胶VIP, 12=SVIP
     - qq: 0=非会员, 1-8=绿钻VIP等级
+    - kugou: 0=非会员, 1=VIP会员（client.get_user_info 按 is_vip 归一为 0/1）
     - 其他平台: 透传数字
     """
     if platform == "qq":
         return f"绿钻VIP Lv.{vip_type}" if vip_type > 0 else "非会员"
+    if platform == "kugou":
+        return "VIP会员" if vip_type > 0 else "非会员"
     return {0: "非会员", 11: "黑胶VIP", 12: "SVIP"}.get(vip_type, f"vipType={vip_type}")
 
 
@@ -278,6 +281,12 @@ DEFAULT_SETTINGS = {
     # QQ音乐自定义API服务URL（勾选 use_custom_qq_api_url 时生效）
     "use_custom_qq_api_url": "false",
     "qq_api_base_url": "http://127.0.0.1:45602",
+    # 酷狗音乐API服务相关（内置 kugou-api 二进制）
+    "kugou_api_auto_start": "false",
+    "kugou_api_port": "45603",
+    # 酷狗音乐自定义API服务URL（勾选 use_custom_kugou_api_url 时生效）
+    "use_custom_kugou_api_url": "false",
+    "kugou_api_base_url": "http://127.0.0.1:45603",
     # Web 服务监听地址（host:port，* 表示监听所有网卡）
     "web_port": "*:45600",
     "output_dir": "downloads",
@@ -326,11 +335,23 @@ def get_qq_custom_api_url() -> str:
     return Setting.get("qq_api_base_url", "").rstrip("/")
 
 
+def get_kugou_custom_api_url() -> str:
+    """读取酷狗音乐自定义API服务URL（需在 app context 内调用）
+
+    未勾选 use_custom_kugou_api_url 时返回空串（走内置 kugou-api bridge）。
+    反环硬约束：此函数不得 import core.providers.*。
+    """
+    if Setting.get("use_custom_kugou_api_url", "false") != "true":
+        return ""
+    return Setting.get("kugou_api_base_url", "").rstrip("/")
+
+
 def get_api_base_url(platform: str) -> str:
     """按平台读取 API 服务地址（需在 app context 内调用）
 
     返回空串表示走平台内置 bridge：
     - qq：use_custom_qq_api_url 勾选时返回 qq_api_base_url，否则空（内置服务）
+    - kugou：use_custom_kugou_api_url 勾选时返回 kugou_api_base_url，否则空（内置服务）
     - 其他（netease 等）：沿用网易云自定义 API 逻辑（含 use_custom_api_url
       开关，为空时走内置 bridge）
 
@@ -338,6 +359,8 @@ def get_api_base_url(platform: str) -> str:
     """
     if platform == "qq":
         return get_qq_custom_api_url()
+    if platform == "kugou":
+        return get_kugou_custom_api_url()
     return get_custom_api_url()
 
 

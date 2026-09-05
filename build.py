@@ -57,10 +57,10 @@ def exe_suffix() -> str:
 
 
 def api_binary_names() -> list[str]:
-    """内置 API 二进制文件名列表（网易云 + QQ音乐），须与各 bridge 模块的 _BINARIES 保持一致"""
+    """内置 API 二进制文件名列表（网易云 + QQ音乐 + 酷狗音乐），须与各 bridge 模块的 _BINARIES 保持一致"""
     if is_win():
-        return ["ncm-api-win-x64.exe", "qqmusic-api-win-x64.exe"]
-    return ["ncm-api-linux-x64", "qqmusic-api-linux-x64"]
+        return ["ncm-api-win-x64.exe", "qqmusic-api-win-x64.exe", "kugou_api_win.exe"]
+    return ["ncm-api-linux-x64", "qqmusic-api-linux-x64", "kugou_api_linux"]
 
 
 def venv_python() -> Path:

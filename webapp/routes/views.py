@@ -55,6 +55,7 @@ def _clear_login_failures(key: str) -> None:
 AVAILABLE_PLATFORMS = [
     {"key": "netease", "name": "网易云", "icon": "music-note-beamed"},
     {"key": "qq", "name": "QQ音乐", "icon": "music-note-list"},
+    {"key": "kugou", "name": "酷狗音乐", "icon": "vinyl"},
 ]
 
 

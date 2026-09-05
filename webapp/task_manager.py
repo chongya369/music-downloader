@@ -1048,6 +1048,11 @@ class TaskManager:
 
         if not url:
             reason = "试听片段" if url_info.get("is_trial") else "无版权或需VIP"
+            # 附加底层诊断（酷狗取流失败携带 v5 status/error_code 或 v6 _errno，
+            # 可区分登录态失效与真无版权）
+            err = url_info.get("err") or ""
+            if err:
+                reason += f"[{err}]"
             if switch_on_fail:
                 # 接力模式：切换下一个账号（限定同平台账号池，排除已尝试过的账号）
                 next_acc = self._account_selector.switch_to_next(
@@ -1078,14 +1083,24 @@ class TaskManager:
         if write_lyric:
             lyric = client.get_lyric(str(sid)).get("lrc", "")
 
-        # 取主歌手作为下载子目录（多歌手取第一个，文件名仍保留全部歌手）。
-        # meta.artist 为空时回退任务记录的 artists 首个歌手：
-        # QQ 无单曲详情接口（meta 为空占位），不回退会导致全部落入 群星/ 目录
-        primary_artist = (meta.get("artist") or "").strip() \
-            or (artists.split("/")[0].strip() if artists else "")
+        # 歌名权威化：详情接口的 title 是纯歌名（酷狗歌单上游 name 为
+        # 「歌手 - 歌名」合并串，实测 /krm/audio 返回纯歌名），非空时
+        # 覆盖任务记录——文件名/标签/Song 入库随之统一（零额外请求，
+        # 详情本来就要取封面；QQ 无单曲详情接口时 title 为空自然回退）
+        if (meta.get("title") or "").strip():
+            sname = meta["title"].strip()
+
+        # 主歌手 = 第一个歌手（下载子目录）。优先任务记录的 artists
+        # （三平台均含全部歌手；分隔符不统一：网易云/QQ 用 '/'，酷狗
+        # 搜索链路用 '、'，故按 [/、] 拆分），取不到回退 meta.artist
+        # （酷狗为 '、' 连接的全部歌手，同样拆第一个），再回退 群星
+        # （QQ 无单曲详情接口时 meta 为空占位，不回退会全落 群星/）
+        _source_artists = artists or (meta.get("artist") or "")
+        primary_artist = re.split(r"[/、]", _source_artists)[0].strip() \
+            if _source_artists.strip() else ""
         primary_artist = sanitize_filename(primary_artist) if primary_artist else "群星"
 
-        # 下载文件
+        # 下载文件（文件名保留全部歌手：build_filename(artists, sname)）
         downloader = self._get_downloader()
         filename = build_filename(artists, sname, ext)
 
@@ -1175,6 +1190,9 @@ class TaskManager:
                 task.status = "done"
                 task.progress = 100
                 task.account_id = account.id
+                # 同步权威歌名（下载历史显示；歌单任务原名可能是合并串）
+                if task.song_name != sname:
+                    task.song_name = sname
                 db.session.commit()
             logger.info("任务完成: %s - %s (账号: %s)", artists, sname, account.name)
 

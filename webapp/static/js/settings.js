@@ -18,6 +18,11 @@ async function loadSettings() {
         form.use_custom_qq_api_url.checked = s.use_custom_qq_api_url === "true";
         form.qq_api_base_url.value = s.qq_api_base_url || "http://127.0.0.1:45602";
         toggleCustomQqUrl();
+        form.kugou_api_port.value = s.kugou_api_port || "45603";
+        form.kugou_api_auto_start.checked = s.kugou_api_auto_start === "true";
+        form.use_custom_kugou_api_url.checked = s.use_custom_kugou_api_url === "true";
+        form.kugou_api_base_url.value = s.kugou_api_base_url || "http://127.0.0.1:45603";
+        toggleCustomKugouUrl();
 
         form.output_dir.value = s.output_dir || "";
         form.level.value = s.level || "exhigh";
@@ -62,6 +67,10 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         qq_api_auto_start: form.qq_api_auto_start.checked ? "true" : "false",
         use_custom_qq_api_url: form.use_custom_qq_api_url.checked ? "true" : "false",
         qq_api_base_url: form.use_custom_qq_api_url.checked ? form.qq_api_base_url.value.trim() : "",
+        kugou_api_port: form.kugou_api_port.value.trim(),
+        kugou_api_auto_start: form.kugou_api_auto_start.checked ? "true" : "false",
+        use_custom_kugou_api_url: form.use_custom_kugou_api_url.checked ? "true" : "false",
+        kugou_api_base_url: form.use_custom_kugou_api_url.checked ? form.kugou_api_base_url.value.trim() : "",
         output_dir: form.output_dir.value.trim(),
         level: form.level.value,
         max_retries: form.max_retries.value,
@@ -91,6 +100,7 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         loadSettings();
         refreshNcmStatus();  // 端口修改后自动重启完成，立即刷新状态显示
         refreshQqStatus();
+        refreshKugouStatus();
     } catch (e) {
         showToast(e.message, "错误");
     }
@@ -141,6 +151,29 @@ function toggleCustomQqUrl() {
 }
 
 document.getElementById("use-custom-qq-api-url").addEventListener("change", toggleCustomQqUrl);
+
+// 酷狗音乐自定义URL切换
+function toggleCustomKugouUrl() {
+    const useCustom = document.getElementById("use-custom-kugou-api-url").checked;
+    const customInput = document.getElementById("kugou-api-url-input");
+    const builtinSection = document.getElementById("kugou-builtin-section");
+
+    if (useCustom) {
+        customInput.disabled = false;
+        customInput.required = true;
+        customInput.focus();
+        builtinSection.style.opacity = "0.5";
+        builtinSection.style.pointerEvents = "none";
+    } else {
+        customInput.disabled = true;
+        customInput.required = false;
+        customInput.value = "";
+        builtinSection.style.opacity = "";
+        builtinSection.style.pointerEvents = "";
+    }
+}
+
+document.getElementById("use-custom-kugou-api-url").addEventListener("change", toggleCustomKugouUrl);
 
 // 初始化
 loadSettings();
@@ -338,3 +371,100 @@ document.getElementById("btn-qq-stop").addEventListener("click", async function(
 // 3s 轮询状态
 refreshQqStatus();
 setInterval(refreshQqStatus, 3000);
+
+// ======================================================================
+// 酷狗音乐API服务状态轮询与启停
+// ======================================================================
+const kugouStatusBadge = document.getElementById("kugou-status-badge");
+const kugouStatusDetail = document.getElementById("kugou-status-detail");
+
+function renderKugouStatus(data) {
+    // 自定义URL模式下显示特殊状态
+    const useCustom = document.getElementById("use-custom-kugou-api-url").checked;
+    const portInput = document.querySelector('[name="kugou_api_port"]');
+    if (useCustom) {
+        kugouStatusBadge.className = "badge bg-info";
+        kugouStatusBadge.textContent = "自定义URL";
+        kugouStatusDetail.textContent = "当前使用自定义API服务URL，内置服务已禁用";
+        return;
+    }
+    if (!data) {
+        kugouStatusBadge.className = "badge bg-secondary";
+        kugouStatusBadge.textContent = "未知";
+        kugouStatusDetail.textContent = "";
+        return;
+    }
+    if (data.running) {
+        kugouStatusBadge.className = "badge bg-success";
+        kugouStatusBadge.textContent = "运行中";
+        // 运行中禁止修改端口
+        portInput.disabled = true;
+        portInput.title = "请先停止API服务再修改端口";
+    } else {
+        kugouStatusBadge.className = "badge bg-danger";
+        kugouStatusBadge.textContent = "已停止";
+        // 停止后允许修改端口
+        portInput.disabled = false;
+        portInput.title = "";
+    }
+    const parts = [];
+    if (data.port) parts.push(`端口 ${data.port}`);
+    if (data.preferred_port && data.preferred_port !== data.port) parts.push(`配置端口 ${data.preferred_port}`);
+    if (data.pid) parts.push(`PID ${data.pid}`);
+    if (data.bin_exists === false) parts.push("未找到二进制");
+    kugouStatusDetail.textContent = parts.join(" · ");
+}
+
+async function refreshKugouStatus() {
+    try {
+        const resp = await api("/api/kugou/status", { timeout: 5000 });
+        renderKugouStatus(resp.data);
+    } catch (e) {
+        // 轮询失败保持上次状态即可，不打断操作
+    }
+}
+
+document.getElementById("btn-kugou-start").addEventListener("click", async function() {
+    const useCustom = document.getElementById("use-custom-kugou-api-url").checked;
+    if (useCustom) {
+        showToast("自定义URL模式下不可操作内置服务", "提示");
+        return;
+    }
+    const btn = this;
+    btn.disabled = true;
+    kugouStatusBadge.className = "badge bg-warning";
+    kugouStatusBadge.textContent = "启动中";
+    try {
+        // 首次启动最长可达 60s，覆盖默认 15s 超时
+        const resp = await api("/api/kugou/start", { method: "POST", timeout: 70000 });
+        showToast(resp.msg, "成功");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+        refreshKugouStatus();
+    }
+});
+
+document.getElementById("btn-kugou-stop").addEventListener("click", async function() {
+    const useCustom = document.getElementById("use-custom-kugou-api-url").checked;
+    if (useCustom) {
+        showToast("自定义URL模式下不可操作内置服务", "提示");
+        return;
+    }
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const resp = await api("/api/kugou/stop", { method: "POST" });
+        showToast(resp.msg, "成功");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+        refreshKugouStatus();
+    }
+});
+
+// 3s 轮询状态
+refreshKugouStatus();
+setInterval(refreshKugouStatus, 3000);

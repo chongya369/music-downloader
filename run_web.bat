@@ -138,7 +138,8 @@ echo [STEP] Dependency check done: MISSING_DEPS=%MISSING_DEPS%
 
 if "%MISSING_DEPS%"=="1" (
     echo [INFO] Installing missing dependencies...
-    ".venv\Scripts\python.exe" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+    ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+    if errorlevel 1 ".venv\Scripts\python.exe" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
     if errorlevel 1 (
         echo [ERRO] Dependency install failed
         exit /b 1
@@ -148,18 +149,17 @@ if "%MISSING_DEPS%"=="1" (
     echo [INFO] All dependencies ready
 )
 
-REM ---- Check built-in API binary (0.2.0+) ----
-set API_BIN=api\ncm-api-win-x64.exe
-set API_BIN_OK=1
-if not exist "%API_BIN%" (
-    echo [WARN] Missing API binary: %API_BIN%
-    echo [WARN] Discover/playlist features may be unavailable.
-    echo [WARN] Download the matching release and put it in api\ .
-    set API_BIN_OK=0
-) else (
-    echo [INFO] API binary ready: %API_BIN%
-)
-echo [STEP] API binary check done: API_BIN_OK=%API_BIN_OK%
+REM ---- Check built-in API binaries (multi-platform) ----
+set NCM_BIN=api\ncm-api-win-x64.exe
+set QQ_BIN=api\qqmusic-api-win-x64.exe
+set KG_BIN=api\kugou_api_win.exe
+set NCM_OK=1
+set QQ_OK=1
+set KG_OK=1
+if not exist "%NCM_BIN%" echo [WARN] Missing API binary: %NCM_BIN% (NetEase feature may be unavailable) & set NCM_OK=0
+if not exist "%QQ_BIN%" echo [WARN] Missing API binary: %QQ_BIN% (QQMusic feature may be unavailable) & set QQ_OK=0
+if not exist "%KG_BIN%" echo [WARN] Missing API binary: %KG_BIN% (KuGou feature may be unavailable) & set KG_OK=0
+echo [STEP] API binary check done: NCM=%NCM_OK% QQ=%QQ_OK% KG=%KG_OK%
 
 echo.
 echo ============================================

@@ -33,9 +33,11 @@ from sqlalchemy import func
 
 from auth import current_user
 from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for
-from core.providers.netease import NeteaseProvider
+from core.providers.base import MusicProvider
 from core.providers.netease.client import OFFICIAL_TOPLISTS
 from core.providers.netease.parse_links import parse_playlist_id
+from core.providers.kugou import bridge as kugou_bridge
+from core.providers.kugou.parse_links import parse_kugou_playlist_id
 from core.providers.qq.parse_links import parse_qq_playlist_id
 from core.providers import get_provider
 from core.providers.netease import bridge
@@ -93,6 +95,8 @@ def _refresh_account_info(acc: Account, cookie: str | None = None) -> str:
     """
     if acc.platform == "qq":
         return _refresh_qq_account_info(acc, cookie)
+    if acc.platform == "kugou":
+        return _refresh_kugou_account_info(acc, cookie)
     if acc.platform != "netease":
         return ""
     use_cookie = cookie if cookie is not None else (acc.cookie or "")
@@ -156,16 +160,49 @@ def _refresh_qq_account_info(acc: Account, cookie: str | None = None) -> str:
     return ""
 
 
+def _refresh_kugou_account_info(acc: Account, cookie: str | None = None) -> str:
+    """刷新酷狗音乐账号信息（昵称/VIP 状态）
+
+    调 /user/detail，需 token+userid Cookie。失败时保留账号原有信息
+    不覆盖（与 QQ 行为一致），记日志返回空提示。
+    """
+    use_cookie = cookie if cookie is not None else (acc.cookie or "")
+    if not use_cookie:
+        return ""
+    try:
+        client = _create_client(cookie=use_cookie, platform="kugou")
+        info = client.get_user_info()
+        if not info.get("ok"):
+            logger.warning("刷新酷狗音乐账号信息失败 (%s): %s", acc.name, info.get("msg"))
+            return ""
+        acc.nickname = info.get("nickname") or ""
+        acc.vip_type = info.get("vip_type") or 0
+        expire_ts = info.get("vip_expire_ts") or 0
+        if expire_ts > 0:
+            try:
+                acc.vip_expire_at = datetime.fromtimestamp(expire_ts)
+            except (TypeError, ValueError, OSError, OverflowError):
+                acc.vip_expire_at = None
+        else:
+            acc.vip_expire_at = None
+        acc.last_check_at = datetime.now()
+        return info.get("msg") or ""
+    except Exception as e:
+        logger.warning("刷新酷狗音乐账号信息失败 (%s): %s", acc.name, e)
+    return ""
+
+
 def _get_task_manager():
     return current_app.config["TASK_MANAGER"]
 
 
-def _create_client(cookie: str = "", platform: str = "netease") -> NeteaseProvider:
+def _create_client(cookie: str = "", platform: str = "netease") -> MusicProvider:
     """创建指定平台的 Provider（返回 provider，自动按平台应用 API 服务地址设置）
 
     API 地址按平台分流：qq → use_custom_qq_api_url + qq_api_base_url
-    （为空走内置 qqmusic-api bridge）；netease → 现有自定义 API URL
-    逻辑（为空走内置 bridge）。
+    （为空走内置 qqmusic-api bridge）；kugou → use_custom_kugou_api_url +
+    kugou_api_base_url（为空走内置 kugou-api bridge）；netease → 现有
+    自定义 API URL 逻辑（为空走内置 bridge）。
     """
     p = get_provider(platform)
     p.set_custom_base_url(get_api_base_url(platform))
@@ -174,7 +211,7 @@ def _create_client(cookie: str = "", platform: str = "netease") -> NeteaseProvid
     return p
 
 
-def _get_client(platform: str = "netease") -> NeteaseProvider:
+def _get_client(platform: str = "netease") -> MusicProvider:
     """用第一个启用的指定平台账号 cookie 创建 provider（用于发现页/添加歌单等公开接口）
 
     无启用账号时用空 cookie。
@@ -255,9 +292,11 @@ def add_playlist():
     if not source:
         return jsonify({"code": 1, "msg": "请输入歌单 ID 或链接"})
 
-    # 链接解析按平台分流（QQ disstid 与网易云 ID 均为纯数字，可共用 int 主键）
+    # 链接解析按平台分流（QQ disstid / 酷狗 rankid 与网易云 ID 均为纯数字，可共用 int 主键）
     if platform == "qq":
         pid = parse_qq_playlist_id(source)
+    elif platform == "kugou":
+        pid = parse_kugou_playlist_id(source)
     else:
         pid = parse_playlist_id(source)
     if pid is None:
@@ -538,6 +577,7 @@ def get_settings():
 _NUMERIC_SETTINGS = {
     "ncm_api_port":             (1024, 65535),
     "qq_api_port":              (1024, 65535),
+    "kugou_api_port":           (1024, 65535),
     "max_retries":              (1, 10),
     "default_playlist_limit":   (1, 1000),
     "hourly_limit_per_account": (0, 10000),
@@ -569,6 +609,10 @@ def save_settings():
         if qq_bridge.get_bridge()._is_alive():
             return jsonify({"code": 1,
                             "msg": "QQ音乐API服务运行中，请先停止服务再修改端口"}), 400
+    if "kugou_api_port" in data and str(data["kugou_api_port"]) != Setting.get("kugou_api_port", ""):
+        if kugou_bridge.get_bridge()._is_alive():
+            return jsonify({"code": 1,
+                            "msg": "酷狗音乐API服务运行中，请先停止服务再修改端口"}), 400
 
     port_changed = False
     warns = []
@@ -657,6 +701,71 @@ def qq_stop():
 
 
 # ======================================================================
+# 内置 API 服务（kugou-api）控制
+# ======================================================================
+@api_bp.route("/kugou/status")
+def kugou_status():
+    """获取内置 酷狗音乐API 服务状态"""
+    return jsonify({"code": 0, "data": kugou_bridge.get_bridge().status()})
+
+
+@api_bp.route("/kugou/start", methods=["POST"])
+def kugou_start():
+    """启动内置 酷狗音乐API 服务（幂等）"""
+    try:
+        url = kugou_bridge.get_bridge().start()
+        return jsonify({"code": 0, "msg": "酷狗音乐API服务已启动", "data": {"base_url": url}})
+    except RuntimeError as e:
+        return jsonify({"code": 1, "msg": str(e)}), 500
+
+
+@api_bp.route("/kugou/stop", methods=["POST"])
+def kugou_stop():
+    """停止内置 酷狗音乐API 服务（幂等）"""
+    kugou_bridge.get_bridge().stop()
+    return jsonify({"code": 0, "msg": "酷狗音乐API服务已停止"})
+
+
+@api_bp.route("/kugou/qr/create", methods=["POST"])
+def kugou_qr_create():
+    """生成酷狗扫码登录二维码"""
+    try:
+        client = _create_client(platform="kugou")
+        r = client.create_qr_login()
+        if not r.get("ok"):
+            return jsonify({"code": 1, "msg": r.get("msg", "二维码生成失败")})
+        return jsonify({"code": 0, "data": {"key": r.get("key", ""),
+                                            "qr_img": r.get("qr_img", "")}})
+    except Exception as e:
+        logger.exception("酷狗扫码登录二维码生成失败: %s", e)
+        return jsonify({"code": 1, "msg": f"二维码生成失败: {e}"})
+
+
+@api_bp.route("/kugou/qr/check", methods=["POST"])
+def kugou_qr_check():
+    """轮询酷狗扫码登录状态
+
+    返回 status：0=二维码过期 1=等待扫码 2=已扫码待确认 4=成功（含 cookie）
+    """
+    data = _json_body()
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"code": 1, "msg": "缺少二维码 key"})
+    try:
+        client = _create_client(platform="kugou")
+        r = client.check_qr_login(key)
+        if not r.get("ok"):
+            return jsonify({"code": 1, "msg": r.get("msg", "状态查询失败")})
+        out = {"status": r.get("status", 0)}
+        if r.get("cookie"):
+            out["cookie"] = r["cookie"]
+        return jsonify({"code": 0, "data": out})
+    except Exception as e:
+        logger.exception("酷狗扫码状态查询失败: %s", e)
+        return jsonify({"code": 1, "msg": f"状态查询失败: {e}"})
+
+
+# ======================================================================
 # 账号管理（多账号）
 # ======================================================================
 @api_bp.route("/accounts")
@@ -683,14 +792,12 @@ def add_account():
 
     请求体：{"platform", "name", "cookie", "quota_limit"}
     platform: netease(网易云,默认) / qq(QQ音乐) / kugou(酷狗音乐)
-    网易云/QQ添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
+    网易云/QQ/酷狗添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
     """
     data = _json_body()
     platform = data.get("platform", "netease").strip() or "netease"
     if platform not in PLATFORMS:
         return jsonify({"code": 1, "msg": f"不支持的平台: {platform}，可选: {PLATFORM_NAMES}"})
-    if platform == "kugou":
-        return jsonify({"code": 1, "msg": "酷狗音乐为预留平台，暂不支持添加账号"})
     name = data.get("name", "").strip()
     cookie = data.get("cookie", "").strip()
     quota_limit = _safe_int(data.get("quota_limit", 0), 0, lo=0, hi=1000000)
@@ -698,13 +805,16 @@ def add_account():
     if not name:
         return jsonify({"code": 1, "msg": "请填写账号别名"})
 
-    # 网易云要求 Cookie 含 MUSIC_U；QQ 要求 Cookie 含 uin；其他平台暂不强校验
+    # Cookie 核心字段强校验：网易云 MUSIC_U / QQ uin / 酷狗 token
     if platform == "netease":
         if not cookie or "MUSIC_U" not in cookie:
             return jsonify({"code": 1, "msg": "Cookie 必须包含 MUSIC_U"})
     if platform == "qq":
         if not cookie or "uin" not in cookie:
             return jsonify({"code": 1, "msg": "Cookie 必须包含 uin"})
+    if platform == "kugou":
+        if not cookie or "token" not in cookie:
+            return jsonify({"code": 1, "msg": "Cookie 必须包含 token（酷狗登录态核心字段）"})
 
     # 新账号的 sort_order = 当前平台内最大值 + 1
     max_order = db.session.query(db.func.max(Account.sort_order)).filter(
@@ -717,11 +827,11 @@ def add_account():
         quota_limit=quota_limit,
         sort_order=max_order + 1,
         enabled=True,
-        last_check_at=datetime.now() if platform in ("netease", "qq") else None,
+        last_check_at=datetime.now() if platform in ("netease", "qq", "kugou") else None,
     )
-    # 网易云/QQ自动刷新账号信息
+    # 网易云/QQ/酷狗自动刷新账号信息
     refresh_hint = ""
-    if platform in ("netease", "qq"):
+    if platform in ("netease", "qq", "kugou"):
         refresh_hint = _refresh_account_info(acc, cookie=cookie)
     db.session.add(acc)
     db.session.commit()
@@ -914,7 +1024,7 @@ def export_accounts():
 def test_account_login(aid: int):
     """测试指定账号的登录状态，并刷新会员信息
 
-    netease / qq 平台支持登录测试；其他平台返回暂不支持。
+    netease / qq / kugou 平台支持登录测试；其他平台返回暂不支持。
     """
     acc = Account.query.get(aid)
     if not acc:
@@ -922,6 +1032,8 @@ def test_account_login(aid: int):
 
     if acc.platform == "qq":
         return _test_qq_account_login(acc)
+    if acc.platform == "kugou":
+        return _test_kugou_account_login(acc)
 
     if acc.platform != "netease":
         return jsonify({
@@ -969,6 +1081,36 @@ def _test_qq_account_login(acc: Account) -> Response:
         })
     except Exception as e:
         return jsonify({"code": 1, "msg": f"连接QQ音乐API服务失败: {e}"})
+
+
+def _test_kugou_account_login(acc: Account) -> Response:
+    """酷狗音乐账号登录测试（调 /user/detail 并刷新会员信息）"""
+    try:
+        client = _create_client(cookie=acc.cookie, platform="kugou")
+        info = client.get_user_info()
+        if not info.get("ok"):
+            return jsonify({"code": 1, "msg": f"Cookie 无效: {info.get('msg', '未知错误')}"})
+        hint = _refresh_kugou_account_info(acc)
+        db.session.commit()
+        vip_text = vip_text_for(acc.platform, acc.vip_type)
+        nickname = acc.nickname or "未知"
+        msg = f"登录成功: {nickname} ({vip_text})"
+        # 实测 VIP 下载能力（高音质是否生效），帮用户确认登录凭证是否完整
+        try:
+            cap = client.test_download_capability()
+            if cap.get("msg"):
+                msg += f"；下载实测: {cap['msg']}"
+        except Exception as e:
+            logger.warning("酷狗下载能力实测失败 (%s): %s", acc.name, e)
+        if hint:
+            msg += f"；{hint}"
+        return jsonify({
+            "code": 0,
+            "msg": msg,
+            "data": acc.to_dict(monthly_downloaded=_monthly_downloaded(acc.id)),
+        })
+    except Exception as e:
+        return jsonify({"code": 1, "msg": f"连接酷狗音乐API服务失败: {e}"})
 
 
 @api_bp.route("/accounts/stats")

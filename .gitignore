@@ -88,6 +88,8 @@ Desktop.ini
 # 内置 API 服务二进制（体积大，不入库；保留 api/ 目录与说明文件 readme.txt）
 ncm-api-*
 qqmusic-api*
+kugou_api_*
+api/.kugou_gcid_cache.json
 *.exe
 
 # 临时/误生成文件

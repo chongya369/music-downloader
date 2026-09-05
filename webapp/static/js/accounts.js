@@ -144,7 +144,10 @@ function renderCards(list) {
                     const expired = expireDate < today;
                     expireText = `<span style="color:${expired ? '#dc3545' : '#198754'}">${d}</span>`;
                 } else {
-                    expireText = '<span style="color:#6c757d;">未知</span>';
+                    // 酷狗上游 /user/detail 未返回到期时间字段（vip_expire_ts 恒 0）
+                    expireText = a.platform === "kugou"
+                        ? '<span style="color:#6c757d;">酷狗未提供</span>'
+                        : '<span style="color:#6c757d;">未知</span>';
                 }
             } else {
                 expireText = '<span style="color:#6c757d;">—</span>';
@@ -218,7 +221,10 @@ function renderTable(list) {
                 const expired = expireDate < today;
                 expireText = `<span class="${expired ? 'text-danger' : 'text-success'}">${d}</span>`;
             } else {
-                expireText = '<span class="text-muted">未知</span>';
+                // 酷狗上游 /user/detail 未返回到期时间字段（vip_expire_ts 恒 0）
+                expireText = a.platform === "kugou"
+                    ? '<span class="text-muted">酷狗未提供</span>'
+                    : '<span class="text-muted">未知</span>';
             }
         } else {
             expireText = '<span class="text-muted">—</span>';
@@ -226,7 +232,7 @@ function renderTable(list) {
 
         const isFirst = idx === 0;
         const isLast = idx === list.length - 1;
-        const testable = a.platform === "netease" || a.platform === "qq";
+        const testable = a.platform === "netease" || a.platform === "qq" || a.platform === "kugou";
         const testBtn = testable
             ? `<button class="btn btn-sm btn-outline-success btn-test" data-id="${a.id}">
                    <i class="bi bi-check2-all"></i> 测试
@@ -366,18 +372,125 @@ function bindEvents() {
     });
 }
 
-// 平台切换时更新 Cookie 提示文案
-document.getElementById("add-platform").addEventListener("change", function() {
-    const platform = this.value;
+// ======================================================================
+// 添加账号弹窗：平台 UI（placeholder / 提示文案 / 酷狗扫码入口可见性）
+// ======================================================================
+// 平台 -> {placeholder, hint} 文案表（C：三平台完整覆盖，消除硬编码残留）
+const PLATFORM_ADD_HINTS = {
+    netease: {
+        placeholder: "MUSIC_U=xxxx; os=pc",
+        hint: "网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U",
+    },
+    qq: {
+        placeholder: "uin=xxxx; eas_sid=xxxx; ...（完整 Cookie）",
+        hint: "QQ音乐：浏览器登录 y.qq.com → F12 → Network → 任选 y.qq.com 请求 → 复制完整 Cookie（须含 uin，昵称还需 eas_sid）",
+    },
+    kugou: {
+        placeholder: "token=xxx;userid=xxx（也可点下方扫码自动填入）",
+        hint: "酷狗音乐：点下方「扫码登录」用酷狗APP扫码自动填入；或手动填入 token=xxx;userid=xxx",
+    },
+};
+
+// ======================================================================
+// 酷狗扫码登录：轮询状态与清理函数
+// 注意：必须定义在 updateAddPlatformUI 之前——页面加载时顶层调用
+// updateAddPlatformUI → stopKugouQrPolling，若 let 变量声明在其后
+// 会触发 TDZ ReferenceError 中断整个脚本，导致所有事件绑定失效
+// ======================================================================
+let _kugouQrTimer = null;
+let _kugouQrKey = "";
+
+function stopKugouQrPolling() {
+    if (_kugouQrTimer) {
+        clearInterval(_kugouQrTimer);
+        _kugouQrTimer = null;
+    }
+    _kugouQrKey = "";
+    const panel = document.getElementById("kugou-qr-panel");
+    if (panel) panel.classList.add("d-none");
+}
+
+// A：抽函数统一管理「平台 -> UI」刷新逻辑
+function updateAddPlatformUI(platform) {
+    const cfg = PLATFORM_ADD_HINTS[platform] || PLATFORM_ADD_HINTS.netease;
+    const cookieInput = document.getElementById("add-cookie");
     const hint = document.getElementById("add-cookie-hint");
-    if (platform === "netease") {
-        hint.textContent = "网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U";
-    } else if (platform === "qq") {
-        hint.textContent = "QQ音乐：浏览器登录 y.qq.com → F12 → Network → 任选 y.qq.com 请求 → 复制完整 Cookie（须含 uin，昵称还需 eas_sid）";
-    } else {
-        hint.textContent = "酷狗音乐：预留平台，暂不支持添加";
+    const qrSection = document.getElementById("kugou-qr-section");
+    if (cookieInput) cookieInput.placeholder = cfg.placeholder;
+    if (hint) hint.textContent = cfg.hint;
+    if (qrSection) {
+        if (platform === "kugou") {
+            qrSection.classList.remove("d-none");
+        } else {
+            qrSection.classList.add("d-none");
+            stopKugouQrPolling();
+        }
+    }
+}
+
+// 手动切换平台 → 刷新 UI
+document.getElementById("add-platform").addEventListener("change", function() {
+    updateAddPlatformUI(this.value);
+});
+
+// 页面加载即同步一次：select 初始即非默认平台（如 kugou）时不依赖 change 事件
+updateAddPlatformUI(document.getElementById("add-platform").value);
+
+document.getElementById("btn-kugou-qr").addEventListener("click", async function() {
+    const btn = this;
+    btn.disabled = true;
+    // 先清理残留轮询（内部会隐藏面板），必须在显示面板之前调用，
+    // 否则面板显示后又被隐藏，二维码生成后也不可见
+    stopKugouQrPolling();
+    // 冷启内置 kugou-api 最长可达 60s（onefile/node pkg 解压），覆盖默认 15s
+    document.getElementById("kugou-qr-status").textContent = "正在生成二维码，请稍候…";
+    document.getElementById("kugou-qr-panel").classList.remove("d-none");
+    try {
+        const data = await api("/api/kugou/qr/create", { method: "POST", timeout: 70000 });
+        _kugouQrKey = data.data.key;
+        document.getElementById("kugou-qr-img").src = data.data.qr_img;
+        document.getElementById("kugou-qr-status").textContent = "请使用酷狗音乐APP扫描二维码登录";
+        // 2.5s 轮询扫码状态
+        _kugouQrTimer = setInterval(async () => {
+            try {
+                const resp = await api("/api/kugou/qr/check", {
+                    method: "POST",
+                    body: JSON.stringify({ key: _kugouQrKey }),
+                    timeout: 30000,
+                });
+                const st = resp.data.status;
+                const statusEl = document.getElementById("kugou-qr-status");
+                if (st === 1) {
+                    statusEl.textContent = "等待扫码…";
+                } else if (st === 2) {
+                    statusEl.textContent = "已扫码，请在手机上确认登录";
+                } else if (st === 4) {
+                    stopKugouQrPolling();
+                    document.getElementById("add-cookie").value = resp.data.cookie || "";
+                    statusEl.textContent = "✅ 登录成功，Cookie 已自动填入";
+                    showToast("酷狗扫码登录成功，Cookie 已填入", "成功");
+                } else if (st === 3) {
+                    stopKugouQrPolling();
+                    statusEl.textContent = "用户已取消授权，请重新点击「扫码登录」";
+                } else if (st === 0) {
+                    stopKugouQrPolling();
+                    statusEl.textContent = "二维码已过期，请重新点击「扫码登录」";
+                }
+            } catch (e) {
+                // 轮询失败（服务重启中/网络抖动）：给出可见提示，下一轮继续
+                const statusEl = document.getElementById("kugou-qr-status");
+                if (statusEl) statusEl.textContent = `状态查询失败（${e.message}），重试中…`;
+            }
+        }, 2500);
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
     }
 });
+
+// 弹窗关闭时停止轮询
+document.getElementById("add-account-modal").addEventListener("hidden.bs.modal", stopKugouQrPolling);
 
 // 添加账号
 document.getElementById("btn-add-account").addEventListener("click", async function() {
@@ -411,11 +524,13 @@ document.getElementById("btn-add-account").addEventListener("click", async funct
     }
 });
 
-// 添加弹窗打开时，自动选中当前 Tab 的平台
+// 添加弹窗打开时，自动选中当前 Tab 的平台 + 刷新平台 UI（B：程序赋值不触发
+// change，必须显式调 updateAddPlatformUI，否则 UI 停留默认平台态）
 document.getElementById("add-account-modal").addEventListener("show.bs.modal", function() {
     if (currentPlatform !== "all") {
         document.getElementById("add-platform").value = currentPlatform;
     }
+    updateAddPlatformUI(document.getElementById("add-platform").value);
 });
 
 // 编辑账号保存

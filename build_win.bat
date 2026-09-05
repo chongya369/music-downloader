@@ -30,16 +30,15 @@ if "%PYTHON_CMD%"=="" (
 REM Check Python version >= 3.10
 echo [STEP] Check Python version...
 for /f "delims=" %%i in ('%PYTHON_CMD% -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PY_VERSION=%%i
-for /f "delims=. tokens=1,2" %%a in ("%PY_VERSION%") do (
-    set PY_MAJOR=%%a
-    set PY_MINOR=%%b
-)
+for /f "tokens=1 delims=." %%a in ("%PY_VERSION%") do set PY_MAJOR=%%a
+for /f "tokens=2 delims=." %%b in ("%PY_VERSION%") do set PY_MINOR=%%b
 set /a PY_VER_ERR=0
-if %PY_MAJOR% LSS 3 set PY_VER_ERR=1
-if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 set PY_VER_ERR=1
-if %PY_VER_ERR% EQU 1 echo [ERRO] Python version too old: %PY_VERSION% (need 3.10+)
-if %PY_VER_ERR% EQU 1 pause
-if %PY_VER_ERR% EQU 1 exit /b 1
+if %PY_MAJOR% LSS 3 set /a PY_VER_ERR=1
+if %PY_MAJOR% EQU 3 if %PY_MINOR% LSS 10 set /a PY_VER_ERR=1
+if %PY_VER_ERR% NEQ 1 goto pyver_ok
+echo [ERRO] Python version too old: %PY_VERSION% (need 3.10+)
+pause & exit /b 1
+:pyver_ok
 echo [INFO] Python %PY_VERSION% found
 
 REM Check and ensure virtual environment
