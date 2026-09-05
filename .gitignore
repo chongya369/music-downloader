@@ -85,12 +85,12 @@ docs/
 Thumbs.db
 Desktop.ini
 
-# 内置 API 服务二进制（体积大，不入库；保留 api/ 目录与说明文件 readme.txt）
-ncm-api-*
-qqmusic-api*
-kugou_api_*
-api/.kugou_gcid_cache.json
+# 内置 API 服务二进制：随源码入库，供一键打包/CI 自动内置到产物（见 build.py）
+# 全局仍忽略 .exe，仅放行 api/ 目录下入库的预编译文件
 *.exe
+!api/*.exe
+# api 目录运行时生成的临时缓存，不入库
+api/.kugou_gcid_cache.json
 
 # 临时/误生成文件
 $null

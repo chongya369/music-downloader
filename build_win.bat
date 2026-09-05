@@ -82,5 +82,6 @@ echo.
 echo ============================================
 echo [DONE] Build succeeded
 echo [INFO] See .\dist\music_downloader\
+echo [INFO] API binaries already bundled into .\dist\music_downloader\api\
 echo ============================================
 pause

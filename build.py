@@ -14,9 +14,11 @@
 注意：PyInstaller 不支持交叉编译，Linux 产物必须在 Linux 上构建，
 Windows 产物必须在 Windows 上构建。
 
-打包后用户需手动把 api 二进制（ncm-api-win-x64.exe / ncm-api-linux-x64 与
-qqmusic-api-win-x64.exe / qqmusic-api-linux-x64）放到
-dist/music_downloader/api/ 目录。
+打包后会自动把源码 api/ 目录中当前平台的 API 二进制
+（ncm-api-win-x64.exe / ncm-api-linux-x64、qqmusic-api-win-x64.exe /
+qqmusic-api-linux-x64、kugou_api_win.exe / kugou_api_linux）
+复制到 dist/music_downloader/api/ 目录，用户无需手动放置。
+缺失的二进制打包时会告警并生成占位提示文件。
 """
 
 import shutil
@@ -216,11 +218,18 @@ def run_pyinstaller(py: str) -> None:
     print("[INFO] PyInstaller 打包完成")
 
 
+def builtin_api_dir() -> Path:
+    """内置 API 二进制源目录：源码仓库根目录下的 api/（随 Git 分发）"""
+    return SOURCE_DIR / "api"
+
+
 def post_pack() -> None:
-    """打包后处理：检查产物、创建空 api/ 与 downloads/ 占位目录
+    """打包后处理：检查产物、内置 API 二进制、创建 downloads/ 占位目录
 
     onefile 模式下可执行文件是单个文件，用户数据（api 二进制、数据库、
     下载目录）放在可执行文件同级目录。version.txt 已打入文件内，无需复制。
+    当前平台的 API 二进制由源码 api/ 目录自动复制到产物 api/，
+    缺失时降级为占位提示文件（不中断打包）。
     """
     if not DIST_APP_DIR.exists():
         DIST_APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -231,16 +240,27 @@ def post_pack() -> None:
         print(f"[ERROR] 未找到产物: {bin_path}")
         sys.exit(1)
 
-    # 创建空 api/ 占位目录（用户手动放入二进制）
-    # 占位提示的文件名与内容均按平台参数化，与各 bridge 模块的 _BINARIES 对齐
+    # 自动内置 API 二进制：从源码 api/ 复制当前平台文件到产物 api/
+    # 文件名按平台参数化，与各 bridge 模块的 _BINARIES 对齐
+    src_api_dir = builtin_api_dir()
     api_dir = DIST_APP_DIR / "api"
     api_dir.mkdir(exist_ok=True)
+    missing = []
     for api_bin in api_binary_names():
-        (api_dir / f"Please put {api_bin} here.txt").write_text(
-            f"Please download {api_bin} from official release and place it here.\n",
-            encoding="utf-8",
-        )
-    print("[INFO] 已创建空 api/ 占位目录")
+        src = src_api_dir / api_bin
+        if src.exists():
+            shutil.copy2(src, api_dir / api_bin)
+            print(f"[INFO] 已内置 API 二进制: {api_bin}")
+        else:
+            missing.append(api_bin)
+            (api_dir / f"Please put {api_bin} here.txt").write_text(
+                f"Please download {api_bin} from official release and place it here.\n",
+                encoding="utf-8",
+            )
+    if missing:
+        print(f"[WARN] 源码 api/ 目录缺失: {', '.join(missing)}，已生成占位提示文件")
+    else:
+        print("[INFO] 已自动内置全部 API 二进制到 api/")
 
     # 创建空 downloads/ 占位目录
     (DIST_APP_DIR / "downloads").mkdir(exist_ok=True)
@@ -274,8 +294,14 @@ def main() -> None:
     print(f"[INFO] 启动程序: {DIST_APP_DIR / bin_name}")
     print("[INFO] 下一步:")
     step = 1
-    for api_bin in api_binary_names():
-        print(f"  {step}. 把 {api_bin} 放到 {DIST_APP_DIR / 'api'}")
+    missing = [b for b in api_binary_names() if not (builtin_api_dir() / b).exists()]
+    if missing:
+        print(f"[WARN] 源码 api/ 目录缺失以下二进制，请手动放入 {DIST_APP_DIR / 'api'}:")
+        for api_bin in missing:
+            print(f"  {step}. {api_bin}")
+            step += 1
+    else:
+        print(f"  {step}. API 二进制已自动内置到 {DIST_APP_DIR / 'api'}")
         step += 1
     if is_win():
         print(f"  {step}. 双击 {bin_name}")
