@@ -10,9 +10,14 @@
     # 重置指定用户密码为指定值
     python webapp/reset_password.py 张三 newpass456
 
+    # 数据库不在项目根时，指定数据目录（也可用 APP_DATA_DIR 环境变量）
+    python webapp/reset_password.py --data-dir /data/tool 张三 newpass456
+
 使用场景：忘记 Web 登录密码时，在服务器命令行执行即可恢复访问。
 """
 
+import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -26,9 +31,23 @@ for p in (str(_ROOT), str(_WEBAPP)):
 from flask import Flask
 from models import init_db, User, db
 
+# 数据库位置与主程序同一套规则：--data-dir > APP_DATA_DIR 环境变量 > 缺省(项目根)
+_parser = argparse.ArgumentParser(description="重置 Web 登录密码")
+_parser.add_argument("username", nargs="?", default="admin")
+_parser.add_argument("password", nargs="?", default="admin123")
+_parser.add_argument("--data-dir", help="数据目录（数据库为 <目录>/downloads.db）")
+_args = _parser.parse_args()
+
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "reset-password-script"
-init_db(app, str(_ROOT / "downloads.db"))
+
+if _args.data_dir:
+    _db_file = Path(_args.data_dir).expanduser().resolve() / "downloads.db"
+elif os.environ.get("APP_DATA_DIR"):
+    _db_file = Path(os.environ["APP_DATA_DIR"]).expanduser().resolve() / "downloads.db"
+else:
+    _db_file = _ROOT / "downloads.db"
+init_db(app, str(_db_file))
 
 DEFAULT_USERNAME = "admin"
 DEFAULT_PASSWORD = "admin123"
@@ -47,20 +66,7 @@ def reset(username: str, new_password: str) -> None:
 
 
 def main() -> None:
-    args = sys.argv[1:]
-    if len(args) == 0:
-        # 无参数：重置 admin 为默认密码
-        reset(DEFAULT_USERNAME, DEFAULT_PASSWORD)
-    elif len(args) == 1:
-        # 一个参数：重置指定用户为默认密码
-        reset(args[0], DEFAULT_PASSWORD)
-    elif len(args) == 2:
-        # 两个参数：重置指定用户为指定密码
-        reset(args[0], args[1])
-    else:
-        print("用法：python webapp/reset_password.py [用户名] [新密码]")
-        print(f"默认：重置 {DEFAULT_USERNAME} 为 {DEFAULT_PASSWORD}")
-        sys.exit(1)
+    reset(_args.username, _args.password)
 
 
 if __name__ == "__main__":

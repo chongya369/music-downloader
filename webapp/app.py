@@ -5,9 +5,11 @@
 访问：http://localhost:45600
 """
 
+import argparse
 import atexit
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,6 +24,15 @@ _WEBAPP = Path(__file__).resolve().parent
 for p in (str(_ROOT), str(_WEBAPP)):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+
+def _parse_data_dir_arg(argv=None):
+    """解析 --data-dir 启动参数；未知参数忽略，不影响其他启动方式"""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--data-dir", help="数据目录（数据库为 <目录>/downloads.db）")
+    args, _ = parser.parse_known_args(argv)
+    return args
+
 
 from flask import Flask
 
@@ -74,9 +85,31 @@ def inject_static_v():
         return f"{url_for('static', filename=filename)}?v={ts}"
     return {"static_v": static_v}
 
-# 初始化数据库
-DB_PATH = _ROOT / "downloads.db"
+# 初始化数据库：位置优先级 --data-dir > APP_DATA_DIR 环境变量 > 缺省(exe同目录/项目根)
+_data_dir = _parse_data_dir_arg().data_dir
+if _data_dir:
+    DB_PATH = Path(_data_dir).expanduser().resolve() / "downloads.db"
+elif os.environ.get("APP_DATA_DIR"):
+    DB_PATH = Path(os.environ["APP_DATA_DIR"]).expanduser().resolve() / "downloads.db"
+else:
+    DB_PATH = _ROOT / "downloads.db"   # 缺省：保持原行为
+
+# 旧库迁移：数据位置被指定、且老库仍在程序目录时，自动搬迁（含 SQLite 附属文件）
+_old_db = _ROOT / "downloads.db"
+if _old_db.exists() and not DB_PATH.exists():
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)   # init_db 之前目标目录可能尚不存在
+        shutil.move(str(_old_db), str(DB_PATH))
+        for _suffix in ("-journal", "-wal", "-shm"):
+            _side = _ROOT / f"downloads.db{_suffix}"
+            if _side.exists():
+                _side.replace(DB_PATH.with_name(DB_PATH.name + _suffix))
+        logger.info("已迁移旧数据库: %s -> %s", _old_db, DB_PATH)
+    except OSError as e:
+        logger.warning("旧数据库迁移失败，将使用新库启动: %s", e)
+
 init_db(app, str(DB_PATH))
+logger.info("数据库文件: %s", DB_PATH)
 
 # 注册蓝图
 app.register_blueprint(views_bp)
