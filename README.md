@@ -234,6 +234,34 @@ python3 -m venv .venv
 | `exclude_keywords` | （空） | 排除歌曲关键字（英文逗号分隔，如 `live,伴奏,remix`） |
 | `exclude_scope` | `playlist,search` | 排除过滤应用范围：playlist / search / 两者 |
 
+## 数据库位置
+
+数据库为 SQLite 文件（固定文件名 `downloads.db`），位置按以下优先级确定：
+
+| 优先级 | 方式 | 数据库位置 |
+|--------|------|-----------|
+| 1 | 启动参数 `--data-dir <目录>` | `<目录>/downloads.db` |
+| 2 | 环境变量 `APP_DATA_DIR` | `$APP_DATA_DIR/downloads.db` |
+| 3 | 缺省 | 打包运行：exe 同目录；源码运行：项目根目录 |
+
+- 目录不存在会自动创建（支持多级）；相对路径按当前工作目录解析，支持 `~`
+- `--data-dir` 与 `APP_DATA_DIR` 同时设置时，启动参数优先
+- **旧库自动迁移**：指定的数据位置生效、且程序目录存在旧 `downloads.db` 时，首次启动自动搬迁（含 SQLite `-journal/-wal/-shm` 附属文件）；目标位置已有数据库时不会覆盖
+- 启动日志会输出实际数据库路径（`数据库文件: ...`）
+
+示例：
+
+```bash
+# 打包产物：指定数据目录
+./music_downloader --data-dir /data/deen-music          # Linux
+music_downloader.exe --data-dir D:\deen-data            # Windows
+
+# 环境变量方式（适合 systemd / Docker / fpk 等不便改命令行的场景）
+APP_DATA_DIR=/data/deen-music ./music_downloader
+```
+
+> **飞牛 fnOS fpk 部署**：`cmd/main` 以 `exec "$TRIM_APPDEST/music_downloader" --data-dir "$TRIM_PKGVAR"` 启动，数据库按官方规范落在 appdata 目录（`var -> /vol{n}/@appdata/{应用名}`），不写入 appcenter 程序目录；老版本覆盖安装后旧库自动迁入 appdata。
+
 ## 核心机制
 
 ### 多账号调度
@@ -460,6 +488,9 @@ python webapp/reset_password.py 张三
 
 # 重置指定用户密码为指定值
 python webapp/reset_password.py 张三 newpass456
+
+# 数据库不在默认位置时，指定数据目录（也支持 APP_DATA_DIR 环境变量）
+python webapp/reset_password.py --data-dir /data/deen-music 张三 newpass456
 ```
 
 ## 常见问题
@@ -559,6 +590,8 @@ python3 build.py
 - 创建空的 `downloads/` 占位目录
 
 打包产物 `dist/music_downloader/` 已内置当前平台所需的 API 二进制，直接运行产物并访问 `http://localhost:45600` 即可，无需手动放置。
+
+产物运行时数据库默认生成在 exe 同目录（`downloads.db`）。如需将数据库与程序分离（NAS / fpk / Docker 部署），用 `--data-dir` 启动参数或 `APP_DATA_DIR` 环境变量指定数据目录，详见[数据库位置](#数据库位置)。
 
 ### GitHub Actions 自动构建
 
