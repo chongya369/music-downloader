@@ -75,7 +75,10 @@ code/
 │   ├── API调用说明.md
 │   ├── 酷狗Provider实施方案.md
 │   ├── 酷狗Provider落地改造方案.md
-│   └── 酷狗音乐API接口文档.md
+│   ├── 酷狗音乐API接口文档.md
+│   ├── 修复方案实施复核报告.md
+│   ├── 修复方案最终版.md
+│   └── 修复方案最终版核对报告.md
 ├── api/                              # 内置 API 服务二进制（已随仓库内置/分发）
 │   ├── ncm-api-win-x64.exe / ncm-api-linux-x64      # 网易云
 │   ├── qqmusic-api-win-x64.exe / qqmusic-api-linux-x64 # QQ 音乐
@@ -100,7 +103,7 @@ code/
 ├── build_linux.sh                    # 一键打包入口（Linux，POSIX sh）
 ├── icon.ico                          # 打包用应用图标
 ├── requirements.txt                  # Python 依赖
-├── version.txt                       # 版本号（当前 0.4.1）
+├── version.txt                       # 版本号（当前 0.4.2）
 ├── run_web.bat                       # Windows 一键启动脚本
 └── run_web.sh                        # Linux 一键启动脚本
 ```
@@ -147,7 +150,7 @@ python -m venv .venv
 .venv\Scripts\python.exe webapp\app.py
 ```
 
-**Linux / macOS：**
+**Linux：**
 
 ```bash
 # 添加执行权限（首次运行）
@@ -156,6 +159,8 @@ chmod +x run_web.sh
 # 一键启动
 ./run_web.sh
 ```
+
+> **macOS 说明**：内置 API 服务二进制仅提供 Windows / Linux x64 版本，macOS 无官方二进制。若需在 macOS 运行，请自行部署各平台 API 服务，并在「设置」页通过「自定义 API 服务 URL」接入。
 
 或手动启动：
 
@@ -259,11 +264,9 @@ python3 -m venv .venv
 ./music_downloader --data-dir /data/deen-music          # Linux
 music_downloader.exe --data-dir D:\deen-data            # Windows
 
-# 环境变量方式（适合 systemd / Docker / fpk 等不便改命令行的场景）
+# 环境变量方式（适合 systemd / Docker 等不便改命令行的场景）
 APP_DATA_DIR=/data/deen-music ./music_downloader
 ```
-
-> **飞牛 fnOS fpk 部署**：`cmd/main` 以 `exec "$TRIM_APPDEST/music_downloader" --data-dir "$TRIM_PKGVAR"` 启动，数据库按官方规范落在 appdata 目录（`var -> /vol{n}/@appdata/{应用名}`），不写入 appcenter 程序目录；老版本覆盖安装后旧库自动迁入 appdata。
 
 ## 核心机制
 
@@ -348,8 +351,8 @@ APP_DATA_DIR=/data/deen-music ./music_downloader
 ### Song（已下载歌曲记录）
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| id | Integer PK | 歌曲 ID |
-| platform | String(20) | 所属平台：netease / qq / kugou，默认 netease |
+| id | String(64) PK | 平台歌曲 ID（统一 str：网易云数字 ID / QQ songmid） |
+| platform | String(20) PK | 所属平台：netease / qq / kugou（复合主键 (id, platform)，防网易云 ID 与 QQ mid 撞号） |
 | name | String | 歌名 |
 | artists | String | 歌手 |
 | album | String | 专辑 |
@@ -368,7 +371,7 @@ APP_DATA_DIR=/data/deen-music ./music_downloader
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | pk | Integer PK | 自增主键 |
-| song_id | Integer | 歌曲 ID |
+| song_id | String(64) | 平台歌曲 ID（统一 str：网易云数字 ID / QQ songmid） |
 | platform | String(20) | 所属平台：netease / qq / kugou，默认 netease |
 | song_name | String | 歌名 |
 | artists | String | 歌手 |
@@ -419,6 +422,7 @@ APP_DATA_DIR=/data/deen-music ./music_downloader
 |------|------|------|
 | GET | `/api/songs` | 分页查询下载历史 |
 | DELETE | `/api/songs/<pk>` | 删除记录（`?delete_file=1` 同时删除本地音乐文件并级联删除该歌曲所有关联记录） |
+| DELETE | `/api/songs/failed` | 清除全部失败记录（download_tasks + songs 两表） |
 | POST | `/api/retry` | 重试失败歌曲 |
 | GET | `/api/tasks` | 获取活跃任务进度 |
 | GET | `/api/stats` | 总览页统计数据 |
@@ -594,7 +598,7 @@ python3 build.py
 
 打包产物 `dist/music_downloader/` 已内置当前平台所需的 API 二进制，直接运行产物并访问 `http://localhost:45600` 即可，无需手动放置。
 
-产物运行时数据库默认生成在 exe 同目录（`downloads.db`）。如需将数据库与程序分离（NAS / fpk / Docker 部署），用 `--data-dir` 启动参数或 `APP_DATA_DIR` 环境变量指定数据目录，详见[数据库位置](#数据库位置)。
+产物运行时数据库默认生成在 exe 同目录（`downloads.db`）。如需将数据库与程序分离（NAS / Docker 部署），用 `--data-dir` 启动参数或 `APP_DATA_DIR` 环境变量指定数据目录，详见[数据库位置](#数据库位置)。
 
 ### GitHub Actions 自动构建
 
@@ -602,4 +606,4 @@ python3 build.py
 
 ## 版本
 
-当前版本：**0.4.1**（见 [version.txt](version.txt)）
+当前版本：**0.4.2**（见 [version.txt](version.txt)）
