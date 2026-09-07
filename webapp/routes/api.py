@@ -485,6 +485,26 @@ def get_songs():
     })
 
 
+@api_bp.route("/songs/failed", methods=["DELETE"])
+def delete_all_failed_songs():
+    """清除所有下载失败记录（download_tasks + songs 两表）
+
+    失败记录不涉及 pending/downloading 任务，无竞态风险；
+    失败记录无本地音乐文件，无需处理文件删除。
+    清除后该歌曲可重新下载（songs 表 failed 去重记录已删）。
+    """
+    task_count = DownloadTask.query.filter_by(status="failed").delete(synchronize_session=False)
+    song_count = Song.query.filter_by(status="failed").delete(synchronize_session=False)
+    db.session.commit()
+    logger.info("批量清除失败记录: tasks=%d, songs=%d", task_count, song_count)
+    return jsonify({
+        "code": 0,
+        "msg": f"已清除 {task_count} 条失败记录",
+        "task_count": task_count,
+        "song_count": song_count,
+    })
+
+
 @api_bp.route("/songs/<int:pk>", methods=["DELETE"])
 def delete_song(pk: int):
     """删除下载记录（按 download_tasks.pk 删除）

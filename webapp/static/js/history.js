@@ -78,9 +78,17 @@ async function loadSongs(page = 1) {
         const list = data.data;
 
         const retryBar = document.getElementById("retry-bar");
-        if (status === "failed") {
-            retryBar.classList.remove("d-none");
-        } else {
+        // retry-bar 显示逻辑：只要数据库存在失败记录就显示（不依赖当前筛选状态），
+        // 让用户在任何视图下都能看到并清除失败记录
+        try {
+            const failedData = await api("/api/songs?status=failed&per_page=1");
+            if (failedData.total > 0) {
+                retryBar.classList.remove("d-none");
+            } else {
+                retryBar.classList.add("d-none");
+            }
+        } catch (e) {
+            // 失败记录查询失败不影响主列表展示，默认隐藏
             retryBar.classList.add("d-none");
         }
 
@@ -160,16 +168,43 @@ function renderPagination(total, pages) {
         el.innerHTML = "";
         return;
     }
-    let html = "";
-    html += `<li class="page-item ${currentPage <= 1 ? 'disabled' : ''}">
-        <a class="page-link" href="#" onclick="loadSongs(${currentPage - 1});return false;">&laquo;</a></li>`;
-    for (let i = 1; i <= pages; i++) {
-        html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
-            <a class="page-link" href="#" onclick="loadSongs(${i});return false;">${i}</a></li>`;
-    }
-    html += `<li class="page-item ${currentPage >= pages ? 'disabled' : ''}">
-        <a class="page-link" href="#" onclick="loadSongs(${currentPage + 1});return false;">&raquo;</a></li>`;
-    el.innerHTML = html;
+    const cur = currentPage;
+    // 收集待渲染的分页项：{ p, label, type }
+    //   type: "num" 可点击页码 | "prev"/"next" 上下页 | "gap" 省略号
+    const items = [];
+    const push = (p, label, type) => items.push({ p, label, type });
+
+    push(cur - 1, "«", "prev");
+
+    // 首页
+    push(1, "1", "num");
+    // 前省略号：当前页左侧距离首页超过一定范围时显示
+    if (cur - 3 > 2) push(null, "…", "gap");
+
+    // 当前页前后各 2 个页码（夹在首页与末页之间）
+    const start = Math.max(2, cur - 2);
+    const end = Math.min(pages - 1, cur + 2);
+    for (let i = start; i <= end; i++) push(i, String(i), "num");
+
+    // 后省略号：当前页右侧距离末页超过一定范围时显示
+    if (cur + 3 < pages - 1) push(null, "…", "gap");
+
+    // 末页
+    if (pages > 1) push(pages, String(pages), "num");
+
+    push(cur + 1, "»", "next");
+
+    el.innerHTML = items.map(it => {
+        if (it.type === "gap") {
+            return `<li class="page-item disabled"><span class="page-link">${it.label}</span></li>`;
+        }
+        const disabled = (it.type === "prev" && cur <= 1) || (it.type === "next" && cur >= pages);
+        if (disabled) {
+            return `<li class="page-item disabled"><span class="page-link">${it.label}</span></li>`;
+        }
+        const active = it.p === cur ? "active" : "";
+        return `<li class="page-item ${active}"><a class="page-link" href="#" onclick="loadSongs(${it.p});return false;">${it.label}</a></li>`;
+    }).join("");
 }
 
 function bindSongEvents() {
@@ -260,6 +295,22 @@ document.getElementById("btn-retry-all").addEventListener("click", async functio
 
 // 查询按钮
 document.getElementById("btn-search").addEventListener("click", () => loadSongs(1));
+
+// 清除所有失败记录
+document.getElementById("btn-clear-failed").addEventListener("click", async function() {
+    if (!confirm("确定清除所有失败记录？此操作不可恢复，清除后这些歌曲可重新下载。")) return;
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const data = await api("/api/songs/failed", { method: "DELETE" });
+        showToast(data.msg, "清除");
+        loadSongs(currentPage);
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+    }
+});
 
 // 回车搜索
 document.getElementById("filter-keyword").addEventListener("keypress", e => {

@@ -64,10 +64,15 @@
     <!-- 失败重试栏（仅失败筛选时显示） -->
     <div class="alert alert-warning d-none" id="retry-bar">
         <div class="d-flex justify-content-between align-items-center">
-            <span><i class="bi bi-exclamation-triangle"></i> 当前筛选结果包含失败歌曲</span>
-            <button class="btn btn-warning btn-sm" id="btn-retry-all">
-                <i class="bi bi-arrow-clockwise"></i> 全部重试
-            </button>
+            <span><i class="bi bi-exclamation-triangle"></i> 当前存在失败歌曲</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-warning btn-sm" id="btn-retry-all">
+                    <i class="bi bi-arrow-clockwise"></i> 全部重试
+                </button>
+                <button class="btn btn-outline-danger btn-sm" id="btn-clear-failed">
+                    <i class="bi bi-trash"></i> 清除失败记录
+                </button>
+            </div>
         </div>
     </div>
 
