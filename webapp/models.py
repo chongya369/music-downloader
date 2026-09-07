@@ -270,19 +270,19 @@ class User(db.Model):
 # 默认配置项
 DEFAULT_SETTINGS = {
     # 网易云API服务相关
-    "ncm_api_auto_start": "false",
+    "ncm_api_auto_start": "true",
     "ncm_api_port": "45601",
     # 自定义API服务URL（勾选 use_custom_api_url 时生效）
     "use_custom_api_url": "false",
     "custom_api_url": "",
     # QQ音乐API服务相关（内置 qqmusic-api 二进制）
-    "qq_api_auto_start": "false",
+    "qq_api_auto_start": "true",
     "qq_api_port": "45602",
     # QQ音乐自定义API服务URL（勾选 use_custom_qq_api_url 时生效）
     "use_custom_qq_api_url": "false",
     "qq_api_base_url": "http://127.0.0.1:45602",
     # 酷狗音乐API服务相关（内置 kugou-api 二进制）
-    "kugou_api_auto_start": "false",
+    "kugou_api_auto_start": "true",
     "kugou_api_port": "45603",
     # 酷狗音乐自定义API服务URL（勾选 use_custom_kugou_api_url 时生效）
     "use_custom_kugou_api_url": "false",

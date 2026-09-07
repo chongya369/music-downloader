@@ -171,17 +171,17 @@ def main() -> None:
     # Setting.get 需在 app context 内调用；读出后显式传入，
     # get_bridge 自身不碰数据库
     with app.app_context():
-        auto_start = Setting.get("ncm_api_auto_start", "false") == "true"
+        auto_start = Setting.get("ncm_api_auto_start", "true") == "true"
         try:
             ncm_api_port = int(Setting.get("ncm_api_port", "45601"))
         except (TypeError, ValueError):
             ncm_api_port = 45601
-        qq_auto_start = Setting.get("qq_api_auto_start", "false") == "true"
+        qq_auto_start = Setting.get("qq_api_auto_start", "true") == "true"
         try:
             qq_api_port = int(Setting.get("qq_api_port", "45602"))
         except (TypeError, ValueError):
             qq_api_port = 45602
-        kugou_auto_start = Setting.get("kugou_api_auto_start", "false") == "true"
+        kugou_auto_start = Setting.get("kugou_api_auto_start", "true") == "true"
         try:
             kugou_api_port = int(Setting.get("kugou_api_port", "45603"))
         except (TypeError, ValueError):

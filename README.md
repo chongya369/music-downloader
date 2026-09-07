@@ -206,15 +206,15 @@ python3 -m venv .venv
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `ncm_api_auto_start` | `false` | 是否随程序启动自动拉起 NeteaseCloudMusicApi 服务（`false` 为按需懒启动，重启生效） |
+| `ncm_api_auto_start` | `true` | 是否随程序启动自动拉起 NeteaseCloudMusicApi 服务（`false` 为按需懒启动，重启生效） |
 | `ncm_api_port` | `45601` | NeteaseCloudMusicApi 服务端口（0 表示随机空闲端口，运行中不可修改） |
 | `use_custom_api_url` | `false` | 是否使用自定义 API 服务 URL（勾选时内置服务禁用） |
 | `custom_api_url` | （空） | 自定义 API 服务 URL，`use_custom_api_url` 为 `true` 时生效 |
-| `qq_api_auto_start` | `false` | 是否随程序启动自动拉起 QQ 音乐 API 服务（`false` 为按需懒启动，重启生效） |
+| `qq_api_auto_start` | `true` | 是否随程序启动自动拉起 QQ 音乐 API 服务（`false` 为按需懒启动，重启生效） |
 | `qq_api_port` | `45602` | QQ 音乐 API 服务端口（0 表示随机空闲端口） |
 | `use_custom_qq_api_url` | `false` | 是否使用自定义 QQ 音乐 API 服务 URL（勾选时内置服务禁用） |
 | `qq_api_base_url` | `http://127.0.0.1:45602` | 自定义 QQ 音乐 API 服务 URL，`use_custom_qq_api_url` 为 `true` 时生效 |
-| `kugou_api_auto_start` | `false` | 是否随程序启动自动拉起酷狗音乐 API 服务（`false` 为按需懒启动，重启生效） |
+| `kugou_api_auto_start` | `true` | 是否随程序启动自动拉起酷狗音乐 API 服务（`false` 为按需懒启动，重启生效） |
 | `kugou_api_port` | `45603` | 酷狗音乐 API 服务端口（0 表示随机空闲端口） |
 | `use_custom_kugou_api_url` | `false` | 是否使用自定义酷狗音乐 API 服务 URL（勾选时内置服务禁用） |
 | `kugou_api_base_url` | `http://127.0.0.1:45603` | 自定义酷狗音乐 API 服务 URL，`use_custom_kugou_api_url` 为 `true` 时生效 |
@@ -511,16 +511,16 @@ A: API 返回了 freeTrialInfo，表示当前账号无该歌曲完整版权，�
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
 ### Q: NeteaseCloudMusicApi 服务未启动会怎样？
-A: `ncm_api_auto_start` 默认关闭，程序启动时不主动拉起；首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（或从官方 Release 补放同名文件）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/providers/netease/client.py)）。
+A: `ncm_api_auto_start` 默认开启，程序启动时自动拉起；若设为 `false`，首次业务请求会经 `base_url` 属性自动拉起（需要几秒），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（或从官方 Release 补放同名文件）。启动失败时「发现页」相关功能不可用，榜单列表会回退到本地常驻列表（[OFFICIAL_TOPLISTS](core/providers/netease/client.py)）。
 
 ### Q: QQ 音乐 API 服务未启动会怎样？
-A: `qq_api_auto_start` 默认关闭，程序启动时不主动拉起；首次 QQ 业务请求会经 `base_url` 自动拉起（需要几秒，onefile 二进制首次自解压就绪稍慢），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`）。QQ 服务未就绪时，QQ 平台相关功能（添加 QQ 账号校验、发现页榜单/搜索/下载、QQ 歌单同步）不可用。
+A: `qq_api_auto_start` 默认开启，程序启动时自动拉起；若设为 `false`，首次 QQ 业务请求会经 `base_url` 自动拉起（需要几秒，onefile 二进制首次自解压就绪稍慢），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（`qqmusic-api-win-x64.exe` / `qqmusic-api-linux-x64`）。QQ 服务未就绪时，QQ 平台相关功能（添加 QQ 账号校验、发现页榜单/搜索/下载、QQ 歌单同步）不可用。
 
 ### Q: QQ 音乐歌词无法下载？
 A: QQ 音乐 API 服务端未提供歌词接口，属已知能力限制，下载时会跳过歌词，不影响音频文件与封面的写入。
 
 ### Q: 酷狗音乐 API 服务未启动会怎样？
-A: `kugou_api_auto_start` 默认关闭，程序启动时不主动拉起；首次酷狗业务请求会经 `base_url` 自动拉起（需要几秒），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（`kugou_api_win.exe` / `kugou_api_linux`）。酷狗服务未就绪时，酷狗平台相关功能（扫码登录、发现页榜单/搜索/下载、酷狗歌单同步）不可用。
+A: `kugou_api_auto_start` 默认开启，程序启动时自动拉起；若设为 `false`，首次酷狗业务请求会经 `base_url` 自动拉起（需要几秒），也可在 Web「设置」页手动启动。二进制已随仓库内置在 `api/` 目录，若缺失请在 Web「设置」页查看状态并检查 `api/` 下文件是否完整（`kugou_api_win.exe` / `kugou_api_linux`）。酷狗服务未就绪时，酷狗平台相关功能（扫码登录、发现页榜单/搜索/下载、酷狗歌单同步）不可用。
 
 ### Q: 酷狗匿名下载只能 128kbps？
 A: 酷狗音乐 API 对匿名（无登录 Cookie）请求强制封顶 128kbps MP3。如需 320/FLAC/Hi-Res 音质，请在「账号管理」页添加酷狗账号（支持扫码登录），登录态下走 v5 取流接口返回真实高音质。
