@@ -161,14 +161,38 @@
                         <label class="form-label">下载目录</label>
                         <input type="text" class="form-control" name="output_dir" placeholder="downloads">
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">音质等级</label>
-                        <select class="form-select" name="level">
+                    <div class="col-md-4">
+                        <label class="form-label">网易云音质</label>
+                        <select class="form-select" name="level_netease">
                             <option value="standard">标准 128kbps MP3</option>
-                            <option value="exhigh">极高 320kbps MP3（需会员）</option>
+                            <option value="exhigh">极高 320kbps（需会员）</option>
                             <option value="lossless">无损 FLAC（需黑胶VIP）</option>
-                            <option value="hires">Hi-Res（需豪华会员）</option>
+                            <option value="hires">Hi-Res（需豪华VIP）</option>
                         </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">QQ音乐音质</label>
+                        <select class="form-select" name="level_qq">
+                            <option value="standard">标准 128kbps MP3</option>
+                            <option value="exhigh">320kbps MP3（需登录）</option>
+                            <option value="lossless">无损 FLAC（需绿钻）</option>
+                            <option value="hires">无损 FLAC（同无损档）</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">酷狗音质</label>
+                        <select class="form-select" name="level_kugou">
+                            <option value="standard">标准 128kbps MP3</option>
+                            <option value="exhigh">320kbps MP3（需登录）</option>
+                            <option value="lossless">无损 FLAC（需VIP）</option>
+                            <option value="hires">Hi-Res（需豪华VIP）</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="enable_quality_fallback" value="true">
+                            <label class="form-check-label">目标音质不可用时自动降档（回退到更低音质下载）</label>
+                        </div>
                     </div>
                     <div class="col-md-6">
                         <div class="form-check">

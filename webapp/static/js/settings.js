@@ -25,7 +25,11 @@ async function loadSettings() {
         toggleCustomKugouUrl();
 
         form.output_dir.value = s.output_dir || "";
-        form.level.value = s.level || "exhigh";
+        // 音质按平台独立设置（后端未单独设置时已回填旧全局 level）
+        form.level_netease.value = s.level_netease || "exhigh";
+        form.level_qq.value = s.level_qq || "exhigh";
+        form.level_kugou.value = s.level_kugou || "exhigh";
+        form.enable_quality_fallback.checked = s.enable_quality_fallback !== "false";
         form.max_retries.value = s.max_retries || "3";
         form.default_playlist_limit.value = s.default_playlist_limit || "50";
         form.exclude_keywords.value = s.exclude_keywords || "";
@@ -72,7 +76,10 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         use_custom_kugou_api_url: form.use_custom_kugou_api_url.checked ? "true" : "false",
         kugou_api_base_url: form.use_custom_kugou_api_url.checked ? form.kugou_api_base_url.value.trim() : "",
         output_dir: form.output_dir.value.trim(),
-        level: form.level.value,
+        level_netease: form.level_netease.value,
+        level_qq: form.level_qq.value,
+        level_kugou: form.level_kugou.value,
+        enable_quality_fallback: form.enable_quality_fallback.checked ? "true" : "false",
         max_retries: form.max_retries.value,
         default_playlist_limit: form.default_playlist_limit.value,
         exclude_keywords: form.exclude_keywords.value.trim(),

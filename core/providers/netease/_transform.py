@@ -26,6 +26,11 @@ def transform_song_urls(raw_list: list[dict], song_ids: list[str]) -> list[dict]
             "ext": (item.get("type") or "mp3").lower(),
             "size": item.get("size"),
             "is_trial": bool(item.get("freeTrialInfo")),
+            # 诊断字段：code=-110 无音源/-105 需付费/200 正常；err 接口级失败信息
+            "code": item.get("code"),
+            "fee": item.get("fee"),
+            "level": item.get("level"),
+            "err": item.get("err") or "",
         }
 
     # 按 song_ids 顺序重排，缺项填空结构
@@ -37,6 +42,10 @@ def transform_song_urls(raw_list: list[dict], song_ids: list[str]) -> list[dict]
             "ext": "mp3",
             "size": None,
             "is_trial": False,
+            "code": None,
+            "fee": None,
+            "level": None,
+            "err": "response missing",
         }))
     return result
 

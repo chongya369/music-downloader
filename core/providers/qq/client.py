@@ -37,6 +37,13 @@ QUALITY_EXT = {
     "flac": "flac",
 }
 
+# 实际 quality -> 统一音质档位名（level 回填用；320 归 exhigh）
+_LEVEL_BY_QUALITY = {
+    "128": "standard",
+    "320": "exhigh",
+    "flac": "lossless",
+}
+
 # 歌单分类"全部"的 categoryId
 _ALL_CATEGORY_ID = 10000000
 
@@ -334,7 +341,8 @@ class QqClient:
 
         Returns:
             UrlInfo 列表，与 songmids 顺序对齐：
-            [{"url": str|None, "ext": str, "size": None, "is_trial": False}]
+            [{"url": str|None, "ext": str, "size": None, "is_trial": False,
+              "level": str}]   # level 为实际生效档（内部降级 128 时为 standard）
         """
         quality = QUALITY_LEVEL.get(level, "320")
         play_url = self._fetch_play_url(songmids, quality)
@@ -352,17 +360,21 @@ class QqClient:
                         play_url[str(mid)] = fallback[str(mid)]
 
         ext = QUALITY_EXT.get(quality, "mp3")
+        # 实际生效档回填统一档位名（320 由 higher/exhigh 两档共用，归 exhigh）
+        actual_level = "standard" if quality == "128" else _LEVEL_BY_QUALITY.get(quality, level)
         out = []
         for mid in songmids:
             item = play_url.get(str(mid)) or {}
             url = item.get("url") or None
             # 降级拿到 128 时扩展名同步降为 mp3
             item_ext = "mp3" if str(mid) in downgraded else ext
+            item_level = "standard" if str(mid) in downgraded else actual_level
             out.append({
                 "url": url,
                 "ext": item_ext,
                 "size": None,
                 "is_trial": False,
+                "level": item_level,
             })
         return out
 

@@ -128,7 +128,10 @@ async function loadSongs(page = 1) {
             if (s.status === "failed") {
                 actions.push(`<button class="btn btn-sm btn-outline-warning btn-retry" data-id="${s.id}"><i class="bi bi-arrow-clockwise"></i> 重试</button>`);
             }
-            actions.push(`<button class="btn btn-sm btn-outline-danger btn-delete-song" data-id="${s.pk}"><i class="bi bi-trash"></i></button>`);
+            actions.push(`<button class="btn btn-sm btn-outline-danger btn-delete-song" data-id="${s.pk}"
+                data-status="${s.status}"
+                data-name="${escapeHtml(s.name)}"
+                data-artists="${escapeHtml(s.artists)}"><i class="bi bi-trash"></i></button>`);
             return `
                 <tr>
                     <td><span class="badge" style="${platformStyle}">${escapeHtml(platformName)}</span></td>
@@ -188,15 +191,18 @@ function bindSongEvents() {
     });
 
     document.querySelectorAll(".btn-delete-song").forEach(el => {
-        el.addEventListener("click", async function() {
+        el.addEventListener("click", function() {
             const id = this.dataset.id;
-            if (!confirm("确定删除这条记录？\n不删除文件；歌曲仍会视为已下载，不会重复下载。")) return;
-            try {
-                await api(`/api/songs/${id}`, { method: "DELETE" });
-                showToast("已删除");
-                loadSongs(currentPage);
-            } catch (e) {
-                showToast(e.message, "错误");
+            if (this.dataset.status === "success") {
+                // 成功记录：弹窗询问是否同时删除音乐文件
+                document.getElementById("delete-song-name").textContent = this.dataset.name || "";
+                document.getElementById("delete-song-artists").textContent = this.dataset.artists || "";
+                deleteTarget = { id };
+                bootstrap.Modal.getOrCreateInstance(document.getElementById("delete-song-modal")).show();
+            } else {
+                // 失败/跳过记录：无有效音乐文件，直接确认删除
+                if (!confirm("确定删除这条记录？")) return;
+                handleDeleteSong(id, false);
             }
         });
     });
@@ -210,6 +216,32 @@ function bindSongEvents() {
         });
     });
 }
+
+// 删除下载记录（deleteFile=true 时同时删除本地音乐文件）
+let deleteTarget = null; // 待删除记录 {id}
+
+async function handleDeleteSong(id, deleteFile) {
+    try {
+        const url = deleteFile ? `/api/songs/${id}?delete_file=1` : `/api/songs/${id}`;
+        const data = await api(url, { method: "DELETE" });
+        showToast(data.msg || "已删除", "删除");
+        loadSongs(currentPage);
+    } catch (e) {
+        showToast(e.message, "错误");
+    }
+}
+
+// 删除确认弹窗按钮（弹窗为静态节点，绑定一次即可）
+document.getElementById("btn-delete-record-only").addEventListener("click", function() {
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("delete-song-modal")).hide();
+    if (deleteTarget) handleDeleteSong(deleteTarget.id, false);
+    deleteTarget = null;
+});
+document.getElementById("btn-delete-with-file").addEventListener("click", function() {
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("delete-song-modal")).hide();
+    if (deleteTarget) handleDeleteSong(deleteTarget.id, true);
+    deleteTarget = null;
+});
 
 // 全部重试
 document.getElementById("btn-retry-all").addEventListener("click", async function() {

@@ -9,7 +9,7 @@
 - POST   /api/sync/<id>           立即同步某歌单
 - POST   /api/sync-all            同步所有已启用歌单
 - GET    /api/songs               分页查询下载历史
-- DELETE /api/songs/<id>          删除记录
+- DELETE /api/songs/<id>          删除记录（?delete_file=1 删文件并级联删除所有关联记录）
 - POST   /api/retry               重试失败歌曲（支持单首/全部）
 - GET    /api/tasks               获取当前活跃任务进度
 - GET    /api/stats               获取统计数据（总览页用）
@@ -25,7 +25,9 @@
 """
 
 import logging
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 import json as _json
 
 from flask import Blueprint, current_app, jsonify, request, Response, session
@@ -485,13 +487,134 @@ def get_songs():
 
 @api_bp.route("/songs/<int:pk>", methods=["DELETE"])
 def delete_song(pk: int):
-    """删除下载记录（按 download_tasks.pk 删除，仅删数据库记录，不删文件）"""
+    """删除下载记录（按 download_tasks.pk 删除）
+
+    可选 query 参数：
+        delete_file=1  同时删除本地音乐文件，并级联删除该歌曲在所有歌单的关联记录
+
+    行为说明：
+    - 仅删记录：删除该条 download_tasks 记录；若该歌曲 (song_id, platform)
+      没有其他 done 任务引用，则一并删除 songs 表记录，使重新下载不再被
+      "已下载"去重拦截；
+    - delete_file=1：先删本地文件，再级联删除同 (song_id, platform) 的所有
+      download_tasks 记录（done/failed/skipped）及 songs 表记录；
+      文件删除失败则整体中断，数据库不动。
+    - 两种模式均要求该歌曲无 pending/downloading 任务，避免与下载中的
+      worker 竞态（任务行/Song 行被删后 worker 状态更新落空）。
+    """
     task = DownloadTask.query.get(pk)
     if not task:
         return jsonify({"code": 1, "msg": "记录不存在"})
+
+    # 前置阻断：该歌曲存在进行中的任务（含本记录自身）时禁止删除，
+    # 两种模式共用——级联删除会删掉进行中的任务行，仅删记录则本行
+    # 就是进行中的任务，均会与 worker 竞态导致状态更新落空
+    active = DownloadTask.query.filter(
+        DownloadTask.song_id == task.song_id,
+        DownloadTask.platform == task.platform,
+        DownloadTask.status.in_(["pending", "downloading"]),
+    ).first()
+    if active:
+        return jsonify({"code": 1, "msg": "该歌曲正在下载中，请等待完成后再删除"})
+
+    delete_file = request.args.get("delete_file") in ("1", "true", "True")
+
+    song = Song.query.filter_by(id=task.song_id, platform=task.platform).first()
+
+    if delete_file:
+
+        # 先删文件（失败则整体中断，数据库不动）
+        file_msg = ""
+        if not song or not song.file_path:
+            file_msg = "（无关联音乐文件）"
+        else:
+            ok, err = _delete_song_file(song.file_path)
+            if err:
+                return jsonify({"code": 1, "msg": f"删除音乐文件失败：{err}，记录未删除"})
+            file_msg = "和音乐文件" if ok else "（音乐文件已不存在）"
+
+        # 级联删除：该歌曲在所有歌单的关联任务记录 + songs 表记录
+        log_ctx = (task.artists, task.song_name, task.song_id, task.platform)
+        deleted_rows = DownloadTask.query.filter(
+            DownloadTask.song_id == task.song_id,
+            DownloadTask.platform == task.platform,
+        ).delete(synchronize_session=False)
+        if song:
+            db.session.delete(song)
+        db.session.commit()
+
+        logger.info("级联删除下载记录: pk=%s %s - %s (song_id=%s, platform=%s, 共%d条, 删文件=%s)",
+                    pk, *log_ctx, deleted_rows, delete_file)
+        return jsonify({"code": 0, "msg": f"已删除 {deleted_rows} 条关联记录{file_msg}"})
+
+    # ---- 仅删除记录：单条删除 ----
+
+    # 是否还有其他 done 任务引用同一首歌（多歌单场景）
+    other_done = DownloadTask.query.filter(
+        DownloadTask.pk != pk,
+        DownloadTask.song_id == task.song_id,
+        DownloadTask.platform == task.platform,
+        DownloadTask.status == "done",
+    ).first()
+
     db.session.delete(task)
+    # 清理 songs 记录：
+    # - 无其他 done 任务引用：success/failed 记录一并删除（方案 A 核心，
+    #   删除后 download_single_song 等去重查询不再命中，可重新下载）
+    # - 仍有其他 done 任务引用：保留 success 记录（其他历史行的
+    #   file_path/quality 靠它 JOIN 补充），仅清理 failed 记录
+    if song and (not other_done or song.status != "success"):
+        db.session.delete(song)
+    # commit 后对象过期，日志字段需提前取出
+    log_ctx = (task.artists, task.song_name, task.song_id, task.platform)
     db.session.commit()
+
+    logger.info("删除下载记录: pk=%s %s - %s (song_id=%s, platform=%s)",
+                pk, *log_ctx)
     return jsonify({"code": 0, "msg": "已删除"})
+
+
+def _resolve_output_dir() -> Path:
+    """解析下载输出目录（与 task_manager._get_downloader 同款逻辑）"""
+    output_dir = Setting.get("output_dir", "downloads")
+    p = Path(output_dir)
+    if not p.is_absolute():
+        if getattr(sys, "frozen", False):
+            root = Path(sys.executable).resolve().parent
+        else:
+            # api.py 位于 webapp/routes/，项目根为上上级目录
+            root = Path(__file__).resolve().parent.parent.parent
+        p = root / output_dir
+    return p.resolve()
+
+
+def _delete_song_file(file_path: str) -> tuple[bool, str]:
+    """删除本地音乐文件
+
+    Returns:
+        (是否实际删除了文件, 错误信息)。err 非空表示不应继续删库。
+        文件本来就不存在时返回 (False, "")，视为可继续删库。
+    """
+    try:
+        path = Path(file_path).resolve()
+    except (OSError, ValueError) as e:
+        return False, f"无效的文件路径（{e}）"
+
+    # 安全校验：只允许删除下载目录内的文件，防止误删任意路径
+    out_dir = _resolve_output_dir()
+    if not path.is_relative_to(out_dir):
+        return False, "文件不在下载目录内，为安全起见未删除"
+
+    if not path.exists():
+        return False, ""
+
+    try:
+        path.unlink()
+        return True, ""
+    except OSError as e:
+        # Windows 下文件被占用（如正在播放）会走到这里
+        logger.warning("删除音乐文件失败: %s (%s)", path, e)
+        return False, str(e)
 
 
 # ======================================================================
@@ -570,6 +693,16 @@ def get_settings():
     data = {}
     for key in DEFAULT_SETTINGS:
         data[key] = Setting.get(key, DEFAULT_SETTINGS[key])
+    # 平台音质迁移：未单独设置 level_<platform> 时回填旧全局 level，
+    # 避免用户在设置页点保存时把旧音质配置静默覆盖为默认值
+    legacy_level = Setting.get("level", "exhigh") or "exhigh"
+    if legacy_level not in _VALID_LEVELS:
+        # 旧档位（如 higher 192k，新 UI 已不支持）迁移到最近的高档位，
+        # 避免设置页 select 无此选项显示空白
+        legacy_level = "exhigh"
+    for p in PLATFORMS:
+        if not data.get(f"level_{p}"):
+            data[f"level_{p}"] = legacy_level
     return jsonify({"code": 0, "data": data})
 
 
@@ -583,6 +716,10 @@ _NUMERIC_SETTINGS = {
     "hourly_limit_per_account": (0, 10000),
     "sync_jitter":              (0, 3600),
 }
+
+# 音质档位设置项（档位值沿用网易云语义）与合法值域
+_LEVEL_SETTINGS = {"level_netease", "level_qq", "level_kugou"}
+_VALID_LEVELS = {"standard", "exhigh", "lossless", "hires"}
 
 
 @api_bp.route("/settings", methods=["PUT"])
@@ -633,6 +770,10 @@ def save_settings():
                 n = hi
                 warns.append(f"{key} 已钳制到上限 {hi}")
             value = str(n)
+        elif key in _LEVEL_SETTINGS and str(value) not in _VALID_LEVELS:
+            # 非法档位重置为空（读取时回退旧全局 level）
+            value = ""
+            warns.append(f"{key} 档位值非法已重置")
         if key == "web_port" and str(value) != Setting.get("web_port", ""):
             port_changed = True
         Setting.set(key, str(value))

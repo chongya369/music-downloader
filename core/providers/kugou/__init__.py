@@ -86,6 +86,12 @@ class KuGouProvider(MusicProvider):
         """判断歌曲是否 VIP"""
         return _is_vip_song(fee)
 
+    def quality_chain(self, level: str) -> list[str]:
+        """禁用外层音质降级（client._get_one_url 内部已有完整降级链：
+        目标档 → v5 128 → v6 128，外层再叠会导致请求翻倍；
+        实际生效档经 client 回填 url_info["level"]）"""
+        return [level]
+
     # ------------------------------------------------------------------
     # 旁路代理方法（与 NeteaseProvider/QqProvider 签名对齐，*args/**kwargs 透传防签名漂移）
     # ------------------------------------------------------------------

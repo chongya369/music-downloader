@@ -100,7 +100,7 @@ code/
 ├── build_linux.sh                    # 一键打包入口（Linux，POSIX sh）
 ├── icon.ico                          # 打包用应用图标
 ├── requirements.txt                  # Python 依赖
-├── version.txt                       # 版本号（当前 0.4.0）
+├── version.txt                       # 版本号（当前 0.4.1）
 ├── run_web.bat                       # Windows 一键启动脚本
 └── run_web.sh                        # Linux 一键启动脚本
 ```
@@ -220,7 +220,10 @@ python3 -m venv .venv
 | `kugou_api_base_url` | `http://127.0.0.1:45603` | 自定义酷狗音乐 API 服务 URL，`use_custom_kugou_api_url` 为 `true` 时生效 |
 | `web_port` | `*:45600` | Web 服务监听地址（`host:port` 格式，如 `*:45600` 或 `127.0.0.1:45600`，`*` 表示所有网卡，修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录） |
-| `level` | `exhigh` | 音质等级：standard / higher / exhigh / lossless / hires |
+| `level_netease` | `exhigh` | 网易云音质：standard / exhigh / lossless / hires（未单独设置时回退旧全局 `level`） |
+| `level_qq` | `exhigh` | QQ 音乐音质：standard / exhigh / lossless / hires（未单独设置时回退旧全局 `level`） |
+| `level_kugou` | `exhigh` | 酷狗音乐音质：standard / exhigh / lossless / hires（未单独设置时回退旧全局 `level`） |
+| `enable_quality_fallback` | `true` | 目标音质取不到流时是否自动向低音质档回退 |
 | `write_metadata` | `true` | 是否写入元数据（标题/艺术家/专辑/封面/歌词） |
 | `write_lyric` | `true` | 是否下载并写入歌词 |
 | `auto_sync_enabled` | `true` | 是否启用定时同步 |
@@ -415,7 +418,7 @@ APP_DATA_DIR=/data/deen-music ./music_downloader
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/songs` | 分页查询下载历史 |
-| DELETE | `/api/songs/<pk>` | 删除记录 |
+| DELETE | `/api/songs/<pk>` | 删除记录（`?delete_file=1` 同时删除本地音乐文件并级联删除该歌曲所有关联记录） |
 | POST | `/api/retry` | 重试失败歌曲 |
 | GET | `/api/tasks` | 获取活跃任务进度 |
 | GET | `/api/stats` | 总览页统计数据 |
@@ -599,4 +602,4 @@ python3 build.py
 
 ## 版本
 
-当前版本：**0.4.0**（见 [version.txt](version.txt)）
+当前版本：**0.4.1**（见 [version.txt](version.txt)）

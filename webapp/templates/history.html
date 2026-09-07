@@ -130,6 +130,36 @@
         </div>
     </div>
 </div>
+
+<!-- 删除下载记录确认弹窗（仅成功记录触发） -->
+<div class="modal fade" id="delete-song-modal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-trash text-danger"></i> 删除下载记录
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-2">
+                    <strong>歌曲：</strong><span id="delete-song-name"></span>
+                </div>
+                <div class="mb-3">
+                    <strong>歌手：</strong><span id="delete-song-artists"></span>
+                </div>
+                <div class="alert alert-warning mb-0">
+                    删除记录后该歌曲可重新下载。选择「删除记录和文件」时，将同时删除该歌曲在所有歌单的历史记录和本地音乐文件。
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline-secondary" id="btn-delete-record-only">仅删除记录</button>
+                <button class="btn btn-danger" id="btn-delete-with-file">删除记录和文件</button>
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}

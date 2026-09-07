@@ -242,8 +242,22 @@ class NeteaseClient:
             params={"id": ids_str, "level": QUALITY_LEVEL.get(level, "exhigh")},
         )
         if result.get("code") != 200:
-            logger.error("获取歌曲下载链接失败: %s", result.get("msg"))
-            return []
+            msg = result.get("msg") or result.get("message") or ""
+            # 接口整体失败：返回带 err 诊断的占位结构（与 song_ids 等长），
+            # 不再吞成空列表——否则上层把接口失败伪装成"无版权或需VIP"
+            logger.error("获取歌曲下载链接失败: code=%s msg=%s", result.get("code"), msg)
+            return [
+                {
+                    "id": sid,
+                    "url": None,
+                    "ext": "mp3",
+                    "size": None,
+                    "freeTrialInfo": None,
+                    "code": result.get("code"),
+                    "err": f"api:{result.get('code')}:{msg}",
+                }
+                for sid in song_ids
+            ]
         return result.get("data", [])
 
     def get_song_detail(self, song_ids: list[int]) -> list[dict]:

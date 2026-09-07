@@ -951,8 +951,9 @@ class TaskManager:
             fee = task.fee or 0
             platform = task.platform or "netease"
 
-            # 读取配置
-            level = Setting.get("level", "exhigh")
+            # 读取配置（音质按平台独立设置；未单独设置时回退旧全局 level 兼容迁移）
+            level = Setting.get(f"level_{platform}", "") or Setting.get("level", "exhigh")
+            quality_fallback = Setting.get("enable_quality_fallback", "true") == "true"
             write_meta = Setting.get("write_metadata", "true") == "true"
             write_lyric = Setting.get("write_lyric", "true") == "true"
             mode = Setting.get("download_mode", "fallback")
@@ -1004,12 +1005,14 @@ class TaskManager:
             # 轮询模式：单账号失败不切换，直接标记失败
             self._download_with_account(task_pk, account, sid, sname, artists, pl_id, pl_name,
                                         level, write_meta, write_lyric, switch_on_fail=False,
-                                        prefer_non_vip=prefer_non_vip, fee=fee)
+                                        prefer_non_vip=prefer_non_vip, fee=fee,
+                                        quality_fallback=quality_fallback)
         else:
             # 接力模式：失败或达额度时切换到下一个账号
             self._download_with_account(task_pk, account, sid, sname, artists, pl_id, pl_name,
                                         level, write_meta, write_lyric, switch_on_fail=True,
-                                        prefer_non_vip=prefer_non_vip, fee=fee)
+                                        prefer_non_vip=prefer_non_vip, fee=fee,
+                                        quality_fallback=quality_fallback)
 
     def _download_with_account(
         self,
@@ -1027,6 +1030,7 @@ class TaskManager:
         prefer_non_vip: bool = False,
         fee: int = 0,
         tried: set[int] | None = None,
+        quality_fallback: bool = True,
     ) -> None:
         """用指定账号下载一首歌
 
@@ -1035,24 +1039,43 @@ class TaskManager:
             prefer_non_vip: 是否优先非VIP账号
             fee: 歌曲费用类型（1=VIP歌曲）
             tried: 本次接力链路已尝试的账号 ID 集合（递归透传，防止无限切换）
+            quality_fallback: 目标档取不到流时是否沿音质链向低档回退
         """
         tried = tried if tried is not None else set()
         tried.add(account.id)
         client = self._get_client_for_account(account)
         logger.info("下载 [%s - %s] 使用账号: %s", artists, sname, account.name)
 
-        # 获取下载链接
-        url_info_list = client.get_song_urls([str(sid)], level=level)
-        url_info = url_info_list[0] if url_info_list else {}
+        # 获取下载链接（quality_fallback 开启时沿音质链逐档回退，取实际生效档）
+        if quality_fallback:
+            url_info, actual_level = client.get_song_url_with_fallback(str(sid), level)
+        else:
+            url_info_list = client.get_song_urls([str(sid)], level=level)
+            url_info = url_info_list[0] if url_info_list else {}
+            actual_level = level
         url = url_info.get("url")
 
-        if not url:
-            reason = "试听片段" if url_info.get("is_trial") else "无版权或需VIP"
-            # 附加底层诊断（酷狗取流失败携带 v5 status/error_code 或 v6 _errno，
-            # 可区分登录态失效与真无版权）
+        # 试听片段禁止下载：网易云 freeTrialInfo 命中时 url 非空但仅片段，
+        # 视同取流失败处理（换更高权益账号可能拿到完整音源）；
+        # QQ/酷狗 is_trial 恒为 False，不受影响
+        if not url or url_info.get("is_trial"):
+            # 失败原因分类（诊断字段经 _transform 透传）：
+            # err 非空=接口/鉴权级失败；code=-110=真无音源；is_trial=试听片段
             err = url_info.get("err") or ""
+            code = url_info.get("code")
             if err:
-                reason += f"[{err}]"
+                reason = f"取流失败[{err}]"
+            elif code == -110:
+                reason = "无音源（已下架或版权限制）"
+            elif url_info.get("is_trial"):
+                reason = "试听片段（会员未生效或权益不足）"
+            else:
+                reason = "无可用音源"
+            if code == -110 and not err:
+                # 无音源与账号/音质均无关：换号重试无意义，直接终态
+                self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
+                                  reason, account_id=account.id, platform=account.platform)
+                return
             if switch_on_fail:
                 # 接力模式：切换下一个账号（限定同平台账号池，排除已尝试过的账号）
                 next_acc = self._account_selector.switch_to_next(
@@ -1062,7 +1085,8 @@ class TaskManager:
                     logger.info("账号 %s 失败(%s)，切换到 %s 重试", account.name, reason, next_acc.name)
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
                                                 level, write_meta, write_lyric, switch_on_fail=True,
-                                                prefer_non_vip=prefer_non_vip, fee=fee, tried=tried)
+                                                prefer_non_vip=prefer_non_vip, fee=fee, tried=tried,
+                                                quality_fallback=quality_fallback)
                     return
             self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
                               f"{reason}（已尝试 {len(tried)} 个账号）", account_id=account.id, platform=account.platform)
@@ -1144,7 +1168,8 @@ class TaskManager:
                     logger.info("账号 %s 下载失败，切换到 %s 重试", account.name, next_acc.name)
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
                                                 level, write_meta, write_lyric, switch_on_fail=True,
-                                                prefer_non_vip=prefer_non_vip, fee=fee, tried=tried)
+                                                prefer_non_vip=prefer_non_vip, fee=fee, tried=tried,
+                                                quality_fallback=quality_fallback)
                     return
             self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
                               f"下载失败（重试耗尽）（已尝试 {len(tried)} 个账号）",
@@ -1175,7 +1200,7 @@ class TaskManager:
                 artists=artists,
                 album=album_name,
                 duration_ms=duration_ms,
-                quality=level,
+                quality=actual_level,
                 file_path=str(path),
                 file_size=path.stat().st_size if path.exists() else 0,
                 playlist_id=pl_id,

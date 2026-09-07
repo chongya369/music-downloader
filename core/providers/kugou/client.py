@@ -62,6 +62,14 @@ _QUALITY_HASH_KEY = {
     "high": "hash_high",
 }
 
+# 实际 quality -> 统一音质档位名（level 回填用；320 归 exhigh）
+_LEVEL_BY_QUALITY = {
+    "128": "standard",
+    "320": "exhigh",
+    "flac": "lossless",
+    "high": "hires",
+}
+
 # 接口白名单（P0 防护二道防线）：只允许调用实测可用的路由，
 # 白名单外直接抛 ValueError，防止误触崩溃/失效接口。
 # 明确禁用：/song/auth /song/url/auth/merge
@@ -644,7 +652,12 @@ class KuGouClient:
         # _errno=0 且 quality/extname 恒为 128/mp3），直接用 128 hash 结果相同
         # 且省一次无效请求；登录态（含 token）才按目标档位请求真实高音质。
         target = quality if self._is_logged_in() else "128"
+        if not hashes.get(target):
+            # 目标档 hash 缺失：hash 决定文件内容，回退 128 档
+            target = "128"
         hash_ = hashes.get(target) or hashes.get("128")
+        # 实际生效档（降级路径回写 "128"；level 回填用，勿用 quality）
+        actual = target
         if not hash_:
             return _empty("无可用音质hash")
 
@@ -663,11 +676,13 @@ class KuGouClient:
                     retry = self._request_url_v5(hash128, sid, "128")
                     if retry.get("ok"):
                         item = retry
+                        actual = "128"
                 if not item.get("ok"):
                     retry6 = self._request_url_v6(
                         hashes.get("128") or hash_, sid)
                     if retry6.get("ok"):
                         item = retry6
+                        actual = "128"
         if not item.get("ok"):
             # v5 err 含 status/error_code，v6 err 含 _errno（6=音频不存在，
             # VIP 歌无有效登录凭证时常见，即凭证缺 vip_token/vip_type 或 token 失效）
@@ -677,6 +692,8 @@ class KuGouClient:
             "ext": item.get("ext") or "mp3",
             "size": item.get("size"),
             "is_trial": False,
+            # 实际生效档回填（降级路径 actual 已回写为 "128"）
+            "level": _LEVEL_BY_QUALITY.get(actual, "standard"),
             "err": "",
         }
 

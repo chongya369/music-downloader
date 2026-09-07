@@ -290,7 +290,13 @@ DEFAULT_SETTINGS = {
     # Web 服务监听地址（host:port，* 表示监听所有网卡）
     "web_port": "*:45600",
     "output_dir": "downloads",
-    "level": "exhigh",
+    # 音质档位按平台独立设置（空串=未单独设置，读取时回退旧全局 level 兼容迁移）
+    # 档位值沿用网易云语义：standard/exhigh/lossless/hires
+    "level_netease": "",
+    "level_qq": "",
+    "level_kugou": "",
+    # 目标音质档取不到流时自动向低音质档回退
+    "enable_quality_fallback": "true",
     "write_metadata": "true",
     "write_lyric": "true",
     "auto_sync_enabled": "true",
