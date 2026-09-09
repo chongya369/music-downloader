@@ -1,0 +1,4 @@
+#!/bin/sh
+# 生命周期钩子（fnpack 打包检查要求存在）：卸载前由 fnOS 经 main stop 停止应用，无需额外处理
+# 用户数据位于 TRIM_PKGVAR，是否保留由 fnOS 卸载流程决定
+exit 0

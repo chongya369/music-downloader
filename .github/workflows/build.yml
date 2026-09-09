@@ -108,23 +108,24 @@ jobs:
           # 2) PyInstaller 产物 -> fpk/app/server/
           mkdir -p fpk/app/ui/images fpk/cmd fpk/config
           cp -r dist/music_downloader/. fpk/app/server/
-          chmod +x fpk/cmd/main
+          # 全部生命周期脚本需可执行位（git 检出不保留 Windows 提交的执行位）
+          chmod +x fpk/cmd/*
           [ -f fpk/app/server/music_downloader ] && chmod +x fpk/app/server/music_downloader
           # 3) 校验 wizard/ 目录存在（fnpack 打包检查要求）
           test -d fpk/wizard || (mkdir -p fpk/wizard)
 
       - name: Build .fpk with fnpack
         run: |
-          # 下载官方 fnpack（release 版本随官方页面更新，实施时固定版本）
-          curl -fsSL -o /usr/local/bin/fnpack "https://github.com/FNOSP/fnpack/releases/latest/download/fnpack-linux-amd64" || \
-            curl -fsSL -o /usr/local/bin/fnpack "https://fnos-developer.oss-cn-hangzhou.aliyuncs.com/fnpack/fnpack-linux-amd64"
-          chmod +x /usr/local/bin/fnpack
-          /usr/local/bin/fnpack build --directory fpk
+          # 使用仓库内置的官方 fnpack 1.2.3（SHA256 与 static2.fnnas.com 发布版一致），
+          # 避免外部下载源失效；Windows 提交丢失执行位，需先 chmod
+          chmod +x fnpack-linux-amd64
+          ./fnpack-linux-amd64 build --directory fpk
 
       - uses: actions/upload-artifact@v4
         with:
           name: music_downloader-fnos
-          path: fpk/music-downloader.fpk
+          # fnpack 将 .fpk 输出到工作目录（仓库根），而非 --directory 指定目录
+          path: music-downloader.fpk
           if-no-files-found: error
 
   release:

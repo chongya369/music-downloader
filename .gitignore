@@ -25,7 +25,8 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+# 仅忽略仓库根的 Python 打包产物 MANIFEST；fnos/manifest（飞牛应用清单）需入库
+/MANIFEST
 
 # PyInstaller
 *.manifest

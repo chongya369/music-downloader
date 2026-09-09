@@ -1,0 +1,3 @@
+#!/bin/sh
+# 生命周期钩子（fnpack 打包检查要求存在）：升级后由 fnOS 经 main start 重启应用，无需额外处理
+exit 0
