@@ -1,0 +1,88 @@
+#!/bin/sh
+# Deen音乐下载器 - fnOS 生命周期脚本（POSIX sh 兼容）
+# 用法: main start|stop|status
+# 返回码: 0=运行成功, 3=未运行
+set -u
+
+APP_NAME="music-downloader"
+APP_BIN="${TRIM_APPDEST}/server/music_downloader"
+PID_FILE="${TRIM_PKGVAR}/music_downloader.pid"
+LOG_FILE="${TRIM_PKGVAR}/music_downloader.log"
+SOCKET_FILE="${TRIM_APPDEST}/music-downloader.sock"
+GATEWAY_PREFIX="/app/music-downloader"
+DATA_DIR="${TRIM_PKGVAR}/data"
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+start_app() {
+  if is_running; then
+    return 0
+  fi
+  if [ ! -x "$APP_BIN" ]; then
+    echo "Application executable missing: $APP_BIN" > "$TRIM_TEMP_LOGFILE"
+    return 1
+  fi
+
+  mkdir -p "$TRIM_PKGVAR" "$DATA_DIR"
+  # 固定进程工作目录：output_dir 等相对路径设置按 CWD 解析（见方案 6.4）
+  cd "${TRIM_APPDEST}/server" || return 1
+  # 关键：启动前清理陈旧 Socket / PID（防止绑定失败）
+  rm -f "$PID_FILE" "$SOCKET_FILE"
+
+  # 三行核心：网关 Socket、网关前缀、数据目录
+  export FNNAS_GATEWAY_SOCKET="$SOCKET_FILE"
+  export FNNAS_GATEWAY_PREFIX="$GATEWAY_PREFIX"
+  export APP_DATA_DIR="$DATA_DIR"
+  # PyInstaller onefile 解压目录：避开可能的 /tmp noexec
+  export TMPDIR="${TRIM_PKGTMP}"
+  export HOME="$TRIM_PKGHOME"
+
+  nohup "$APP_BIN" >>"$LOG_FILE" 2>&1 &
+  pid=$!
+  echo "$pid" > "$PID_FILE"
+
+  # 等待 socket 出现（最多 ~60s；onefile 解压 + Flask 初始化 + 拉起 3 个
+  # API 子进程，低端 NAS 上可能超过 15s），失败则报错回滚
+  i=0
+  while [ "$i" -lt 60 ]; do
+    if [ -S "$SOCKET_FILE" ]; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  rm -f "$PID_FILE" "$SOCKET_FILE"
+  echo "Service failed to start. Check log: $LOG_FILE" > "$TRIM_TEMP_LOGFILE"
+  return 1
+}
+
+stop_app() {
+  if ! is_running; then
+    rm -f "$PID_FILE" "$SOCKET_FILE"
+    return 0
+  fi
+  pid=$(cat "$PID_FILE" 2>/dev/null)
+  kill "$pid" 2>/dev/null || true
+  count=0
+  while kill -0 "$pid" 2>/dev/null && [ "$count" -lt 30 ]; do
+    sleep 1
+    count=$((count + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  # 清理（子进程 API 服务随主进程退出由 atexit/finally 关闭）
+  rm -f "$PID_FILE" "$SOCKET_FILE"
+}
+
+case "${1:-}" in
+  start)  start_app ;;
+  stop)   stop_app ;;
+  status) if is_running; then exit 0; fi; exit 3 ;;
+  *)      exit 1 ;;
+esac

@@ -1,6 +1,28 @@
 # 更新日志
 
-本文件仅记录当前版本（0.4.2）的变更内容。
+本文件仅记录当前版本（0.5.0）的变更内容。
+
+## 0.5.0（2026-09-09）
+
+### 重大变更
+
+- **飞牛 fnOS 统一网关适配**：新增 `FNNAS_GATEWAY_SOCKET` / `FNNAS_GATEWAY_PREFIX` 环境变量驱动的 Unix Socket 监听模式；`PrefixMiddleware` WSGI 中间件剥离网关前缀并写入 SCRIPT_NAME，路由 / url_for / 静态资源自动携带前缀；非网关模式保持原 TCP 行为不变（本地 / Windows / Docker 不受影响）
+- **fnos/ fpk 打包源入库**：manifest、cmd/main 生命周期脚本（注入网关 Socket / 前缀 / 数据目录三个环境变量，PID 与日志管理，启动等待 socket 就绪最长 60s）、config、桌面图标
+- **CI 新增 build-fnos 产物**：GitHub Actions 新增 `build-fnos` job（Debian 12 容器构建 Linux 二进制 → fnpack 打包 `.fpk`），随 Windows / Linux zip 一并产出
+- **README 精简重写**：面向用户的安装 / 快速上手 / 配置 / FAQ 文档；技术栈、目录结构、核心机制、数据模型、API 概览等开发细节移入 `docs/技术文档.md`
+
+### 功能
+
+- 网关模式首启：默认下载目录自动固定到数据卷绝对路径，用户手动改过的路径不受影响
+- Session cookie 隔离：专属名 `md_session` + 前缀路径绑定，与同域其他 fnOS 应用互不冲突
+
+### 修复
+
+- 前端统一网关前缀适配：`api()` 请求、401 跳转、账号导出均拼接 `APP_BASE` 前缀；模板链接统一改用 `url_for`（网关模式下不再脱前缀 404）
+
+### 文档
+
+- 新增《初次使用教程》（docs/初次使用教程.md，含界面截图）
 
 ## 0.4.2（2026-09-07）
 

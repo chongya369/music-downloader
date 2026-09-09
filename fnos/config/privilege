@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "musicdl_user",
+  "groupname": "musicdl_group"
+}

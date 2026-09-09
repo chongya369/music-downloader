@@ -63,7 +63,7 @@
                 <i class="bi bi-exclamation-triangle"></i> {{ error }}
             </div>
             {% endif %}
-            <form method="POST" action="/login">
+            <form method="POST" action="{{ url_for('views.login') }}">
                 <div class="mb-3">
                     <label class="form-label">用户名</label>
                     <div class="input-group">

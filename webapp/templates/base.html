@@ -7,11 +7,16 @@
     <link href="{{ url_for('static', filename='vendor/bootstrap/5.3.2/bootstrap.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='vendor/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
+    <script>
+        // 网关根前缀（统一网关模式下为 /app/music-downloader，普通模式为空串）。
+        // app.js 的 api() 用它拼接所有相对请求；模板内链接统一用 url_for，无需该变量。
+        window.APP_BASE = {{ request.script_root | tojson }};
+    </script>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
         <div class="container-fluid">
-            <a class="navbar-brand" href="/">
+            <a class="navbar-brand" href="{{ url_for('views.dashboard') }}">
                 <i class="bi bi-music-note-beamed"></i>
                 Deen音乐下载器
             </a>
@@ -21,27 +26,27 @@
             <div class="collapse navbar-collapse" id="nav">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'dashboard' %}active{% endif %}" href="/">
+                        <a class="nav-link {% if active_page == 'dashboard' %}active{% endif %}" href="{{ url_for('views.dashboard') }}">
                             <i class="bi bi-speedometer2"></i> 总览
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'playlists' %}active{% endif %}" href="/playlists">
+                        <a class="nav-link {% if active_page == 'playlists' %}active{% endif %}" href="{{ url_for('views.playlists') }}">
                             <i class="bi bi-list-music"></i> 歌单管理
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'accounts' %}active{% endif %}" href="/accounts">
+                        <a class="nav-link {% if active_page == 'accounts' %}active{% endif %}" href="{{ url_for('views.accounts') }}">
                             <i class="bi bi-people"></i> 账号管理
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'history' %}active{% endif %}" href="/history">
+                        <a class="nav-link {% if active_page == 'history' %}active{% endif %}" href="{{ url_for('views.history') }}">
                             <i class="bi bi-download"></i> 下载
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'settings' %}active{% endif %}" href="/settings">
+                        <a class="nav-link {% if active_page == 'settings' %}active{% endif %}" href="{{ url_for('views.settings') }}">
                             <i class="bi bi-gear"></i> 设置
                         </a>
                     </li>
@@ -59,12 +64,12 @@
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end">
                             {% if current_user.is_admin %}
-                            <li><a class="dropdown-item" href="/users">
+                            <li><a class="dropdown-item" href="{{ url_for('views.users') }}">
                                 <i class="bi bi-people"></i> 用户管理
                             </a></li>
                             <li><hr class="dropdown-divider"></li>
                             {% endif %}
-                            <li><a class="dropdown-item" href="/logout">
+                            <li><a class="dropdown-item" href="{{ url_for('views.logout') }}">
                                 <i class="bi bi-box-arrow-right"></i> 退出登录
                             </a></li>
                         </ul>

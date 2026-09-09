@@ -14,7 +14,8 @@ const PLATFORM_COLORS = { netease: "#C20C0C", qq: "#31C27C", kugou: "#0062FF" };
 const exportBtn = document.getElementById("btn-export-accounts");
 if (exportBtn) exportBtn.addEventListener("click", function() {
     if (!confirm("导出文件包含 Cookie 等敏感信息，请妥善保管。是否继续？")) return;
-    window.location.href = "/api/accounts/export";
+    // 网关前缀下直接跳转绝对路径会脱前缀，需拼接 APP_BASE
+    window.location.href = (window.APP_BASE || "") + "/api/accounts/export";
 });
 
 // 导入账号信息

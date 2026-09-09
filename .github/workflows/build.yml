@@ -77,9 +77,59 @@ jobs:
           path: music_downloader-linux-x64.zip
           if-no-files-found: error
 
+  build-fnos:
+    name: Build (fnOS .fpk)
+    runs-on: ubuntu-latest
+    container: debian:12
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python env
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-venv python3-pip zip
+
+      - name: Create venv & install deps
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build Linux binary
+        run: .venv/bin/python build.py
+
+      - name: Assemble fpk package
+        run: |
+          # 1) 仓库内 fpk 源（manifest/config/cmd/ui 图标等）-> fpk/
+          mkdir -p fpk
+          cp -r fnos/. fpk/
+          # 2) PyInstaller 产物 -> fpk/app/server/
+          mkdir -p fpk/app/ui/images fpk/cmd fpk/config
+          cp -r dist/music_downloader/. fpk/app/server/
+          chmod +x fpk/cmd/main
+          [ -f fpk/app/server/music_downloader ] && chmod +x fpk/app/server/music_downloader
+          # 3) 校验 wizard/ 目录存在（fnpack 打包检查要求）
+          test -d fpk/wizard || (mkdir -p fpk/wizard)
+
+      - name: Build .fpk with fnpack
+        run: |
+          # 下载官方 fnpack（release 版本随官方页面更新，实施时固定版本）
+          curl -fsSL -o /usr/local/bin/fnpack "https://github.com/FNOSP/fnpack/releases/latest/download/fnpack-linux-amd64" || \
+            curl -fsSL -o /usr/local/bin/fnpack "https://fnos-developer.oss-cn-hangzhou.aliyuncs.com/fnpack/fnpack-linux-amd64"
+          chmod +x /usr/local/bin/fnpack
+          /usr/local/bin/fnpack build --directory fpk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: music_downloader-fnos
+          path: fpk/music-downloader.fpk
+          if-no-files-found: error
+
   release:
     name: Create Release
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-fnos]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -92,4 +142,5 @@ jobs:
           files: |
             artifacts/music_downloader-win-x64/music_downloader-win-x64.zip
             artifacts/music_downloader-linux-x64/music_downloader-linux-x64.zip
+            artifacts/music_downloader-fnos/music_downloader.fpk
           generate_release_notes: true

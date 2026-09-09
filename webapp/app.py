@@ -58,8 +58,17 @@ __version__ = get_version()
 app = Flask(__name__)
 # Session 签名密钥：优先使用环境变量，未设置则用默认值
 app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "netease-downloader-secret-key-v060")
+# cookie 专属名：统一网关模式下与其他同域应用（各自默认 session）隔离，避免冲突
+app.config["SESSION_COOKIE_NAME"] = "md_session"
 # 版本号入 config（账号导出文件等处经 current_app.config 读取）
 app.config["APP_VERSION"] = __version__
+
+# 飞牛统一网关环境变量（模块级读取一次；未设置表示普通 TCP 模式）
+GATEWAY_SOCKET = os.environ.get("FNNAS_GATEWAY_SOCKET") or None
+GATEWAY_PREFIX = (os.environ.get("FNNAS_GATEWAY_PREFIX") or "").strip().rstrip("/")
+if GATEWAY_PREFIX:
+    # 网关前缀模式的登录 cookie 绑定到前缀路径，避免被同域其他应用读取
+    app.config["SESSION_COOKIE_PATH"] = GATEWAY_PREFIX
 
 
 @app.context_processor
@@ -110,6 +119,18 @@ if _old_db.exists() and not DB_PATH.exists():
 
 init_db(app, str(DB_PATH))
 logger.info("数据库文件: %s", DB_PATH)
+
+# 网关模式首启：把默认下载目录固定为持久化数据卷下的绝对路径
+# （APP_DATA_DIR 由生命周期脚本注入为 TRIM_PKGVAR/data；init_db 会预写
+#  默认值 output_dir=downloads，故判定条件是"仍为默认值"才覆盖，用户手动
+#  修改过的路径不受影响）
+if GATEWAY_SOCKET and os.environ.get("APP_DATA_DIR"):
+    _default_downloads = str(Path(os.environ["APP_DATA_DIR"]).resolve() / "downloads")
+    with app.app_context():
+        _current_out = Setting.get("output_dir", "downloads")
+        if _current_out in ("", "downloads"):
+            Setting.set("output_dir", _default_downloads)
+            logger.info("网关模式首启：默认下载目录固定为 %s", _default_downloads)
 
 # 注册蓝图
 app.register_blueprint(views_bp)
@@ -166,6 +187,53 @@ def _read_web_bind() -> tuple:
         return ("0.0.0.0", 45600)
 
 
+class PrefixMiddleware:
+    """WSGI 前缀中间件：剥离网关前缀、设置 SCRIPT_NAME
+
+    飞牛统一网关把 /app/music-downloader/xxx 原样转发到 Unix Socket，
+    本中间件把前缀写入 SCRIPT_NAME、从 PATH_INFO 剥离，使 Flask 内部
+    路由、url_for、静态资源自动带上前缀。非网关模式不启用。
+    """
+
+    def __init__(self, app, prefix: str):
+        self.app = app
+        self.prefix = prefix.rstrip("/")
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path == self.prefix or path.startswith(self.prefix + "/"):
+            environ["SCRIPT_NAME"] = self.prefix
+            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+        return self.app(environ, start_response)
+
+
+def serve(app, gateway_socket, gateway_prefix, host, port) -> None:
+    """监听入口：网关模式走 Unix Socket，否则保持原有 TCP 行为（兼容本地/Windows）"""
+    if not gateway_socket:
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        return
+    from werkzeug.serving import make_server
+    # 确保 Socket 父目录存在，并清理陈旧的残留 socket（防绑定失败）
+    parent = Path(gateway_socket).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    socket_file = Path(gateway_socket)
+    if socket_file.exists():
+        socket_file.unlink()
+    # 包一层前缀中间件（非网关模式无此层）
+    wrapped = PrefixMiddleware(app, gateway_prefix) if gateway_prefix else app
+    # 注意：host 参数必须带 unix:// 前缀——Werkzeug 的
+    # select_address_family() 只识别以 "unix://" 开头的 host，
+    # 裸绝对路径会被当作 IPv4 主机名解析，启动直接失败
+    srv = make_server(f"unix://{gateway_socket}", 0, wrapped, threaded=True)
+    # Socket 权限 0o660（飞牛网关同组访问）；失败再放宽 0o666
+    try:
+        socket_file.chmod(0o660)
+    except OSError:
+        pass
+    logger.info("统一网关模式: socket=%s prefix=%s", gateway_socket, gateway_prefix)
+    srv.serve_forever()
+
+
 def main() -> None:
     host, port = _read_web_bind()
     # Setting.get 需在 app context 内调用；读出后显式传入，
@@ -215,10 +283,13 @@ def main() -> None:
     task_manager.start()
     logger.info("=" * 50)
     logger.info("Deen音乐下载器 Web 服务启动 (v%s)", __version__)
-    logger.info("访问地址: http://localhost:%d", port)
+    if GATEWAY_SOCKET:
+        logger.info("飞牛统一网关模式: socket=%s prefix=%s", GATEWAY_SOCKET, GATEWAY_PREFIX or "(未配置)")
+    else:
+        logger.info("访问地址: http://localhost:%d", port)
     logger.info("=" * 50)
     try:
-        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+        serve(app, GATEWAY_SOCKET, GATEWAY_PREFIX, host, port)
     finally:
         task_manager.stop()
         ncm_bridge.stop()          # 主程序退出 -> 自动关闭 API 服务

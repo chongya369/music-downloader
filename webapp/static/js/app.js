@@ -11,18 +11,21 @@ function showToast(msg, title = "提示") {
 
 // API 请求封装（默认 15 秒超时，401 自动跳转登录；options.timeout 可覆盖）
 async function api(url, options = {}) {
+    // 统一网关模式拼接前缀（window.APP_BASE 由 base.html 注入；普通模式为空串）
+    const base = window.APP_BASE || "";
+    const fullUrl = url.startsWith("/") ? base + url : url;
     const controller = new AbortController();
     const timeoutMs = options.timeout || 15000;
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const resp = await fetch(url, {
+        const resp = await fetch(fullUrl, {
             headers: { "Content-Type": "application/json" },
             ...options,
             signal: controller.signal,
         });
         // 401 未登录：跳转登录页
         if (resp.status === 401) {
-            window.location.href = "/login";
+            window.location.href = base + "/login";
             return new Promise(() => {});  // 永不 resolve，避免后续逻辑报错
         }
         // 403 无权限：抛错提示
@@ -32,7 +35,7 @@ async function api(url, options = {}) {
         const data = await resp.json();
         // 业务层 401 也跳转登录（兼容后端返回 200+code:401 的情况）
         if (data.code === 401) {
-            window.location.href = "/login";
+            window.location.href = base + "/login";
             return new Promise(() => {});
         }
         if (data.code !== 0) {
