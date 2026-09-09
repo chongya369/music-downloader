@@ -138,10 +138,30 @@ jobs:
         with:
           path: artifacts
 
+      # 调试输出：打印 artifact 实际内部路径（曾出现 fnos artifact 内部
+      # 路径与预期不符导致 glob 失配，此步骤用于直接暴露真实结构）
+      - name: List downloaded artifacts
+        run: find artifacts -type f -exec ls -lh {} \;
+
       - uses: softprops/action-gh-release@v2
         with:
+          # 仅上传两个 zip；.fpk 由后续步骤单独上传（fail-loud）
           files: |
             artifacts/music_downloader-win-x64/music_downloader-win-x64.zip
             artifacts/music_downloader-linux-x64/music_downloader-linux-x64.zip
-            artifacts/music_downloader-fnos/music_downloader.fpk
           generate_release_notes: true
+
+      # fpk 单独上传：softprops 的 files glob 失配时仅打 warning 不报错，
+      # 曾导致 .fpk 静默缺失；此处用 find 定位（不受 artifact 内部嵌套
+      # 路径影响），找不到文件直接让步骤失败
+      - name: Upload .fpk to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fpk=$(find artifacts/music_downloader-fnos -name '*.fpk' -type f | head -n 1)
+          if [ -z "$fpk" ]; then
+            echo "ERROR: no .fpk found under artifacts/music_downloader-fnos/"
+            exit 1
+          fi
+          echo "Uploading: $fpk"
+          gh release upload "$GITHUB_REF_NAME" "$fpk" --repo "$GITHUB_REPOSITORY" --clobber
