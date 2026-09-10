@@ -3,7 +3,7 @@ name: Build & Release
 on:
   push:
     tags:
-      - 'v*'
+      - '*'
   workflow_dispatch:
 
 permissions:
@@ -37,12 +37,12 @@ jobs:
         shell: pwsh
         run: |
           $v = (Get-Content version.txt -Raw).Trim()
-          Compress-Archive -Path dist\deen-music-downloader\* -DestinationPath "deen-music-downloader-v${v}-win-x64.zip"
+          Compress-Archive -Path dist\deen-music-downloader\* -DestinationPath "deen-music-downloader-${v}-win-x64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: deen-music-downloader-win-x64
-          path: deen-music-downloader-v*-win-x64.zip
+          path: deen-music-downloader-*-win-x64.zip
           if-no-files-found: error
 
   build-linux:
@@ -72,12 +72,12 @@ jobs:
         run: |
           VERSION=$(tr -d '[:space:]' < version.txt)
           cd dist/deen-music-downloader
-          zip -r ../../deen-music-downloader-v${VERSION}-linux-x64.zip ./
+          zip -r ../../deen-music-downloader-${VERSION}-linux-x64.zip ./
 
       - uses: actions/upload-artifact@v4
         with:
           name: deen-music-downloader-linux-x64
-          path: deen-music-downloader-v*-linux-x64.zip
+          path: deen-music-downloader-*-linux-x64.zip
           if-no-files-found: error
 
   build-fnos:
@@ -128,7 +128,7 @@ jobs:
           ./fnpack-linux-amd64 build --directory fpk
           # fnpack 输出名跟随 manifest appname（deen-music-downloader.fpk），统一改为带版本号
           VERSION=$(tr -d '[:space:]' < version.txt)
-          mv *.fpk "deen-music-downloader-v${VERSION}.fpk"
+          mv *.fpk "deen-music-downloader-${VERSION}.fpk"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -140,7 +140,7 @@ jobs:
   release:
     name: Create Release
     needs: [build-windows, build-linux, build-fnos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -156,8 +156,8 @@ jobs:
         with:
           # 仅上传两个 zip；.fpk 由后续步骤单独上传（fail-loud）
           files: |
-            artifacts/deen-music-downloader-win-x64/deen-music-downloader-v*-win-x64.zip
-            artifacts/deen-music-downloader-linux-x64/deen-music-downloader-v*-linux-x64.zip
+            artifacts/deen-music-downloader-win-x64/deen-music-downloader-*-win-x64.zip
+            artifacts/deen-music-downloader-linux-x64/deen-music-downloader-*-linux-x64.zip
           generate_release_notes: true
 
       # fpk 单独上传：softprops 的 files glob 失配时仅打 warning 不报错，
