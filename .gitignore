@@ -100,3 +100,7 @@ api/.kugou_gcid_cache.json
 # 临时/误生成文件
 $null
 *.zip
+
+# 一键发版脚本（仅本地使用，不入库）
+release.py
+release.bat
