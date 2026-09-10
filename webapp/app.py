@@ -190,7 +190,7 @@ def _read_web_bind() -> tuple:
 class PrefixMiddleware:
     """WSGI 前缀中间件：剥离网关前缀、设置 SCRIPT_NAME
 
-    飞牛统一网关把 /app/music-downloader/xxx 原样转发到 Unix Socket，
+    飞牛统一网关把 /app/deen-music-downloader/xxx 原样转发到 Unix Socket，
     本中间件把前缀写入 SCRIPT_NAME、从 PATH_INFO 剥离，使 Flask 内部
     路由、url_for、静态资源自动带上前缀。非网关模式不启用。
     """

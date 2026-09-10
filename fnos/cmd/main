@@ -4,12 +4,12 @@
 # 返回码: 0=运行成功, 3=未运行
 set -u
 
-APP_NAME="music-downloader"
-APP_BIN="${TRIM_APPDEST}/server/music_downloader"
-PID_FILE="${TRIM_PKGVAR}/music_downloader.pid"
-LOG_FILE="${TRIM_PKGVAR}/music_downloader.log"
-SOCKET_FILE="${TRIM_APPDEST}/music-downloader.sock"
-GATEWAY_PREFIX="/app/music-downloader"
+APP_NAME="deen-music-downloader"
+APP_BIN="${TRIM_APPDEST}/server/deen-music-downloader"
+PID_FILE="${TRIM_PKGVAR}/deen-music-downloader.pid"
+LOG_FILE="${TRIM_PKGVAR}/deen-music-downloader.log"
+SOCKET_FILE="${TRIM_APPDEST}/deen-music-downloader.sock"
+GATEWAY_PREFIX="/app/deen-music-downloader"
 DATA_DIR="${TRIM_PKGVAR}/data"
 
 is_running() {

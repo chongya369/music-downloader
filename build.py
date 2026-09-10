@@ -8,8 +8,8 @@
     Linux:   执行 ./build_linux.sh（或 python3 build.py）
 
 产物：
-    Windows: ./dist/music_downloader/music_downloader.exe
-    Linux:   ./dist/music_downloader/music_downloader
+    Windows: ./dist/deen-music-downloader/deen-music-downloader.exe
+    Linux:   ./dist/deen-music-downloader/deen-music-downloader
 
 注意：PyInstaller 不支持交叉编译，Linux 产物必须在 Linux 上构建，
 Windows 产物必须在 Windows 上构建。
@@ -17,7 +17,7 @@ Windows 产物必须在 Windows 上构建。
 打包后会自动把源码 api/ 目录中当前平台的 API 二进制
 （ncm-api-win-x64.exe / ncm-api-linux-x64、qqmusic-api-win-x64.exe /
 qqmusic-api-linux-x64、kugou_api_win.exe / kugou_api_linux）
-复制到 dist/music_downloader/api/ 目录，用户无需手动放置。
+复制到 dist/deen-music-downloader/api/ 目录，用户无需手动放置。
 缺失的二进制打包时会告警并生成占位提示文件。
 """
 
@@ -34,7 +34,7 @@ ENTRY = SOURCE_DIR / "webapp" / "app.py"
 ICON = SOURCE_DIR / "icon.ico"
 VERSION_FILE = SOURCE_DIR / "version.txt"
 
-APP_NAME = "music_downloader"
+APP_NAME = "deen-music-downloader"
 # dist / build 放在项目根，避免污染 source
 DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
@@ -123,7 +123,7 @@ def runtime_hook_path() -> Path:
         'import sys\n'
         '\n'
         'print("============================================")\n'
-        'print("  music_downloader 正在启动，请等待...")\n'
+        'print("  deen-music-downloader 正在启动，请等待...")\n'
         'print("============================================")\n'
         'sys.stdout.flush()\n'
     )

@@ -8,7 +8,7 @@
     <link href="{{ url_for('static', filename='vendor/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css') }}" rel="stylesheet">
     <link href="{{ url_for('static', filename='css/app.css') }}" rel="stylesheet">
     <script>
-        // 网关根前缀（统一网关模式下为 /app/music-downloader，普通模式为空串）。
+        // 网关根前缀（统一网关模式下为 /app/deen-music-downloader，普通模式为空串）。
         // app.js 的 api() 用它拼接所有相对请求；模板内链接统一用 url_for，无需该变量。
         window.APP_BASE = {{ request.script_root | tojson }};
     </script>

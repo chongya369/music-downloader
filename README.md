@@ -29,7 +29,7 @@
 ### 方式二：Release 可执行文件
 
 1. 下载对应平台 zip（`deen-music-downloader-v<版本号>-win-x64.zip` / `deen-music-downloader-v<版本号>-linux-x64.zip`）并解压
-2. Windows 双击 `music_downloader.exe`；Linux 执行 `./music_downloader`
+2. Windows 双击 `deen-music-downloader.exe`；Linux 执行 `./deen-music-downloader`
 3. 浏览器访问 `http://localhost:45600`
 
 产物已内置当前平台 API 二进制，无需任何手动配置。
@@ -120,11 +120,11 @@ python -m venv .venv
 
 ```bash
 # 打包产物：指定数据目录
-./music_downloader --data-dir /data/deen-music          # Linux
-music_downloader.exe --data-dir D:\deen-data            # Windows
+./deen-music-downloader --data-dir /data/deen-music     # Linux
+deen-music-downloader.exe --data-dir D:\deen-data       # Windows
 
 # 环境变量方式（适合 systemd / Docker 等不便改命令行的场景）
-APP_DATA_DIR=/data/deen-music ./music_downloader
+APP_DATA_DIR=/data/deen-music ./deen-music-downloader
 ```
 
 ## 默认账号与密码重置
@@ -183,7 +183,7 @@ build_win.bat
 chmod +x build_linux.sh && ./build_linux.sh
 ```
 
-- 产物位于 `dist/music_downloader/`，自动复制 `api/` 三平台二进制并创建 `downloads/` 占位目录
+- 产物位于 `dist/deen-music-downloader/`，自动复制 `api/` 三平台二进制并创建 `downloads/` 占位目录
 - PyInstaller 不支持交叉编译，各平台产物须在对应平台构建
 - 推送 `v*` 标签时 GitHub Actions 自动构建 Windows / Linux zip 与 fnOS `.fpk` 三份产物并发布 Release
 

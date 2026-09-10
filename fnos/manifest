@@ -1,13 +1,17 @@
-appname=music-downloader
-version=0.5.0
-display_name=Deen音乐下载器
-desc=多平台音乐下载器，支持网易云、QQ音乐、酷狗音乐账号管理与批量下载。
-source=thirdparty
-platform=x86
-maintainer=chongya369
-maintainer_url=https://github.com/chongya369/music-downloader
-os_min_version=1.2.0
-desktop_uidir=ui
-desktop_applaunchname=music-downloader.main
-ctl_stop=true
-checkport=false
+appname               = deen-music-downloader
+version               = 0.0.1
+display_name          = Deen音乐下载器
+desc                  = 音乐下载器：支持网易云音乐、QQ 音乐与酷狗音乐解析下载的 Web 应用。<a href="https://qm.qq.com/q/Up9AXxgZCA">QQ群：1107946175</a>。进群暗号：fnos。GitHub地址：<a href="https://github.com/chongya369/music-downloader">https://github.com/chongya369/music-downloader</a>。官方商店为稳定版，如需最新[先行版]请加群下载。
+platform              = x86
+source                = thirdparty
+maintainer            = Deen
+maintainer_url        = https://github.com/chongya369/music-downloader
+distributor           = Deen
+distributor_url       = https://github.com/chongya369/music-downloader
+desktop_uidir         = ui
+desktop_applaunchname = deen-music-downloader.web
+os_min_version        = 1.2.0
+ctl_stop              = true
+checkport             = false
+changelog             = 详细更新日志见<a href="https://github.com/chongya369/music-downloader/releases">https://github.com/chongya369/music-downloader/releasesRelease</a>
+

@@ -1,13 +1,13 @@
 {
   ".url": {
-    "music-downloader.main": {
+    "deen-music-downloader.web": {
       "title": "Deen音乐下载器",
       "icon": "images/icon_{0}.png",
-      "type": "url",
+      "type": "iframe",
       "protocol": "",
-      "gatewaySocket": "music-downloader.sock",
-      "gatewayPrefix": "/app/music-downloader",
-      "url": "/app/music-downloader",
+      "gatewaySocket": "deen-music-downloader.sock",
+      "gatewayPrefix": "/app/deen-music-downloader",
+      "url": "/app/deen-music-downloader",
       "allUsers": true
     }
   }

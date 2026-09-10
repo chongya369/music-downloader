@@ -37,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           $v = (Get-Content version.txt -Raw).Trim()
-          Compress-Archive -Path dist\music_downloader\* -DestinationPath "deen-music-downloader-v${v}-win-x64.zip"
+          Compress-Archive -Path dist\deen-music-downloader\* -DestinationPath "deen-music-downloader-v${v}-win-x64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -71,7 +71,7 @@ jobs:
       - name: Package zip
         run: |
           VERSION=$(tr -d '[:space:]' < version.txt)
-          cd dist/music_downloader
+          cd dist/deen-music-downloader
           zip -r ../../deen-music-downloader-v${VERSION}-linux-x64.zip ./
 
       - uses: actions/upload-artifact@v4
@@ -113,10 +113,10 @@ jobs:
           sed -i "s/^version[[:space:]]*=.*/version = ${VERSION}/" fpk/manifest
           # 2) PyInstaller 产物 -> fpk/app/server/
           mkdir -p fpk/app/ui/images fpk/cmd fpk/config
-          cp -r dist/music_downloader/. fpk/app/server/
+          cp -r dist/deen-music-downloader/. fpk/app/server/
           # 全部生命周期脚本需可执行位（git 检出不保留 Windows 提交的执行位）
           chmod +x fpk/cmd/*
-          [ -f fpk/app/server/music_downloader ] && chmod +x fpk/app/server/music_downloader
+          [ -f fpk/app/server/deen-music-downloader ] && chmod +x fpk/app/server/deen-music-downloader
           # 3) 校验 wizard/ 目录存在（fnpack 打包检查要求）
           test -d fpk/wizard || (mkdir -p fpk/wizard)
 
