@@ -2,12 +2,13 @@
 
 本文件仅记录当前版本（0.5.0）的变更内容。
 
-## 0.5.0（2026-09-09）
+## 0.5.0（2026-09-10）
 
 ### 重大变更
 
 - **飞牛 fnOS 统一网关适配**：新增 `FNNAS_GATEWAY_SOCKET` / `FNNAS_GATEWAY_PREFIX` 环境变量驱动的 Unix Socket 监听模式；`PrefixMiddleware` WSGI 中间件剥离网关前缀并写入 SCRIPT_NAME，路由 / url_for / 静态资源自动携带前缀；非网关模式保持原 TCP 行为不变（本地 / Windows / Docker 不受影响）
-- **fnos/ fpk 打包源入库**：manifest、cmd/main 生命周期脚本（注入网关 Socket / 前缀 / 数据目录三个环境变量，PID 与日志管理，启动等待 socket 就绪最长 60s）、config、桌面图标
+- **应用标识与产物统一改名 `deen-music-downloader`**：PyInstaller 产物 exe 与 `dist/` 目录、fnos 应用标识（manifest appname、ui/config 键名）、Unix Socket 与统一网关前缀（`/app/deen-music-downloader`）整体更名；zip 内可执行文件为 `deen-music-downloader(.exe)`，fpk 内为 `server/deen-music-downloader`
+- **fnos/ fpk 打包源入库**：manifest、`cmd/` 全套 9 个生命周期脚本（`main` 为主脚本：注入网关 Socket / 前缀 / 数据目录三个环境变量，PID 与日志管理，启动等待 socket 就绪最长 60s；其余 8 个为 fnpack 1.2.3 强制要求的 no-op 脚本）、config、桌面图标；fnpack 打包工具二进制随仓库内置（官方 1.2.3，避免外部下载源失效）
 - **CI 新增 build-fnos 产物**：GitHub Actions 新增 `build-fnos` job（Debian 12 容器构建 Linux 二进制 → fnpack 打包 `.fpk`），随 Windows / Linux zip 一并产出
 - **README 精简重写**：面向用户的安装 / 快速上手 / 配置 / FAQ 文档；技术栈、目录结构、核心机制、数据模型、API 概览等开发细节移入 `docs/技术文档.md`
 
@@ -20,9 +21,17 @@
 
 - 前端统一网关前缀适配：`api()` 请求、401 跳转、账号导出均拼接 `APP_BASE` 前缀；模板链接统一改用 `url_for`（网关模式下不再脱前缀 404）
 
+### 构建与发布
+
+- **CI 产物名带版本号**：`deen-music-downloader-v<版本>-win-x64.zip` / `-linux-x64.zip` / `-v<版本>.fpk`
+- manifest 版本号以 version.txt 为唯一来源：CI 组装 fpk 时 sed 覆盖，仓库内 manifest 不再手动同步
+- **fpk 上传 Release 改为 fail-loud**：`gh release upload` + find 定位；softprops 的 files glob 失配只打 warning，曾导致 .fpk 在 Release 中静默缺失
+- fnos 图标资源整理（ICON.PNG / ICON_256.PNG / app/ui/images）
+
 ### 文档
 
 - 新增《初次使用教程》（docs/初次使用教程.md，含界面截图）
+- README / 技术文档一致性修正：fnOS 网关前缀更名同步、音质配置默认值与 `DEFAULT_SETTINGS` 字面值对齐（默认空串，回退旧全局 `level`，其缺省 exhigh）
 
 ## 0.4.2（2026-09-07）
 

@@ -22,7 +22,7 @@
 
 1. 从 [Releases](https://github.com/chongya369/music-downloader/releases) 下载 `.fpk` 安装包
 2. fnOS「应用中心 → 手动安装」上传 fpk 文件
-3. 安装完成后从桌面或应用列表打开，经统一网关（`/app/music-downloader`）访问
+3. 安装完成后从桌面或应用列表打开，经统一网关（`/app/deen-music-downloader`）访问
 
 数据库与下载目录自动落在 fnOS 持久化数据卷，升级覆盖安装数据不丢失。
 
@@ -84,9 +84,9 @@ python -m venv .venv
 | `kugou_api_base_url` | `http://127.0.0.1:45603` | 自定义酷狗音乐 API 服务 URL，`use_custom_kugou_api_url` 为 `true` 时生效 |
 | `web_port` | `*:45600` | Web 服务监听地址（`host:port` 格式，如 `*:45600` 或 `127.0.0.1:45600`，`*` 表示所有网卡，修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录；fnOS 网关模式首启自动固定到数据卷绝对路径） |
-| `level_netease` | `exhigh` | 网易云音质：standard / exhigh / lossless / hires（未单独设置时回退旧全局 `level`） |
-| `level_qq` | `exhigh` | QQ 音乐音质：standard / exhigh / lossless / hires（未单独设置时回退旧全局 `level`） |
-| `level_kugou` | `exhigh` | 酷狗音乐音质：standard / exhigh / lossless / hires（未单独设置时回退旧全局 `level`） |
+| `level_netease` | （空） | 网易云音质：standard / exhigh / lossless / hires（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
+| `level_qq` | （空） | QQ 音乐音质：standard / exhigh / lossless / hires（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
+| `level_kugou` | （空） | 酷狗音乐音质：standard / exhigh / lossless / hires（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
 | `enable_quality_fallback` | `true` | 目标音质取不到流时是否自动向低音质档回退 |
 | `write_metadata` | `true` | 是否写入元数据（标题/艺术家/专辑/封面/歌词） |
 | `write_lyric` | `true` | 是否下载并写入歌词 |

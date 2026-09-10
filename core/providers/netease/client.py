@@ -143,7 +143,8 @@ class NeteaseClient:
                 "musicPackage": {"vipCode": 0,  "expireTime": 0,   "vipLevel": 0},  # 音乐包
                 "redplus":     {"vipCode": 12, "expireTime": ms, "vipLevel": 1}   # SVIP
             }
-        优先级：SVIP(12) > 黑胶VIP(11) > 音乐包 > 非会员(0)
+        选择策略：遍历 redplus(SVIP) / associator(黑胶VIP) / musicPackage(音乐包)，
+        取到期时间最晚的会员（用户可能同时持有多种权益，最晚到期时间才是实际失效时间）
 
         Returns:
             {"vip_type": int, "expire_time": int(ms)|None}
@@ -159,17 +160,36 @@ class NeteaseClient:
             return {}
         data = result.get("data") or {}
 
-        # 按优先级遍历会员类型：redplus(SVIP) > associator(黑胶VIP) > musicPackage(音乐包)
-        # 选第一个 vipCode > 0 的作为当前有效会员
+        # 遍历所有会员类型，取到期时间最晚的会员
+        # （用户可能同时持有多种权益，如黑胶VIP 2026 到期 + SVIP 2027 到期，
+        #   实际失效时间应取最晚的，而非按类型优先级取第一个）
+        best_vip_code = 0
+        best_expire_ms = None
+        for key in ("redplus", "associator", "musicPackage"):
+            pkg = data.get(key) or {}
+            vip_code = int(pkg.get("vipCode") or 0)
+            if vip_code <= 0:
+                continue
+            try:
+                expire_ms = int(pkg.get("expireTime") or 0)
+            except (TypeError, ValueError):
+                expire_ms = 0
+            # expireTime <= 0 表示永久或未真正开通，跳过
+            if expire_ms <= 0:
+                continue
+            if best_expire_ms is None or expire_ms > best_expire_ms:
+                best_vip_code = vip_code
+                best_expire_ms = expire_ms
+
+        if best_expire_ms is not None:
+            return {"vip_type": best_vip_code, "expire_time": best_expire_ms}
+
+        # vipCode > 0 但均无有效到期时间（永久/未真正开通），按类型优先级返回
         for key in ("redplus", "associator", "musicPackage"):
             pkg = data.get(key) or {}
             vip_code = int(pkg.get("vipCode") or 0)
             if vip_code > 0:
-                expire_ms = pkg.get("expireTime")
-                # expireTime 为 0 表示永久或未真正开通，统一转为 None
-                if not expire_ms or expire_ms <= 0:
-                    expire_ms = None
-                return {"vip_type": vip_code, "expire_time": expire_ms}
+                return {"vip_type": vip_code, "expire_time": None}
 
         # 无任何会员
         return {"vip_type": 0, "expire_time": None}
