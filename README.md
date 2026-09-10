@@ -28,7 +28,7 @@
 
 ### 方式二：Release 可执行文件
 
-1. 下载对应平台 zip（`music_downloader-win-x64.zip` / `music_downloader-linux-x64.zip`）并解压
+1. 下载对应平台 zip（`deen-music-downloader-v<版本号>-win-x64.zip` / `deen-music-downloader-v<版本号>-linux-x64.zip`）并解压
 2. Windows 双击 `music_downloader.exe`；Linux 执行 `./music_downloader`
 3. 浏览器访问 `http://localhost:45600`
 
