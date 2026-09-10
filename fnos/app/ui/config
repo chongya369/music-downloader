@@ -2,7 +2,7 @@
   ".url": {
     "deen-music-downloader.web": {
       "title": "Deen音乐下载器",
-      "icon": "images/icon_{0}.png",
+      "icon": "images/icon-{0}.png",
       "type": "iframe",
       "protocol": "",
       "gatewaySocket": "deen-music-downloader.sock",
