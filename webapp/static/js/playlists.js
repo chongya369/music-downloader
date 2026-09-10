@@ -91,6 +91,8 @@ document.querySelectorAll("#playlist-tabs .nav-link").forEach(el => {
         if (tab === "mine") {
             document.getElementById("tab-mine").classList.remove("d-none");
             document.getElementById("tab-discover").classList.add("d-none");
+            // 切回时重新拉取，保证发现页/弹窗新添加的歌单立即可见
+            loadPlaylists();
             return;
         }
         // 平台 tab
@@ -146,7 +148,7 @@ async function loadPlaylists() {
                     <td>${platformBadge}${escapeHtml(p.name)}</td>
                     <td><span class="badge ${p.type === 'official' ? 'bg-info' : 'bg-secondary'}">${typeText}</span></td>
                     <td>
-                        <input type="number" class="form-control form-control-sm limit-input" value="${p.limit_count}" data-id="${p.id}" data-platform="${p.platform}" min="1" max="1000" style="width:70px">
+                        <input type="number" class="form-control form-control-sm limit-input" value="${p.limit_count}" data-id="${p.id}" data-platform="${p.platform}" min="1" max="9999" style="width:70px">
                     </td>
                     <td>${p.track_count || 0}</td>
                     <td><small class="text-muted">${syncTime}</small></td>

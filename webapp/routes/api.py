@@ -288,7 +288,7 @@ def add_playlist():
     data = _json_body()
     source = data.get("source", "").strip()
     pl_type = data.get("type", "user")
-    limit = _safe_int(data.get("limit", 100), 100, lo=1, hi=1000)
+    limit = _safe_int(data.get("limit", 100), 100, lo=1, hi=9999)
     platform = (data.get("platform") or "").strip().lower() or "netease"
 
     if not source:
@@ -357,7 +357,7 @@ def update_playlist(pid: int):
     if "enabled" in data:
         pl.enabled = bool(data["enabled"])
     if "limit_count" in data:
-        pl.limit_count = _safe_int(data["limit_count"], pl.limit_count, lo=1, hi=1000)
+        pl.limit_count = _safe_int(data["limit_count"], pl.limit_count, lo=1, hi=9999)
     if "name" in data:
         pl.name = data["name"]
     db.session.commit()
@@ -732,7 +732,7 @@ _NUMERIC_SETTINGS = {
     "qq_api_port":              (1024, 65535),
     "kugou_api_port":           (1024, 65535),
     "max_retries":              (1, 10),
-    "default_playlist_limit":   (1, 1000),
+    "default_playlist_limit":   (1, 9999),
     "hourly_limit_per_account": (0, 10000),
     "sync_jitter":              (0, 3600),
 }

@@ -21,43 +21,83 @@ document.querySelectorAll("#download-tabs .nav-link").forEach(el => {
     });
 });
 
-// 加载任务列表
+// 任务项骨架（名称/歌手静态渲染一次，动态字段由 updateTaskItem 更新）
+function buildTaskItem(t) {
+    const div = document.createElement("div");
+    div.className = "task-item mb-2";
+    div.dataset.pk = t.pk;
+    div.innerHTML = `
+        <div class="d-flex justify-content-between align-items-center mb-1">
+            <span>${escapeHtml(t.artists)} - ${escapeHtml(t.song_name)}</span>
+            <span class="badge task-status"></span>
+        </div>
+        <div class="task-error"></div>
+        <div class="progress">
+            <div class="progress-bar" style="width: 0%">0%</div>
+        </div>
+    `;
+    return div;
+}
+
+// 更新任务项动态字段（状态徽章/错误信息/进度条）
+function updateTaskItem(el, t) {
+    const pct = t.progress || 0;
+    const status = t.status === "downloading" ? "下载中" : "等待中";
+    const badge = el.querySelector(".task-status");
+    badge.className = `badge task-status ${t.status === 'downloading' ? 'bg-primary' : 'bg-info'}`;
+    badge.textContent = status;
+    el.querySelector(".task-error").innerHTML = t.error_msg
+        ? `<small class="text-warning d-block mb-1">${escapeHtml(t.error_msg)}</small>`
+        : "";
+    const bar = el.querySelector(".progress-bar");
+    bar.style.width = pct + "%";
+    bar.textContent = pct + "%";
+}
+
+// 加载任务列表（增量 DOM 更新：高频轮询下避免全量重建导致闪烁卡顿）
+let _loadingTasks = false;
 async function loadTasks() {
+    if (_loadingTasks) return;  // 防重入：上一次请求未返回时跳过本轮
+    _loadingTasks = true;
     try {
         const data = await api("/api/tasks");
-        const tasks = data.data;
+        const tasks = data.data || [];
         const list = document.getElementById("task-list");
         const countBadge = document.getElementById("task-count-badge");
 
-        if (!tasks || tasks.length === 0) {
+        countBadge.textContent = tasks.length;
+
+        if (tasks.length === 0) {
             list.innerHTML = '<p class="text-muted text-center mb-0">暂无下载任务</p>';
-            countBadge.textContent = "0";
             return;
         }
 
-        countBadge.textContent = tasks.length;
+        // 清掉空态占位符（p 标签不是任务项）
+        if (!list.querySelector(".task-item")) list.innerHTML = "";
 
-        list.innerHTML = tasks.map(t => {
-            const pct = t.progress || 0;
-            const status = t.status === "downloading" ? "下载中" : "等待中";
-            const errMsg = t.error_msg
-                ? `<small class="text-warning d-block mb-1">${escapeHtml(t.error_msg)}</small>`
-                : "";
-            return `
-                <div class="task-item mb-2">
-                    <div class="d-flex justify-content-between align-items-center mb-1">
-                        <span>${escapeHtml(t.artists)} - ${escapeHtml(t.song_name)}</span>
-                        <span class="badge ${t.status === 'downloading' ? 'bg-primary' : 'bg-info'}">${status}</span>
-                    </div>
-                    ${errMsg}
-                    <div class="progress">
-                        <div class="progress-bar" style="width: ${pct}%">${pct}%</div>
-                    </div>
-                </div>
-            `;
-        }).join("");
+        // 已渲染任务项索引：pk -> 元素
+        const existing = new Map();
+        list.querySelectorAll(".task-item").forEach(el => existing.set(el.dataset.pk, el));
+
+        // 移除已结束（消失）的任务项
+        const keep = new Set(tasks.map(t => String(t.pk)));
+        existing.forEach((el, pk) => {
+            if (!keep.has(pk)) el.remove();
+        });
+
+        // 更新已有项 / 追加新项（保持后端返回顺序）
+        tasks.forEach(t => {
+            let el = existing.get(String(t.pk));
+            if (!el) {
+                el = buildTaskItem(t);
+                list.appendChild(el);
+            }
+            updateTaskItem(el, t);
+        });
     } catch (e) {
         console.error("加载任务失败:", e);
+    } finally {
+        _loadingTasks = false;
     }
 }
 
@@ -324,9 +364,9 @@ document.getElementById("filter-keyword").addEventListener("keypress", e => {
 loadTasks();
 loadSongs();
 
-// 每 2 秒刷新任务（仅在任务标签页时）
+// 每 0.5 秒刷新任务（仅在任务标签页时；增量更新避免闪烁）
 setInterval(() => {
     if (currentSubTab === "tasks") {
         loadTasks();
     }
-}, 2000);
+}, 500);

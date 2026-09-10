@@ -1135,7 +1135,8 @@ class TaskManager:
                 return
             now = time.time()
             pct = int(downloaded * 100 / total)
-            if pct - last["pct"] >= 2 or now - last["ts"] >= 1.0:
+            # 进度变化 ≥1% 或距上次写库 ≥0.5s 时更新（配合前端 0.5s 轮询）
+            if pct - last["pct"] >= 1 or now - last["ts"] >= 0.5:
                 last["pct"] = pct
                 last["ts"] = now
                 with self.app.app_context():

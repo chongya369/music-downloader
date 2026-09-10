@@ -221,7 +221,8 @@ class NeteaseClient:
 
         Args:
             playlist_id: 歌单 ID 或榜单 ID（榜单本质也是歌单）
-            limit: 取前 N 首
+            limit: 取前 N 首（/playlist/detail 单次最多返回 1000 首，
+                   limit 超过 1000 时经 /playlist/track/all 分页补齐）
 
         Returns:
             {"name","track_count","tracks":[{"id","name","artists","album","duration_ms"}]}
@@ -232,26 +233,69 @@ class NeteaseClient:
             return {}
 
         playlist = result.get("playlist", {})
-        tracks = []
-        for t in playlist.get("tracks", [])[:limit]:
-            artists = "/".join(ar.get("name", "") for ar in t.get("ar", []))
-            album = (t.get("al") or {}).get("name", "")
-            tracks.append(
-                {
-                    "id": t.get("id"),
-                    "name": t.get("name"),
-                    "artists": artists,
-                    "album": album,
-                    "duration_ms": t.get("dt", 0),
-                    # fee: 0=免费 1=VIP 4=购买专辑 8=低音质免费
-                    "fee": t.get("fee", 0),
-                }
-            )
+        track_count = playlist.get("trackCount", 0)
+
+        # 曲目来源：limit <= 1000 时 detail 一次拿全；
+        # 超过 1000 时 detail 只带前 1000 首，改用 /playlist/track/all 分页拉取
+        raw_tracks: list[dict] = []
+        if limit > 1000:
+            raw_tracks = self._fetch_all_tracks(playlist_id, limit, track_count)
+        if not raw_tracks:
+            # 分页接口不可用/失败时回退 detail 自带的前 1000 首
+            raw_tracks = playlist.get("tracks", [])
+
+        tracks = [self._parse_track(t) for t in raw_tracks[:limit]]
         return {
             "id": playlist.get("id"),
             "name": playlist.get("name"),
-            "track_count": playlist.get("trackCount", len(tracks)),
+            "track_count": track_count or len(tracks),
             "tracks": tracks,
+        }
+
+    def _fetch_all_tracks(self, playlist_id: int, limit: int, track_count: int) -> list[dict]:
+        """经 /playlist/track/all 分页拉取歌单曲目（突破 1000 首上限）
+
+        Args:
+            playlist_id: 歌单 ID
+            limit: 需要的最大曲目数
+            track_count: 歌单总曲目数（用于提前终止，0/未知时忽略）
+
+        Returns:
+            原始曲目列表（接口失败时可能为空或不完整，调用方回退 detail）
+        """
+        raw_tracks: list[dict] = []
+        page_size = 500
+        offset = 0
+        while offset < limit:
+            result = self._request("/playlist/track/all", params={
+                "id": playlist_id, "limit": page_size, "offset": offset})
+            if result.get("code") != 200:
+                logger.warning("分页拉取歌单 %s 曲目失败(offset=%d): %s",
+                               playlist_id, offset, result.get("msg"))
+                break
+            songs = result.get("songs") or []
+            if not songs:
+                break
+            raw_tracks.extend(songs)
+            # 实收不足一页或已达歌单总数 → 后续无更多曲目
+            if len(songs) < page_size or (track_count and len(raw_tracks) >= track_count):
+                break
+            offset += page_size
+        return raw_tracks
+
+    @staticmethod
+    def _parse_track(t: dict) -> dict:
+        """解析曲目结构（/playlist/detail 与 /playlist/track/all 字段一致：ar/al/dt/fee）"""
+        artists = "/".join(ar.get("name", "") for ar in t.get("ar", []))
+        album = (t.get("al") or {}).get("name", "")
+        return {
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "artists": artists,
+            "album": album,
+            "duration_ms": t.get("dt", 0),
+            # fee: 0=免费 1=VIP 4=购买专辑 8=低音质免费
+            "fee": t.get("fee", 0),
         }
 
     def get_song_urls(self, song_ids: list[int], level: str = "exhigh") -> list[dict]:

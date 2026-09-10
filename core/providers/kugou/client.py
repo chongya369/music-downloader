@@ -1025,7 +1025,10 @@ class KuGouClient:
         total = None
         name = ""
         page, page_size = 1, 50
-        while len(tracks) < limit and page <= 10:
+        # 页数上限按 limit 动态计算（每页 page_size 首），配合循环内
+        # "空页/取完即停"条件，歌单不足时自然提前退出
+        max_pages = (limit + page_size - 1) // page_size
+        while len(tracks) < limit and page <= max_pages:
             body = self._request("/playlist/track/all", {
                 "id": gcid, "page": page, "pagesize": page_size,
             })
