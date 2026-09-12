@@ -76,6 +76,7 @@ log/
 
 # 项目文档（仅本地维护，不随源码上传）；CHANGELOG / 使用教程 / 截图例外入库
 docs/*
+!docs/技术文档.md
 !docs/CHANGELOG.md
 !docs/初次使用教程.md
 !docs/pics/
