@@ -530,9 +530,10 @@ class QqClient:
         if not keyword:
             return {"items": [], "total": 0}
         page = offset // limit + 1 if limit > 0 else 1
+        # highlight=False 关闭关键词高亮，避免歌手/专辑名携带 <em> 标记
         result = self._request("/search/search_by_type", params={
             "keyword": keyword, "search_type": _SEARCH_TYPE_ALBUM,
-            "num": min(limit, 100), "page": page,
+            "num": min(limit, 100), "page": page, "highlight": False,
         }, timeout=10)
         albums = result.get("album") or []
         total = result.get("total_num") or result.get("estimate_sum") or len(albums)

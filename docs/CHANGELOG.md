@@ -11,6 +11,7 @@
 - **二维码防缓存**：key/create/check 链路统一携带 timestamp 参数（create 补充 platform=web），避免 CDN/代理缓存导致二维码或登录态检查复用旧响应
 - **扫码过期提示保持可见**：二维码过期时仅停止轮询、保留面板，过期提示不再被隐藏（此前隐藏面板会让校验结果写到不可见元素上）
 - **网易云账号信息刷新修正**：`profile` 为空即匿名态（`/user/account` 未登录也返回 code=200），不再覆盖账号原有昵称/会员信息，改为返回「Cookie 未生效，请重新扫码获取」；昵称权威字段改取 `profile.nickname`（`account.userName` 为登录名非昵称）；会员类型沿用 `account.vipType`（经典 0/11/12 语义，与展示映射一致；`profile.vipType`、`/vip/info` 的 vipCode 均非展示编码，弃用）
+- **QQ 专辑搜索高亮标记移除**：专辑搜索接口加 `highlight=false`，关闭关键词 `<em>` 高亮（歌手/专辑名携带 `<em>` 导致前端展示异常）
 
 ## 0.6.0（2026-09-13）
 
