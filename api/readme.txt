@@ -27,7 +27,7 @@ api/ 目录说明
 二、QQ 音乐（qqmusic-api）
 ------------------------------------------------
   对应 GitHub 项目：
-      https://github.com/chongya369/qqmusic-api-py
+      https://github.com/chongya369/QQMusicApi
 
   Windows x64:   qqmusic-api-win-x64.exe
   Linux   x64:   qqmusic-api-linux-x64
