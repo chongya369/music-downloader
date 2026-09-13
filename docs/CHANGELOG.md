@@ -1,6 +1,30 @@
 # 更新日志
 
-本文件仅记录当前版本（0.5.1）的变更内容。
+本文件仅记录当前版本（0.6.0）的变更内容。
+
+## 0.6.0（2026-09-13）
+
+### 重大变更
+
+- **QQ 音乐 API 服务端切换（FastAPI 版）**：内置 qqmusic-api 二进制更换为 FastAPI/uvicorn 架构，`client.py` 核心重写——响应解析 `{code,msg,data}`、标准 Cookie 传凭证（uin/qqmusic_key 自动映射 musicid/musickey）、取下载链接两步化（`get_song_urls` + CDN dispatch 拼接）、音质改整型枚举（hires 13 / lossless 12 / flac 7，降级 128 保留）、歌曲详情 50 首一批、榜单与歌单详情客户端按 100/页分页聚合；`bridge.py` 配套修复环境变量名（`QQMUSIC_SERVER_HOST/PORT`）与就绪探测（`/` 根端点校验）
+- **三平台扫码登录全对齐**：新增 QQ/微信扫码（双按钮）与网易云扫码登录，三平台共用前端状态机与酷狗语义 status（0=过期 1=等待 2=已扫 3=拒绝 4=成功）；扫码落库 Cookie 与手工录入格式一致，添加账号校验零改动；分类歌单降级：新服务端无等价接口，热门歌单改走官方推荐歌单单页、分类固定「全部」
+
+### 功能
+
+- **QQ 账号页昵称 + 会员到期时间显示**：homepage 接口取昵称（失败不清空存量）；`userinfo.expire` 缺失时从 `identity.*_end` 解析（兼容带时间与纯日期两种格式，主会员档位优先）
+- **微信登录 Cookie 兼容**：musicid 补 wxuin 兜底（修复微信扫码账号 422），wx 系字段别名映射供 W_X_ 凭证续期；账号 Cookie 强校验兼容 musicid
+- **QQ 歌词可用**：新服务端提供 `/song/{mid}/lyric`（原服务端恒空）
+- **下载元数据增强**：MP3 双 USLT 帧（原文/翻译歌词）、TRCK/TPOS/TPE2 帧、年份帧 TYER→TDRC（ID3v2.4）；FLAC 加 tracknumber/discnumber/albumartist/translation；网易云经 `/album` 补全音轨/碟号/专辑歌手（按专辑缓存），QQ/酷狗 meta 同步补全；详情/歌词空结果 1s 重试 1 次
+
+### 修复
+
+- 错误语义：401/422 确定性错误不重试，429 保留重试；账号页昵称仅非空时覆盖，防误清空
+
+### 构建与打包
+
+- `api/config.toml` 新增本机限流豁免（新服务端默认 60 次/分/IP，批量下载会触发 429）；`build.py` 打包复制 config.toml；`api/readme.txt`、`docs/技术文档.md` 同步更新
+
+### 
 
 ## 0.5.1（2026-09-10）
 

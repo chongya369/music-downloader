@@ -379,12 +379,12 @@ function bindEvents() {
 // 平台 -> {placeholder, hint} 文案表（C：三平台完整覆盖，消除硬编码残留）
 const PLATFORM_ADD_HINTS = {
     netease: {
-        placeholder: "MUSIC_U=xxxx; os=pc",
-        hint: "网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U",
+        placeholder: "MUSIC_U=xxxx; os=pc（也可点下方扫码自动填入）",
+        hint: "网易云：点下方「扫码登录」用网易云APP扫码自动填入；或浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U",
     },
     qq: {
-        placeholder: "uin=xxxx; eas_sid=xxxx; ...（完整 Cookie）",
-        hint: "QQ音乐：浏览器登录 y.qq.com → F12 → Network → 任选 y.qq.com 请求 → 复制完整 Cookie（须含 uin，昵称还需 eas_sid）",
+        placeholder: "uin=xxxx; eas_sid=xxxx; ...（完整 Cookie，也可点下方扫码自动填入）",
+        hint: "QQ音乐：点下方「QQ扫码登录/微信扫码登录」自动填入；或浏览器登录 y.qq.com → F12 → Network → 任选 y.qq.com 请求 → 复制完整 Cookie（须含 uin，昵称还需 eas_sid）",
     },
     kugou: {
         placeholder: "token=xxx;userid=xxx（也可点下方扫码自动填入）",
@@ -411,20 +411,76 @@ function stopKugouQrPolling() {
     if (panel) panel.classList.add("d-none");
 }
 
+// ======================================================================
+// QQ音乐扫码登录（QQ/微信）：状态与清理函数
+// 注意：与酷狗同理，必须定义在 updateAddPlatformUI 之前——页面加载时
+// 顶层调用 updateAddPlatformUI → stopQqQrPolling，若 let 变量声明在其后
+// 会触发 TDZ ReferenceError 中断整个脚本，导致所有事件绑定失效
+// ======================================================================
+let _qqQrTimer = null;
+let _qqQrIdentifier = "";
+
+function stopQqQrPolling() {
+    if (_qqQrTimer) {
+        clearInterval(_qqQrTimer);
+        _qqQrTimer = null;
+    }
+    _qqQrIdentifier = "";
+    const panel = document.getElementById("qq-qr-panel");
+    if (panel) panel.classList.add("d-none");
+}
+
+// ======================================================================
+// 网易云扫码登录：状态与清理函数
+// 注意：与酷狗同理，必须定义在 updateAddPlatformUI 之前——页面加载时
+// 顶层调用 updateAddPlatformUI → stopNcmQrPolling，若 let 变量声明在其后
+// 会触发 TDZ ReferenceError 中断整个脚本，导致所有事件绑定失效
+// ======================================================================
+let _ncmQrTimer = null;
+let _ncmQrKey = "";
+
+function stopNcmQrPolling() {
+    if (_ncmQrTimer) {
+        clearInterval(_ncmQrTimer);
+        _ncmQrTimer = null;
+    }
+    _ncmQrKey = "";
+    const panel = document.getElementById("ncm-qr-panel");
+    if (panel) panel.classList.add("d-none");
+}
+
 // A：抽函数统一管理「平台 -> UI」刷新逻辑
 function updateAddPlatformUI(platform) {
     const cfg = PLATFORM_ADD_HINTS[platform] || PLATFORM_ADD_HINTS.netease;
     const cookieInput = document.getElementById("add-cookie");
     const hint = document.getElementById("add-cookie-hint");
-    const qrSection = document.getElementById("kugou-qr-section");
+    const ncmQrSection = document.getElementById("ncm-qr-section");
+    const kugouQrSection = document.getElementById("kugou-qr-section");
+    const qqQrSection = document.getElementById("qq-qr-section");
     if (cookieInput) cookieInput.placeholder = cfg.placeholder;
     if (hint) hint.textContent = cfg.hint;
-    if (qrSection) {
-        if (platform === "kugou") {
-            qrSection.classList.remove("d-none");
+    if (ncmQrSection) {
+        if (platform === "netease") {
+            ncmQrSection.classList.remove("d-none");
         } else {
-            qrSection.classList.add("d-none");
+            ncmQrSection.classList.add("d-none");
+            stopNcmQrPolling();
+        }
+    }
+    if (kugouQrSection) {
+        if (platform === "kugou") {
+            kugouQrSection.classList.remove("d-none");
+        } else {
+            kugouQrSection.classList.add("d-none");
             stopKugouQrPolling();
+        }
+    }
+    if (qqQrSection) {
+        if (platform === "qq") {
+            qqQrSection.classList.remove("d-none");
+        } else {
+            qqQrSection.classList.add("d-none");
+            stopQqQrPolling();
         }
     }
 }
@@ -490,8 +546,140 @@ document.getElementById("btn-kugou-qr").addEventListener("click", async function
     }
 });
 
+// 网易云扫码登录（后端已把上游 code 映射为酷狗语义 status：
+// 0=过期 1=等待扫码 2=已扫码待确认 4=成功（含 cookie）；
+// 网易云无"用户拒绝"态，status 3 不会出现）
+document.getElementById("btn-ncm-qr").addEventListener("click", async function() {
+    const btn = this;
+    btn.disabled = true;
+    // 先清理残留轮询（内部会隐藏面板），必须在显示面板之前调用，
+    // 否则面板显示后又被隐藏，二维码生成后也不可见
+    stopNcmQrPolling();
+    // 冷启内置 ncm-api 最长可达 60s（onefile 解压），覆盖默认 15s
+    document.getElementById("ncm-qr-status").textContent = "正在生成二维码，请稍候…";
+    document.getElementById("ncm-qr-panel").classList.remove("d-none");
+    try {
+        const data = await api("/api/ncm/qr/create", { method: "POST", timeout: 70000 });
+        _ncmQrKey = data.data.key;
+        document.getElementById("ncm-qr-img").src = data.data.qr_img;
+        document.getElementById("ncm-qr-status").textContent = "请使用网易云音乐APP扫描二维码登录";
+        // 2.5s 轮询扫码状态
+        _ncmQrTimer = setInterval(async () => {
+            try {
+                const resp = await api("/api/ncm/qr/check", {
+                    method: "POST",
+                    body: JSON.stringify({ key: _ncmQrKey }),
+                    timeout: 30000,
+                });
+                const st = resp.data.status;
+                const statusEl = document.getElementById("ncm-qr-status");
+                if (st === 1) {
+                    statusEl.textContent = "等待扫码…";
+                } else if (st === 2) {
+                    statusEl.textContent = "已扫码，请在手机上确认登录";
+                } else if (st === 4) {
+                    stopNcmQrPolling();
+                    document.getElementById("add-cookie").value = resp.data.cookie || "";
+                    statusEl.textContent = "✅ 登录成功，Cookie 已自动填入";
+                    showToast("网易云扫码登录成功，Cookie 已填入", "成功");
+                } else if (st === 0) {
+                    stopNcmQrPolling();
+                    statusEl.textContent = "二维码已过期，请重新点击「扫码登录」";
+                }
+            } catch (e) {
+                // 轮询失败（服务重启中/网络抖动）：给出可见提示，下一轮继续
+                const statusEl = document.getElementById("ncm-qr-status");
+                if (statusEl) statusEl.textContent = `状态查询失败（${e.message}），重试中…`;
+            }
+        }, 2500);
+    } catch (e) {
+        showToast(e.message, "错误");
+        stopNcmQrPolling();
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+// QQ音乐扫码登录：QQ/微信共用一套面板与轮询（login_type 区分）。
+// 后端已把上游 event 码映射为酷狗语义 status：
+// 0=过期 1=等待扫码 2=已扫码待确认 3=用户拒绝 4=成功（含 cookie）
+async function startQqQrLogin(loginType) {
+    const btnQq = document.getElementById("btn-qq-qr");
+    const btnWx = document.getElementById("btn-qq-wx-qr");
+    const btn = loginType === "wx" ? btnWx : btnQq;
+    btnQq.disabled = true;
+    btnWx.disabled = true;
+    // 先清理残留轮询（内部会隐藏面板），必须在显示面板之前调用，
+    // 否则面板显示后又被隐藏，二维码生成后也不可见
+    stopQqQrPolling();
+    // 冷启内置 qqmusic-api 最长可达 60s（onefile 自解压），覆盖默认 15s
+    document.getElementById("qq-qr-status").textContent = "正在生成二维码，请稍候…";
+    document.getElementById("qq-qr-panel").classList.remove("d-none");
+    try {
+        const data = await api("/api/qq/qr/create", {
+            method: "POST",
+            body: JSON.stringify({ login_type: loginType }),
+            timeout: 70000,
+        });
+        _qqQrIdentifier = data.data.identifier;
+        document.getElementById("qq-qr-img").src = data.data.qr_img;
+        document.getElementById("qq-qr-status").textContent = loginType === "wx"
+            ? "请使用微信扫描二维码登录"
+            : "请使用手机QQ扫描二维码登录";
+        // 2.5s 轮询扫码状态
+        _qqQrTimer = setInterval(async () => {
+            try {
+                const resp = await api("/api/qq/qr/check", {
+                    method: "POST",
+                    body: JSON.stringify({ login_type: loginType, identifier: _qqQrIdentifier }),
+                    timeout: 30000,
+                });
+                const st = resp.data.status;
+                const statusEl = document.getElementById("qq-qr-status");
+                if (st === 1) {
+                    statusEl.textContent = "等待扫码…";
+                } else if (st === 2) {
+                    statusEl.textContent = "已扫码，请在手机上确认登录";
+                } else if (st === 4) {
+                    stopQqQrPolling();
+                    document.getElementById("add-cookie").value = resp.data.cookie || "";
+                    statusEl.textContent = "✅ 登录成功，Cookie 已自动填入";
+                    showToast("QQ音乐扫码登录成功，Cookie 已填入", "成功");
+                } else if (st === 3) {
+                    stopQqQrPolling();
+                    statusEl.textContent = "用户已拒绝授权，请重新点击「扫码登录」";
+                } else if (st === 0) {
+                    stopQqQrPolling();
+                    statusEl.textContent = "二维码已过期，请重新点击「扫码登录」";
+                }
+            } catch (e) {
+                // 轮询失败（服务重启中/网络抖动）：给出可见提示，下一轮继续
+                const statusEl = document.getElementById("qq-qr-status");
+                if (statusEl) statusEl.textContent = `状态查询失败（${e.message}），重试中…`;
+            }
+        }, 2500);
+    } catch (e) {
+        showToast(e.message, "错误");
+        stopQqQrPolling();
+    } finally {
+        btnQq.disabled = false;
+        btnWx.disabled = false;
+    }
+}
+
+document.getElementById("btn-qq-qr").addEventListener("click", function() {
+    startQqQrLogin("qq");
+});
+document.getElementById("btn-qq-wx-qr").addEventListener("click", function() {
+    startQqQrLogin("wx");
+});
+
 // 弹窗关闭时停止轮询
-document.getElementById("add-account-modal").addEventListener("hidden.bs.modal", stopKugouQrPolling);
+document.getElementById("add-account-modal").addEventListener("hidden.bs.modal", function() {
+    stopNcmQrPolling();
+    stopKugouQrPolling();
+    stopQqQrPolling();
+});
 
 // 添加账号
 document.getElementById("btn-add-account").addEventListener("click", async function() {

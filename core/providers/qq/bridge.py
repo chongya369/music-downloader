@@ -4,9 +4,10 @@
 对外提供幂等的 start/stop/status。单个进程仅监听 127.0.0.1 端口（默认 45602）。
 
 与 netease/bridge.py 结构对齐，差异点：
-- 二进制为 PyInstaller onefile 打包的 Flask 应用，监听地址经环境变量
-  QQMUSIC_API_HOST / QQMUSIC_API_PORT 控制（非 PORT/HOST）
-- 就绪探测走 /health 端点（服务自身端点，不碰上游）
+- 二进制为 PyInstaller onefile 打包的 FastAPI/uvicorn 应用，监听地址经环境变量
+  QQMUSIC_SERVER_HOST / QQMUSIC_SERVER_PORT 控制（pydantic-settings，Env 优先级
+  高于 exe 同目录 config.toml）
+- 就绪探测走 / 根端点（服务自身端点，返回 {"code":0,...}；本服务无 /health）
 - onefile 首次启动需自解压，就绪等待 timeout 默认 60s
 
 此模块为基础设施层，不经过 Provider 抽象。
@@ -80,12 +81,11 @@ class QqApiBridge:
             if sys.platform == "linux":
                 self.bin_path.chmod(0o755)
             self.port = self._find_free_port(self._preferred_port)
-            # 服务默认监听 0.0.0.0，内置 API 无鉴权，显式绑定 127.0.0.1
-            # 避免暴露局域网（经 QQMUSIC_API_HOST/PORT 环境变量传入，
-            # 该二进制不识别 PORT/HOST）
+            # 服务默认监听 127.0.0.1（config.toml），环境变量显式覆盖以保证
+            # 任意默认配置下都不暴露局域网（Env 优先级高于 config.toml）
             env = {**os.environ,
-                   "QQMUSIC_API_HOST": "127.0.0.1",
-                   "QQMUSIC_API_PORT": str(self.port)}
+                   "QQMUSIC_SERVER_HOST": "127.0.0.1",
+                   "QQMUSIC_SERVER_PORT": str(self.port)}
             for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
                 env.pop(k, None)
             # spawn_protected 启用"父进程死亡即杀"（Win 作业对象 / Linux PDEATHSIG），
@@ -142,23 +142,24 @@ class QqApiBridge:
             return s.getsockname()[1]
 
     def _wait_ready(self, timeout: float) -> None:
-        # 探测 /health（服务自身端点，不碰上游）；判定标准与状态码解耦：
-        # 收到任意 HTTP 响应即视为服务已监听就绪，连接拒绝/超时才视为
-        # 未就绪继续轮询。requests.get 对 4xx/5xx 不抛异常，仅连接层
-        # 错误抛 RequestException。清空代理 env 只作用于子进程，此处需
-        # 显式 proxies 强制直连 127.0.0.1。
+        # 探测 / 根端点（服务自身端点，返回 {"code":0,...}，不碰上游）；
+        # 本服务无 /health。判定标准：收到 200 且响应体 code==0 才视为就绪，
+        # 连接拒绝/超时才视为未就绪继续轮询。requests.get 对 4xx/5xx 不抛
+        # 异常，需检查状态码。清空代理 env 只作用于子进程，此处需显式
+        # proxies 强制直连 127.0.0.1。
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 raise RuntimeError("QQ音乐API进程异常退出，请检查二进制完整性")
             try:
-                requests.get(
-                    f"{self.base_url}/health", timeout=2,
+                resp = requests.get(
+                    f"{self.base_url}/", timeout=2,
                     proxies={"http": None, "https": None},
                 )
-                return  # 收到任意 HTTP 响应即就绪
-            except requests.exceptions.RequestException:
-                pass  # 未就绪，继续轮询
+                if resp.status_code == 200 and (resp.json() or {}).get("code") == 0:
+                    return  # 根端点返回标准成功响应即就绪
+            except (requests.exceptions.RequestException, ValueError):
+                pass  # 未就绪/非 JSON 响应，继续轮询
             time.sleep(0.5)
         raise RuntimeError("QQ音乐API服务启动超时")
 

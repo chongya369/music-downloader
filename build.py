@@ -17,7 +17,8 @@ Windows 产物必须在 Windows 上构建。
 打包后会自动把源码 api/ 目录中当前平台的 API 二进制
 （ncm-api-win-x64.exe / ncm-api-linux-x64、qqmusic-api-win-x64.exe /
 qqmusic-api-linux-x64、kugou_api_win.exe / kugou_api_linux）
-复制到 dist/deen-music-downloader/api/ 目录，用户无需手动放置。
+及 QQ音乐API 服务配置文件 config.toml 复制到 dist/deen-music-downloader/api/
+目录，用户无需手动放置。
 缺失的二进制打包时会告警并生成占位提示文件。
 """
 
@@ -261,6 +262,15 @@ def post_pack() -> None:
         print(f"[WARN] 源码 api/ 目录缺失: {', '.join(missing)}，已生成占位提示文件")
     else:
         print("[INFO] 已自动内置全部 API 二进制到 api/")
+
+    # QQ音乐 API 服务配置文件（FastAPI 版服务端必需，与二进制同目录加载）
+    # 仅复制 config.toml 本身，不复制 api/web/data/ 等运行时产物
+    qq_config = src_api_dir / "config.toml"
+    if qq_config.exists():
+        shutil.copy2(qq_config, api_dir / "config.toml")
+        print("[INFO] 已内置 QQ音乐API配置: config.toml")
+    else:
+        print("[WARN] 源码 api/ 目录缺失 config.toml，QQ音乐API将使用默认配置（监听 127.0.0.1:8080）")
 
     # 创建空 downloads/ 占位目录
     (DIST_APP_DIR / "downloads").mkdir(exist_ok=True)

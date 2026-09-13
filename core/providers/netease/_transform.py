@@ -91,6 +91,12 @@ def transform_song_detail(raw_list: list[dict], song_ids: list[str]) -> list[dic
             "year": year,
             "cover_url": album_info.get("picUrl", ""),
             "duration_ms": item.get("dt", 0),
+            # 专辑 ID：供 provider 层经 /album 补全音轨号/碟号/专辑歌手
+            "album_id": album_info.get("id", ""),
+            # /song/detail 无音轨号/碟号/专辑歌手，默认空，由 provider 层补全
+            "track_no": 0,
+            "disc_no": 0,
+            "albumartist": "",
         }
 
     # 按 song_ids 顺序重排，缺项填空结构
@@ -104,6 +110,10 @@ def transform_song_detail(raw_list: list[dict], song_ids: list[str]) -> list[dic
             "year": "",
             "cover_url": "",
             "duration_ms": 0,
+            "album_id": "",
+            "track_no": 0,
+            "disc_no": 0,
+            "albumartist": "",
         }))
     return result
 

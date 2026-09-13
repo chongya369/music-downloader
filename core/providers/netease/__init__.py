@@ -67,11 +67,22 @@ class NeteaseProvider(MusicProvider):
         return transform_song_urls(raw_list, song_ids)
 
     def get_song_detail(self, song_ids: list[str]) -> list[dict]:
-        """获取歌曲详情（转换为 SongMeta 列表）"""
+        """获取歌曲详情（转换为 SongMeta 列表，并经 /album 补全音轨号/碟号/专辑歌手）"""
         client = self._ensure_client()
         int_ids = [int(sid) for sid in song_ids]
         raw_list = client.get_song_detail(int_ids)
-        return transform_song_detail(raw_list, song_ids)
+        metas = transform_song_detail(raw_list, song_ids)
+        # /song/detail 无音轨号/碟号/专辑歌手，按专辑 ID 经 /album 补全
+        # （client 层按专辑缓存，整专辑下载只调一次；失败静默留空）
+        for meta, sid in zip(metas, song_ids):
+            album_meta = client.get_album_meta(meta.get("album_id"))
+            if not album_meta:
+                continue
+            meta["albumartist"] = album_meta.get("albumartist") or meta.get("albumartist") or ""
+            track = (album_meta.get("tracks") or {}).get(str(sid))
+            if track:
+                meta["track_no"], meta["disc_no"] = track
+        return metas
 
     def get_lyric(self, song_id: str) -> dict:
         """获取歌词（直接返回，无需 transform）"""
@@ -124,3 +135,11 @@ class NeteaseProvider(MusicProvider):
     def get_album_songs(self, *args, **kwargs):
         """获取专辑内歌曲（旁路代理）"""
         return self._ensure_client().get_album_songs(*args, **kwargs)
+
+    def create_qr_login(self, *args, **kwargs):
+        """生成扫码登录二维码（旁路代理）"""
+        return self._ensure_client().create_qr_login(*args, **kwargs)
+
+    def check_qr_login(self, *args, **kwargs):
+        """轮询扫码登录状态（旁路代理）"""
+        return self._ensure_client().check_qr_login(*args, **kwargs)

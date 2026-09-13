@@ -97,6 +97,8 @@ Desktop.ini
 !api/*.exe
 # api 目录运行时生成的临时缓存，不入库
 api/.kugou_gcid_cache.json
+# api 运行时生成的数据目录（凭证明文/设备信息，不入库）
+api/web/
 
 # 临时/误生成文件
 $null

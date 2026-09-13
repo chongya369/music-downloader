@@ -21,6 +21,10 @@
 - GET    /api/qq/status           获取内置QQ音乐API服务状态
 - POST   /api/qq/start            启动内置QQ音乐API服务
 - POST   /api/qq/stop             停止内置QQ音乐API服务
+- POST   /api/qq/qr/create        生成QQ音乐扫码登录二维码（login_type: qq/wx）
+- POST   /api/qq/qr/check         轮询QQ音乐扫码登录状态（成功含 cookie）
+- POST   /api/ncm/qr/create       生成网易云扫码登录二维码
+- POST   /api/ncm/qr/check        轮询网易云扫码登录状态（成功含 cookie）
 - POST   /api/accounts/<id>/test  测试账号登录（netease/qq 平台）
 """
 
@@ -127,14 +131,14 @@ def _refresh_account_info(acc: Account, cookie: str | None = None) -> str:
 
 
 def _refresh_qq_account_info(acc: Account, cookie: str | None = None) -> str:
-    """刷新QQ音乐账号信息（昵称、绿钻等级、到期时间）
+    """刷新QQ音乐账号信息（会员等级、到期时间）
 
-    调 QQ API /getUserInfo。cookie 无效（HTTP 400）时保留账号原有信息
-    不覆盖（避免误清空），记日志返回空提示。
+    调 QQ API /user/get_vip_info。cookie 无效（HTTP 401）时保留账号原有
+    信息不覆盖（避免误清空），记日志返回空提示。新服务端无昵称接口，
+    昵称保留存量值。
 
     Returns:
-        提示信息：空串=完全正常；非空=部分成功提示（昵称未取到，
-        Cookie 缺 eas_sid 等完整登录字段，会员信息已更新）
+        提示信息：空串=完全正常
     """
     use_cookie = cookie if cookie is not None else (acc.cookie or "")
     if not use_cookie:
@@ -145,8 +149,10 @@ def _refresh_qq_account_info(acc: Account, cookie: str | None = None) -> str:
         if not info.get("ok"):
             logger.warning("刷新QQ音乐账号信息失败 (%s): %s", acc.name, info.get("msg"))
             return ""
-        acc.nickname = info.get("nickname") or ""
         acc.vip_type = info.get("vip_type") or 0
+        # 新服务端无昵称接口（返回空串），仅在取到时覆盖，避免误清空存量昵称
+        if info.get("nickname"):
+            acc.nickname = info.get("nickname")
         expire_ts = info.get("vip_expire_ts") or 0
         if expire_ts > 0:
             try:
@@ -926,6 +932,101 @@ def kugou_qr_check():
         return jsonify({"code": 1, "msg": f"状态查询失败: {e}"})
 
 
+@api_bp.route("/qq/qr/create", methods=["POST"])
+def qq_qr_create():
+    """生成QQ音乐扫码登录二维码（QQ/微信二选一）
+
+    请求体：{"login_type": "qq" | "wx"}（缺省 qq）
+    """
+    data = _json_body()
+    login_type = (data.get("login_type") or "qq").strip().lower()
+    if login_type not in ("qq", "wx"):
+        return jsonify({"code": 1, "msg": "login_type 仅支持 qq / wx"})
+    try:
+        client = _create_client(platform="qq")
+        r = client.create_qr_login(login_type)
+        if not r.get("ok"):
+            return jsonify({"code": 1, "msg": r.get("msg", "二维码生成失败")})
+        return jsonify({"code": 0,
+                        "data": {"identifier": r.get("identifier", ""),
+                                 "login_type": r.get("login_type", login_type),
+                                 "qr_img": r.get("qr_img", "")}})
+    except Exception as e:
+        logger.exception("QQ音乐扫码登录二维码生成失败: %s", e)
+        return jsonify({"code": 1, "msg": f"二维码生成失败: {e}"})
+
+
+@api_bp.route("/qq/qr/check", methods=["POST"])
+def qq_qr_check():
+    """轮询QQ音乐扫码登录状态
+
+    请求体：{"login_type": "qq" | "wx", "identifier": "..."}
+    返回 status（酷狗语义，与 /kugou/qr/check 对齐）：
+    0=二维码过期 1=等待扫码 2=已扫码待确认 3=用户拒绝授权 4=成功（含 cookie）
+    """
+    data = _json_body()
+    identifier = (data.get("identifier") or "").strip()
+    if not identifier:
+        return jsonify({"code": 1, "msg": "缺少二维码 identifier"})
+    login_type = (data.get("login_type") or "qq").strip().lower()
+    if login_type not in ("qq", "wx"):
+        return jsonify({"code": 1, "msg": "login_type 仅支持 qq / wx"})
+    try:
+        client = _create_client(platform="qq")
+        r = client.check_qr_login(login_type, identifier)
+        if not r.get("ok"):
+            return jsonify({"code": 1, "msg": r.get("msg", "状态查询失败")})
+        out = {"status": r.get("status", 0)}
+        if r.get("cookie"):
+            out["cookie"] = r["cookie"]
+        return jsonify({"code": 0, "data": out})
+    except Exception as e:
+        logger.exception("QQ音乐扫码状态查询失败: %s", e)
+        return jsonify({"code": 1, "msg": f"状态查询失败: {e}"})
+
+
+@api_bp.route("/ncm/qr/create", methods=["POST"])
+def ncm_qr_create():
+    """生成网易云扫码登录二维码"""
+    try:
+        client = _create_client(platform="netease")
+        r = client.create_qr_login()
+        if not r.get("ok"):
+            return jsonify({"code": 1, "msg": r.get("msg", "二维码生成失败")})
+        return jsonify({"code": 0, "data": {"key": r.get("key", ""),
+                                            "qr_img": r.get("qr_img", "")}})
+    except Exception as e:
+        logger.exception("网易云扫码登录二维码生成失败: %s", e)
+        return jsonify({"code": 1, "msg": f"二维码生成失败: {e}"})
+
+
+@api_bp.route("/ncm/qr/check", methods=["POST"])
+def ncm_qr_check():
+    """轮询网易云扫码登录状态
+
+    请求体：{"key": "..."}
+    返回 status（酷狗语义，与 /kugou/qr/check 对齐）：
+    0=二维码过期 1=等待扫码 2=已扫码待确认 4=成功（含 cookie）
+    （网易云上游无"用户拒绝授权"态，status 3 不会出现）
+    """
+    data = _json_body()
+    key = (data.get("key") or "").strip()
+    if not key:
+        return jsonify({"code": 1, "msg": "缺少二维码 key"})
+    try:
+        client = _create_client(platform="netease")
+        r = client.check_qr_login(key)
+        if not r.get("ok"):
+            return jsonify({"code": 1, "msg": r.get("msg", "状态查询失败")})
+        out = {"status": r.get("status", 0)}
+        if r.get("cookie"):
+            out["cookie"] = r["cookie"]
+        return jsonify({"code": 0, "data": out})
+    except Exception as e:
+        logger.exception("网易云扫码状态查询失败: %s", e)
+        return jsonify({"code": 1, "msg": f"状态查询失败: {e}"})
+
+
 # ======================================================================
 # 账号管理（多账号）
 # ======================================================================
@@ -971,8 +1072,9 @@ def add_account():
         if not cookie or "MUSIC_U" not in cookie:
             return jsonify({"code": 1, "msg": "Cookie 必须包含 MUSIC_U"})
     if platform == "qq":
-        if not cookie or "uin" not in cookie:
-            return jsonify({"code": 1, "msg": "Cookie 必须包含 uin"})
+        # 兼容网页 Cookie（uin/qqmusic_key）与新版服务端字段（musicid/musickey）
+        if not cookie or ("uin" not in cookie and "musicid" not in cookie):
+            return jsonify({"code": 1, "msg": "Cookie 必须包含 uin（或 musicid）"})
     if platform == "kugou":
         if not cookie or "token" not in cookie:
             return jsonify({"code": 1, "msg": "Cookie 必须包含 token（酷狗登录态核心字段）"})
@@ -1221,7 +1323,7 @@ def test_account_login(aid: int):
 
 
 def _test_qq_account_login(acc: Account) -> Response:
-    """QQ音乐账号登录测试（调 /getUserInfo 并刷新会员信息）"""
+    """QQ音乐账号登录测试（调 /user/get_vip_info 并刷新会员信息）"""
     try:
         client = _create_client(cookie=acc.cookie, platform="qq")
         info = client.get_user_info()

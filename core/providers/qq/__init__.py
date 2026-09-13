@@ -3,9 +3,10 @@
 窄接口方法返回统一结构；旁路代理方法与 NeteaseProvider 签名对齐，
 使用 *args/**kwargs 透传防签名漂移。
 
-QQ API 能力限制（详见 client.py 模块注释与方案文档第八节）：
-- 无歌词接口 → 相应方法返回空
-- 账号信息经 /getUserInfo 获取（昵称/绿钻等级/到期时间）
+QQ API 能力限制（详见 client.py 模块注释）：
+- 无分类歌单浏览接口 → 热门歌单降级为官方推荐歌单（单页），分类固定"全部"
+- 账号信息经 /user/get_vip_info 获取（会员等级/到期时间；无昵称接口）
+- 歌词经 /song/{mid}/lyric 获取（原服务端无此接口，现已可用）
 """
 
 import logging
@@ -70,7 +71,7 @@ class QqProvider(MusicProvider):
         return client.get_song_detail([str(s) for s in song_ids])
 
     def get_lyric(self, song_id: str) -> dict:
-        """获取歌词（QQ 无歌词接口，返回空）"""
+        """获取歌词（调 /song/{mid}/lyric，失败返回空）"""
         client = self._ensure_client()
         return client.get_lyric(str(song_id))
 
@@ -119,3 +120,11 @@ class QqProvider(MusicProvider):
     def get_playlist_detail(self, *args, **kwargs):
         """获取歌单/榜单详情（旁路代理，内部榜单/歌单分流）"""
         return self._ensure_client().get_playlist_detail(*args, **kwargs)
+
+    def create_qr_login(self, *args, **kwargs):
+        """生成扫码登录二维码（QQ/微信，旁路代理）"""
+        return self._ensure_client().create_qr_login(*args, **kwargs)
+
+    def check_qr_login(self, *args, **kwargs):
+        """轮询扫码登录状态（旁路代理）"""
+        return self._ensure_client().check_qr_login(*args, **kwargs)

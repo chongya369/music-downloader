@@ -4,6 +4,9 @@
 API 地址每次请求时经 base_url 属性动态解析，无需手动指定。
 
 会员鉴权通过 Cookie 中的 MUSIC_U 实现，所有需要会员权限的接口会自动带上 Cookie。
+
+扫码登录：create_qr_login / check_qr_login 走上游 /login/qr/* 原生路由，
+成功时 Cookie 清洗（_extract_login_cookie）后与手工录入共用 set_cookie 链。
 """
 
 import logging
@@ -16,6 +19,15 @@ import requests
 from . import bridge
 
 logger = logging.getLogger(__name__)
+
+
+def _to_int(value) -> int:
+    """宽容整型转换（None/脏数据 → 0；网易云 cd 字段为字符串碟号）"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
 
 # 官方常驻榜单 ID
 OFFICIAL_TOPLISTS = {
@@ -66,6 +78,9 @@ class NeteaseClient:
         """
         self._bridge = bridge.get_bridge()
         self._custom_base_url = custom_base_url.rstrip("/") if custom_base_url else ""
+        # 专辑元数据缓存 {album_id: {"albumartist": str, "tracks": {song_id: (no, cd)}}}
+        # 网易云 /song/detail 不含音轨号，经 /album 补全；同专辑整批下载只调一次
+        self._album_meta_cache: dict[str, dict] = {}
         self.session = requests.Session()
         # session 默认 trust_env=True 会读主进程 http_proxy/https_proxy，
         # 目标 http://127.0.0.1:port 在内网直连，显式关闭避免业务请求全走代理
@@ -126,6 +141,86 @@ class NeteaseClient:
                     time.sleep(1.5 * attempt)
         logger.error("请求 %s 失败，已重试 %d 次", path, retries)
         return {"code": -1, "msg": "request failed"}
+
+    # ------------------------------------------------------------------
+    # 扫码登录
+    # ------------------------------------------------------------------
+    def create_qr_login(self) -> dict:
+        """生成网易云扫码登录二维码（/login/qr/key + /login/qr/create 两步链）
+
+        key 上游为 /api/login/qrcode/unikey 生成的 UUID；二维码由 API 服务
+        本地渲染（qrcode.toDataURL），不碰网易云上游（实测伪 key 也能出图）。
+
+        Returns:
+            {"ok": bool, "key": str, "qr_img": str, "msg": str}
+            key 用于轮询（check_qr_login）；qr_img 可直接用于 <img src>
+        """
+        body = self._request("/login/qr/key", timeout=15)
+        if (body or {}).get("code") != 200:
+            return {"ok": False, "key": "", "qr_img": "",
+                    "msg": f"二维码 key 生成失败（code={(body or {}).get('code')}）"}
+        data = body.get("data") or {}
+        # 实测形态 data.unikey；兼容历史嵌套形态 data.data.unikey
+        inner = data.get("data") if isinstance(data.get("data"), dict) else data
+        key = str((inner or {}).get("unikey") or "")
+        if not key:
+            return {"ok": False, "key": "", "qr_img": "",
+                    "msg": "二维码 key 生成失败（上游未返回 unikey）"}
+        body2 = self._request("/login/qr/create",
+                              params={"key": key, "qrimg": "true"}, timeout=15)
+        if (body2 or {}).get("code") != 200:
+            return {"ok": False, "key": key, "qr_img": "",
+                    "msg": f"二维码图片渲染失败（code={(body2 or {}).get('code')}）"}
+        d = body2.get("data") or {}
+        # 兼容两层 data 嵌套（data.data.qrimg 与 data.qrimg 两种历史形态）
+        inner2 = d.get("data") if isinstance(d.get("data"), dict) else d
+        img = str((inner2 or {}).get("qrimg") or "")
+        if not img:
+            return {"ok": False, "key": key, "qr_img": "",
+                    "msg": "二维码图片渲染失败（上游未返回 qrimg）"}
+        return {"ok": True, "key": key, "qr_img": img, "msg": ""}
+
+    def check_qr_login(self, key: str) -> dict:
+        """轮询扫码状态（/login/qr/check）
+
+        上游 code：801=等待扫码 802=已扫码待确认 803=授权成功（cookie 下发）
+        800=二维码过期/不存在（HTTP 恒 200，无异常路径）。
+        映射为酷狗语义 status（api 层与前端复用同一状态机）：
+        801→1 等待 802→2 已扫 803→4 成功 800→0 过期。
+        网易云无"用户拒绝授权"态（QQ 的 REFUSE），status 3 不会出现。
+
+        成功时 body.cookie 为 Set-Cookie 数组 join(';') 串，混有
+        Max-Age/Expires/Path 属性片段，经 _extract_login_cookie 清洗为
+        纯 k=v 对（MUSIC_U 必含），落库格式与手工录入一致。
+
+        Returns:
+            {"ok": bool, "status": int, "cookie": str, "msg": str}
+            status=4 时 cookie 非空，可直接填入账号 Cookie 字段
+        """
+        empty = {"ok": False, "status": -1, "cookie": "", "msg": ""}
+        key = str(key or "").strip()
+        if not key:
+            empty["msg"] = "缺少二维码 key"
+            return empty
+        body = self._request("/login/qr/check", params={"key": key}, timeout=15)
+        if not isinstance(body, dict) or not body:
+            empty["msg"] = "扫码状态查询失败"
+            return empty
+        try:
+            code = int(body.get("code"))
+        except (TypeError, ValueError):
+            code = -1
+        status = {801: 1, 802: 2, 800: 0, 803: 4}.get(code, -1)
+        if status < 0:
+            empty["msg"] = f"未知扫码状态码（code={code}）"
+            return empty
+        if status != 4:
+            return {"ok": True, "status": status, "cookie": "", "msg": ""}
+        cookie = _extract_login_cookie(str(body.get("cookie") or ""))
+        if not cookie:
+            return {"ok": False, "status": 4, "cookie": "",
+                    "msg": "授权成功但响应未包含 MUSIC_U，请重试或改用手动填入"}
+        return {"ok": True, "status": 4, "cookie": cookie, "msg": ""}
 
     # ------------------------------------------------------------------
     # 业务接口
@@ -333,6 +428,35 @@ class NeteaseClient:
             return []
         return result.get("songs", [])
 
+    def get_album_meta(self, album_id) -> dict:
+        """获取专辑元数据（专辑歌手 + 音轨号/碟号映射），按专辑 ID 缓存
+
+        网易云 /song/detail 不含音轨号/碟号，/album 响应的 songs[].no
+        （整数音轨号）、songs[].cd（字符串碟号）与 album.artist.name
+        （专辑主歌手）为权威来源。失败静默返回空 dict，不阻断下载。
+        """
+        key = str(album_id or "")
+        if not key:
+            return {}
+        if key not in self._album_meta_cache:
+            entry: dict = {"albumartist": "", "tracks": {}}
+            try:
+                result = self._request("/album", params={"id": album_id}, timeout=10)
+                if result.get("code") == 200:
+                    album = result.get("album") or {}
+                    entry["albumartist"] = ((album.get("artist") or {}).get("name")) or ""
+                    for s in (result.get("songs") or []):
+                        sid = str(s.get("id") or "")
+                        if sid:
+                            entry["tracks"][sid] = (
+                                _to_int(s.get("no")),
+                                _to_int(s.get("cd")),
+                            )
+            except Exception as e:
+                logger.warning("获取专辑元数据失败 (album_id=%s): %s", key, e)
+            self._album_meta_cache[key] = entry
+        return self._album_meta_cache[key]
+
     def get_lyric(self, song_id: int) -> dict:
         """获取歌词"""
         result = self._request("/lyric", params={"id": song_id})
@@ -533,3 +657,48 @@ class NeteaseClient:
             }
             for item in result.get("sub", [])
         ]
+
+
+# ======================================================================
+# 扫码登录辅助
+# ======================================================================
+# 扫码成功 Cookie 清洗白名单：仅保留登录态必需/常用的纯 k=v 对。
+# 上游 /login/qr/check 的 cookie 字段是 Set-Cookie 数组 join(';')，
+# 混有 Max-Age/Expires/Path 等属性片段（实测 NMTID 一条就带四个属性），
+# 整串入库会污染 Cookie，必须清洗。MUSIC_U 是登录态核心，缺失即失败。
+_LOGIN_COOKIE_KEYS = ("MUSIC_U", "__csrf", "NMTID", "os", "appver")
+
+# Set-Cookie 属性键（非键值对，出现即丢弃）
+_COOKIE_ATTR_KEYS = {
+    "Max-Age", "Expires", "Path", "Domain", "HttpOnly", "Secure",
+    "SameSite", "Version", "Comment", "Priority", "Partitioned",
+}
+
+
+def _extract_login_cookie(raw: str) -> str:
+    """从 Set-Cookie 拼接串中提取登录态所需的纯 k=v 对
+
+    上游 803（授权成功）时 body.cookie 形如：
+        "MUSIC_U=xxx; Expires=...; Max-Age=...; Path=/;
+         __csrf=yyy; ...; NMTID=zzz; Max-Age=...; Expires=...; Path=/;"
+
+    按 _LOGIN_COOKIE_KEYS 白名单逐片段提取（"k=v" 首个 '=' 分割，容忍
+    base64 值中的 '='）；MUSIC_U 缺失返回空串（视为登录态不完整）。
+    """
+    if not raw:
+        return ""
+    keep: list[str] = []
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, _, v = part.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if not k or not v or k in _COOKIE_ATTR_KEYS:
+            continue
+        if k in _LOGIN_COOKIE_KEYS:
+            keep.append(f"{k}={v}")
+    if not any(p.startswith("MUSIC_U=") for p in keep):
+        return ""
+    return ";".join(keep)

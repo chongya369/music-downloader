@@ -65,6 +65,32 @@ def _setting_int(key: str, default: int) -> int:
         return default
 
 
+def _fetch_meta_with_retry(client, sid: str, write_lyric: bool, retries: int = 1):
+    """获取歌曲详情与歌词；空结果短暂等待后重试（默认 1 次）
+
+    上游接口偶发瞬时失败会静默返回空（设计上不阻断下载），导致封面/
+    歌词等元数据缺失；此处对空结果做一次兜底重试，仍为空则按现状继续。
+
+    Returns:
+        (meta, lyric, tlyric)：meta 为详情 dict（可能为空），歌词为字符串
+    """
+    meta, lyric, tlyric = {}, "", ""
+    for attempt in range(retries + 1):
+        if attempt:
+            time.sleep(1)
+        details = client.get_song_detail([sid])
+        meta = details[0] if details else {}
+        if write_lyric:
+            info = client.get_lyric(sid)
+            lyric = info.get("lrc", "")
+            tlyric = info.get("tlyric", "")
+        detail_ok = bool(meta.get("title") or meta.get("album") or meta.get("cover_url"))
+        lyric_ok = (not write_lyric) or bool(lyric)
+        if detail_ok and lyric_ok:
+            break
+    return meta, lyric, tlyric
+
+
 def _parse_sync_times(raw: str) -> list[tuple[int, int]]:
     """解析 "03:00,09:00,21:00" 为 [(3,0),(9,0),(21,0)]
 
@@ -1096,16 +1122,12 @@ class TaskManager:
         ext = url_info.get("ext", "mp3")
         size = url_info.get("size")
 
-        # 获取歌曲详情
-        details = client.get_song_detail([str(sid)])
-        meta = details[0] if details else {}
+        # 获取歌曲详情与歌词（空结果瞬时重试兜底）
+        meta, lyric, tlyric = _fetch_meta_with_retry(client, str(sid), write_lyric)
         cover_url = meta.get("cover_url", "")
         album_name = meta.get("album", "")
         duration_ms = meta.get("duration_ms", 0)
         year = meta.get("year", "")
-        lyric = ""
-        if write_lyric:
-            lyric = client.get_lyric(str(sid)).get("lrc", "")
 
         # 歌名权威化：详情接口的 title 是纯歌名（酷狗歌单上游 name 为
         # 「歌手 - 歌名」合并串，实测 /krm/audio 返回纯歌名），非空时
@@ -1188,6 +1210,10 @@ class TaskManager:
                     "year": year,
                     "cover_url": cover_url,
                     "lyric": lyric,
+                    "tlyric": tlyric,
+                    "track_no": meta.get("track_no", 0),
+                    "disc_no": meta.get("disc_no", 0),
+                    "albumartist": meta.get("albumartist", ""),
                 },
             )
 

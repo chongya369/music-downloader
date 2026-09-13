@@ -523,6 +523,11 @@ class KuGouClient:
                      or (entry or {}).get("album") or "",
             "year": (base.get("publish_date") or "")[:4],
             "cover_url": fix_cover_url(album_info.get("cover") or ""),
+            # /krm/audio 无音轨号/碟号字段（实测 base/album_info 均无），
+            # 显式置 0 不写入；专辑歌手用歌曲作者近似（酷狗无独立专辑歌手字段）
+            "track_no": 0,
+            "disc_no": 0,
+            "albumartist": base.get("author_name") or "",
         }
         # hash 恢复：已有缓存 hash 优先，缺失时经所属专辑曲目回查
         hashes = (entry or {}).get("hashes") or {}
@@ -717,6 +722,9 @@ class KuGouClient:
                     "year": "",
                     "cover_url": "",
                     "duration_ms": (entry or {}).get("duration_ms") or 0,
+                    "track_no": 0,
+                    "disc_no": 0,
+                    "albumartist": (entry or {}).get("artists") or "",
                 })
                 continue
             meta = dict(entry["meta"])

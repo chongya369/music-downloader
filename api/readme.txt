@@ -24,15 +24,19 @@ api/ 目录说明
   内置版本取自上述项目 Releases；升级时下载同名文件覆盖本目录即可。
 
 ------------------------------------------------
-二、QQ 音乐（qqmusic-api）
+二、QQ 音乐（qqmusic-api，FastAPI 版服务端）
 ------------------------------------------------
   对应 GitHub 项目：
       https://github.com/chongya369/QQMusicApi
+      （基于 luren-dc/QQMusicApi 体系构建，FastAPI/uvicorn 实现）
 
   Windows x64:   qqmusic-api-win-x64.exe
   Linux   x64:   qqmusic-api-linux-x64
 
   内置版本取自上述项目 Releases；升级时下载同名文件覆盖本目录即可。
+  注意：本目录的 config.toml 为该服务的配置文件（监听地址/限流等），
+  运行时由程序经环境变量覆盖监听地址与端口，请勿删除 config.toml；
+  服务运行后生成的 web/data/ 目录为运行时产物，打包/入库时无需保留。
 
 ------------------------------------------------
 三、酷狗音乐（KuGouMusicApi）

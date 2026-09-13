@@ -113,6 +113,16 @@
                     <textarea class="form-control" id="add-cookie" rows="3" placeholder=""></textarea>
                     <div class="form-text" id="add-cookie-hint">网易云：浏览器登录 music.163.com → F12 → Application → Cookies → 复制 MUSIC_U</div>
                 </div>
+                <!-- 网易云扫码登录（仅 netease 平台显示） -->
+                <div class="mb-3 d-none" id="ncm-qr-section">
+                    <button type="button" class="btn btn-outline-danger btn-sm" id="btn-ncm-qr">
+                        <i class="bi bi-qr-code"></i> 扫码登录（网易云APP扫码，自动填入 Cookie）
+                    </button>
+                    <div id="ncm-qr-panel" class="text-center mt-2 d-none">
+                        <img id="ncm-qr-img" alt="网易云登录二维码" class="img-thumbnail" style="max-width:200px;">
+                        <div class="form-text" id="ncm-qr-status">请使用网易云音乐APP扫描二维码登录</div>
+                    </div>
+                </div>
                 <!-- 酷狗扫码登录（仅 kugou 平台显示） -->
                 <div class="mb-3 d-none" id="kugou-qr-section">
                     <button type="button" class="btn btn-outline-success btn-sm" id="btn-kugou-qr">
@@ -121,6 +131,21 @@
                     <div id="kugou-qr-panel" class="text-center mt-2 d-none">
                         <img id="kugou-qr-img" alt="酷狗登录二维码" class="img-thumbnail" style="max-width:200px;">
                         <div class="form-text" id="kugou-qr-status">请使用酷狗音乐APP扫描二维码登录</div>
+                    </div>
+                </div>
+                <!-- QQ音乐扫码登录（仅 qq 平台显示，QQ/微信二选一） -->
+                <div class="mb-3 d-none" id="qq-qr-section">
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-success" id="btn-qq-qr">
+                            <i class="bi bi-qr-code"></i> QQ扫码登录
+                        </button>
+                        <button type="button" class="btn btn-outline-success" id="btn-qq-wx-qr">
+                            <i class="bi bi-wechat"></i> 微信扫码登录
+                        </button>
+                    </div>
+                    <div id="qq-qr-panel" class="text-center mt-2 d-none">
+                        <img id="qq-qr-img" alt="QQ音乐登录二维码" class="img-thumbnail" style="max-width:200px;">
+                        <div class="form-text" id="qq-qr-status">请扫描二维码登录</div>
                     </div>
                 </div>
                 <div class="mb-3">

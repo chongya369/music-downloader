@@ -80,7 +80,8 @@ rate_limit_enabled = true
 rate_limit_capacity = 60
 rate_limit_window_seconds = 60
 # 跳过限流的 IP 或 CIDR。
-rate_limit_exempt_ips = []
+# 127.0.0.1 为 Deen 内置 bridge 本机调用来源，豁免限流避免批量下载触发 429
+rate_limit_exempt_ips = ["127.0.0.1"]
 # 全局并发业务请求限制, 单 worker 独立生效; 达到上限时返回 503 标准 JSON 响应。
 concurrency_limit_enabled = true
 # 单进程允许同时进入业务处理的最大请求数。

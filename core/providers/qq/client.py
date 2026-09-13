@@ -1,18 +1,31 @@
-"""QQ音乐 API 客户端 - 调用内置 qqmusic-api 服务
+"""QQ音乐 API 客户端 - 调用内置 qqmusic-api 服务（FastAPI/uvicorn 版）
 
 服务二进制由 bridge 模块管理（自动拉起，监听 127.0.0.1 默认 45602 端口），
 API 地址每次请求时经 base_url 属性动态解析；配置外部服务地址时经
 use_custom_qq_api_url + qq_api_base_url 设置项注入 custom_base_url 覆盖。
 
-会员鉴权通过 Cookie（uin/qqmusic_key 等）实现，经 X-QQMusic-Cookie 请求头
-透传，可解锁 VIP 歌曲与无损音质；匿名可用低音质。
+响应统一为 {"code":0,"msg":"ok","data":{...}}；错误为 HTTP 4xx/5xx +
+{"code":-1,"msg":"..."}。凭证无效/过期 → 401；限流 → 429；参数错误 → 422。
 
-已知能力限制（QQ API 服务端未提供对应接口）：
-- 无歌词接口 → get_lyric 返回空
+会员鉴权通过标准 Cookie（musicid + musickey）实现，由存储的网页 Cookie
+映射而来（QQ 登录：uin/qqmusic_key；微信登录：wxuin/wx* 系字段），
+可解锁 VIP 歌曲与无损音质；匿名可用低音质。
+
+能力限制（QQ API 服务端未提供对应接口）：
+- 无分类歌单浏览（旧 /getSongLists /getRecommend 已移除）→ 热门歌单
+  降级为官方推荐歌单（单页），分类固定"全部"
+- 专辑歌曲列表可经 num 参数全量获取（服务端透传分页参数）
+
+扫码登录：create_qr_login / check_qr_login 走上游 /login/qrcode/{qq|wx}
+原生路由（免鉴权、不缓存），成功时 Credential 拼标准 Cookie 串，与
+手工录入的网页 Cookie 共用 set_cookie 映射链。
 """
 
 import logging
+import re
 import time
+import urllib.parse
+from datetime import datetime
 
 import requests
 
@@ -20,38 +33,44 @@ from . import bridge
 
 logger = logging.getLogger(__name__)
 
-# 统一音质等级（网易云语义）-> QQ quality 参数值
+# 统一音质等级（网易云语义）-> 服务端 file_type 整型枚举
+# （EnumIntMapping 按成员位置索引：13=MP3_128, 12=MP3_320, 7=FLAC, 1=MASTER）
 # 刻意不映射 m4a/ape 档：输出仅 mp3/flac，复用现有 MP3/FLAC 标签写入能力
 QUALITY_LEVEL = {
-    "standard": "128",   # 标准 128kbps mp3 (M500)
-    "higher": "320",     # 较高 320kbps mp3 (M800)
-    "exhigh": "320",     # 极高 320kbps mp3 (M800)
-    "lossless": "flac",  # 无损 flac (F000)
-    "hires": "flac",     # Hi-Res（QQ 无对应档，映射 flac）
+    "standard": 13,   # 标准 128kbps mp3 (M500)
+    "higher": 12,     # 较高 320kbps mp3 (M800)
+    "exhigh": 12,     # 极高 320kbps mp3 (M800)
+    "lossless": 7,    # 无损 flac (F000)
+    "hires": 7,       # Hi-Res（映射 flac；MASTER=1 需账号权益，暂不启用）
 }
 
-# quality -> 文件扩展名
+# file_type -> 文件扩展名
 QUALITY_EXT = {
-    "128": "mp3",
-    "320": "mp3",
-    "flac": "flac",
+    13: "mp3",
+    12: "mp3",
+    7: "flac",
 }
 
-# 实际 quality -> 统一音质档位名（level 回填用；320 归 exhigh）
+# 实际 file_type -> 统一音质档位名（level 回填用；12 归 exhigh）
 _LEVEL_BY_QUALITY = {
-    "128": "standard",
-    "320": "exhigh",
-    "flac": "lossless",
+    13: "standard",
+    12: "exhigh",
+    7: "lossless",
 }
 
-# 歌单分类"全部"的 categoryId
-_ALL_CATEGORY_ID = 10000000
+# get_song_urls 结果码（UrlinfoItem.result）
+_URL_RESULT_OK = 0          # 成功
+# 104003=无权限 104004=VKey 获取失败 104013=播放设备受限（均视为取链失败）
 
-# 模块级分类缓存：{base_url: {分类名: categoryId}}
-# 缓存的是公开数据（与账号/cookie 无关），不是 provider 实例，
-# 不违反"工厂语义、每次调用返回新实例"约束——前端"查分类"与
-# "按分类拉歌单"是两次独立请求，实例级缓存跨请求必然失效
-_CATEGORY_CACHE: dict[str, dict[str, int]] = {}
+# 搜索类型（SearchType IntEnum）：0=歌曲 2=专辑
+_SEARCH_TYPE_SONG = 0
+_SEARCH_TYPE_ALBUM = 2
+
+# query_song 批量详情单批上限（避免单请求过大）
+_DETAIL_BATCH_SIZE = 50
+# 歌单/榜单详情聚合分页大小与页数上限（防止异常大歌单死循环）
+_DETAIL_PAGE_SIZE = 100
+_DETAIL_MAX_PAGES = 50
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -68,11 +87,38 @@ def _fix_img_url(url: str) -> str:
     return url
 
 
+def _album_cover_url(album_mid: str) -> str:
+    """由专辑 MID 拼标准封面 URL（歌曲对象不带封面，仅专辑 MID）"""
+    if not album_mid:
+        return ""
+    return f"https://y.gtimg.cn/music/photo_new/T002R500x500M000{album_mid}.jpg"
+
+
+def _singers_text(singer) -> str:
+    """singer 数组 → 'a/b/c' 文本"""
+    if isinstance(singer, str):
+        return singer
+    return "/".join(s.get("name", "") for s in (singer or []) if isinstance(s, dict))
+
+
+def _first_singer(singer) -> str:
+    """singer 数组 → 首歌手名（专辑歌手用）"""
+    if isinstance(singer, list) and singer and isinstance(singer[0], dict):
+        return singer[0].get("name", "") or ""
+    return ""
+
+
+def _year_from_date(date_str) -> str:
+    """'2003-07-31' → '2003'（无有效日期返回空串）"""
+    m = re.match(r"(\d{4})", str(date_str or ""))
+    return m.group(1) if m else ""
+
+
 class QqClient:
     """QQ音乐 API 客户端
 
     通过内置 qqmusic-api 服务调用 QQ音乐接口（可被 custom_base_url 覆盖）。
-    Cookie 用于会员鉴权（uin + qqmusic_key）。
+    凭证经标准 Cookie（musicid/musickey）下发。
     """
 
     def __init__(self, cookie: str = "", custom_base_url: str = ""):
@@ -84,6 +130,7 @@ class QqClient:
         """
         self._bridge = bridge.get_bridge()
         self._custom_base_url = custom_base_url.rstrip("/") if custom_base_url else ""
+        self._euin = ""  # 网页 Cookie 自带的加密 uin，取昵称用（set_cookie 更新）
         self.session = requests.Session()
         # 显式关闭代理环境变量读取，避免本机 API 请求走代理
         self.session.trust_env = False
@@ -100,43 +147,106 @@ class QqClient:
           缓存旧地址会导致请求失败
         - 服务未运行时经 start() 幂等拉起（与 auto_start=false 的
           "程序启动不拉起、用到再拉"语义一致）
-        - _request 自带 3 次重试，拉起期间请求可自然恢复
+        - _request 自带重试，拉起期间请求可自然恢复
         """
         if self._custom_base_url:
             return self._custom_base_url
         return self._bridge.start().rstrip("/")
 
     def set_cookie(self, cookie: str) -> None:
-        """设置 Cookie（经 X-QQMusic-Cookie 请求头透传）"""
-        self.session.headers["X-QQMusic-Cookie"] = cookie
+        """设置登录凭证
+
+        服务端从标准 Cookie 读取 musicid/musickey（必须同时提供，musicid
+        须可解析为整数）。存储的网页 Cookie 字段做映射：
+            QQ 登录：  uin/qqmusic_uin       -> musicid（提取纯数字）
+            微信登录： wxuin                 -> musicid（纯数字虚拟 uin，兜底）
+            qqmusic_key/qm_keyst             -> musickey
+        其余可识别字段（openid/refresh_token/access_token/unionid/
+        refresh_key 等）按名透传，利于服务端凭证续期；微信登录 Cookie 用
+        wx 前缀字段（wxopenid/wxunionid/wxrefresh_token），标准名缺失时
+        映射为标准名透传——W_X_ 凭证续期需要 openid/unionid/refresh_token
+        （qqmusic_api login.refresh_credential login_type=1 分支）。
+        """
+        self.session.cookies.clear()
+        pairs = {}
+        for part in (cookie or "").split(";"):
+            if "=" not in part:
+                continue
+            k, _, v = part.strip().partition("=")
+            if k and v:
+                pairs[k.strip()] = v.strip()
+
+        # musicid：QQ 登录取 uin/qqmusic_uin；微信登录（W_X_ key）Cookie 无
+        # uin，只有 wxuin，作兜底来源。两者均为纯数字。
+        musicid = (
+            pairs.get("uin")
+            or pairs.get("qqmusic_uin")
+            or pairs.get("musicid")
+            or pairs.get("wxuin")
+            or ""
+        )
+        # uin 可能带前导字母/符号，提取纯数字；musicid 必须可 int() 解析
+        digits = re.sub(r"\D", "", musicid)
+        musickey = pairs.get("qqmusic_key") or pairs.get("qm_keyst") or pairs.get("musickey") or ""
+        if digits:
+            self.session.cookies.set("musicid", digits)
+            self.session.cookies.set("str_musicid", digits)
+        if musickey:
+            self.session.cookies.set("musickey", musickey)
+        wx_aliases = {"openid": "wxopenid", "unionid": "wxunionid", "refresh_token": "wxrefresh_token"}
+        for name in ("openid", "refresh_token", "access_token", "unionid", "refresh_key", "expired_at"):
+            value = pairs.get(name) or pairs.get(wx_aliases.get(name, ""))
+            if value:
+                self.session.cookies.set(name, value)
+        # 加密 uin：QQ/微信登录 Cookie 均自带，经 /user/{euin}/homepage 取昵称
+        self._euin = pairs.get("euin") or ""
 
     # ------------------------------------------------------------------
     # 底层请求
     # ------------------------------------------------------------------
-    def _request(self, path: str, params: dict | None = None,
+    def _request(self, path: str, params: dict | None = None, body: dict | None = None,
                  retries: int = 3, timeout: int = 15) -> dict:
-        """调用 QQ音乐 API 接口，返回 response 部分
+        """调用 QQ音乐 API 接口，返回 data 部分
 
         - 连接失败：抛 RuntimeError（中文提示，供上层捕获展示）
         - 上游限流（HTTP 429）：等待 1.5s 重试，重试耗尽返回 {}
+        - 凭证无效（401）/ 参数错误（422）：确定性错误不重试，记日志返回 {}
         - 其他失败：记日志返回 {}
         """
+        method = self.session.post if body is not None else self.session.get
+        kwargs = {"timeout": timeout}
+        if params:
+            kwargs["params"] = params
+        if body is not None:
+            kwargs["json"] = body
         # url 在循环内每次重新解析：停止→重启后端口漂移时，
         # 正在重试的请求也能经 base_url 属性取到新地址
         for attempt in range(1, retries + 1):
             url = f"{self.base_url}{path}"
             try:
-                resp = self.session.get(url, params=params, timeout=timeout)
+                resp = method(url, **kwargs)
                 if resp.status_code == 429:
                     logger.warning("QQ音乐API限流(429): %s 第 %d/%d 次重试", path, attempt, retries)
                     if attempt < retries:
                         time.sleep(1.5)
                         continue
                     return {}
+                if resp.status_code in (401, 422):
+                    # 401=凭证无效/过期；422=参数校验失败——确定性错误，重试无意义
+                    try:
+                        msg = (resp.json() or {}).get("msg") or ""
+                    except ValueError:
+                        msg = ""
+                    logger.warning("QQ音乐API请求失败(%d): %s %s", resp.status_code, path, msg)
+                    return {}
                 resp.raise_for_status()
                 data = resp.json()
-                # 成功响应统一为 {"response": ...}；错误响应（400/500 结构）无该键
-                return data.get("response") or {}
+                # 成功响应统一为 {"code":0,"msg","data"}；HTTP 200 但 code!=0 亦视为失败
+                if not isinstance(data, dict) or data.get("code") != 0:
+                    logger.warning("QQ音乐API业务失败: %s %s", path,
+                                   (data or {}).get("msg") if isinstance(data, dict) else data)
+                    return {}
+                return data.get("data") or {}
             except requests.exceptions.ConnectionError as e:
                 raise RuntimeError(
                     f"无法连接QQ音乐API服务（{self.base_url}），"
@@ -153,29 +263,36 @@ class QqClient:
     # 账号信息
     # ------------------------------------------------------------------
     def get_user_info(self) -> dict:
-        """获取当前登录账号信息（昵称、会员等级、会员到期时间）
+        """获取当前登录账号信息（会员等级、会员到期时间、登录态有效性）
 
-        调 /getUserInfo，登录 Cookie 经 X-QQMusic-Cookie 请求头透传。
-        错误响应（400/429/500）结构与业务响应不同，不走 _request 的
-        重试逻辑（400 是确定性错误，重试无意义），单独处理。
+        调 /user/get_vip_info，凭证经标准 Cookie 下发。凭证无效
+        （HTTP 401）时单独处理，不走 _request 重试逻辑。
+
+        注意：无效凭证调 /user/get_vip_info 返回 200 全 0 数据（服务端
+        不抛 401），无法与"真非会员"区分；故 vip_level==0 时再调
+        /user/get_friend（登录态敏感接口）复判——401 即登录态失效。
 
         Returns:
             {"ok": bool, "nickname": str, "vip_type": int, "vip_expire_ts": int,
              "msg": str}
-            - ok=True: 请求成功且 cookie 能识别 uin；nickname 可能为空串
-              （cookie 缺 eas_sid 等完整登录字段，仅昵称接口退化）
-            - ok=False: msg 携带原因（cookie 无效 / 限流 / 服务异常）
-            - vip_type: 0=非会员，1-8=绿钻等级
+            - ok=True: 请求成功且登录态有效；nickname 尽力而为获取
+              （/user/{euin}/homepage），失败返回空串（账号页保留存量昵称）
+            - ok=False: msg 携带原因（未提供凭证 / cookie 无效 / 限流 /
+              服务异常）
+            - vip_type: 0=非会员，>0=会员（映射 identity.level 或
+              svip/star/ystar 标志）
             - vip_expire_ts: 会员到期秒级时间戳，0=非会员或无到期信息
+              （userinfo.expire 优先，缺失时解析 identity.*_end 兜底，
+              自动兼容秒/毫秒）
 
         Raises:
             RuntimeError: API 服务连接失败
         """
         err = {"ok": False, "nickname": "", "vip_type": 0, "vip_expire_ts": 0, "msg": ""}
-        # 限流（429）等待后重试一次；400（cookie 无效）为确定性错误直接返回
+        # 限流（429）等待后重试一次；401（无凭证）为确定性错误直接返回
         resp = None
         for attempt in (1, 2):
-            url = f"{self.base_url}/getUserInfo"
+            url = f"{self.base_url}/user/get_vip_info"
             try:
                 resp = self.session.get(url, timeout=10)
             except requests.exceptions.ConnectionError as e:
@@ -186,7 +303,7 @@ class QqClient:
             except requests.RequestException as e:
                 raise RuntimeError(f"请求QQ音乐API服务失败: {e}") from e
             if resp.status_code == 429 and attempt == 1:
-                logger.warning("QQ音乐API限流(429): /getUserInfo 重试一次")
+                logger.warning("QQ音乐API限流(429): /user/get_vip_info 重试一次")
                 time.sleep(1.5)
                 continue
             break
@@ -197,14 +314,8 @@ class QqClient:
         if resp.status_code == 429:
             err["msg"] = "QQ音乐API限流（429），请稍后重试"
             return err
-        if resp.status_code == 400:
-            # cookie 缺失或无法识别 uin
-            msg = ""
-            try:
-                msg = ((resp.json().get("data") or {}).get("message")) or ""
-            except ValueError:
-                pass
-            err["msg"] = msg or "Cookie 无效（账号未登录或登录态失效）"
+        if resp.status_code == 401:
+            err["msg"] = "未提供登录凭证（Cookie 缺失或不完整）"
             return err
         if resp.status_code != 200:
             err["msg"] = f"QQ音乐API返回异常状态码 {resp.status_code}"
@@ -214,42 +325,176 @@ class QqClient:
         except ValueError:
             err["msg"] = "QQ音乐API返回非 JSON 数据"
             return err
+        if not isinstance(data, dict) or data.get("code") != 0:
+            err["msg"] = (data or {}).get("msg") if isinstance(data, dict) else "QQ音乐API业务失败"
+            return err
 
-        result = data.get("response") or {}
-        nickname = str(result.get("nickname") or "")
-        is_vip = bool(result.get("isVip"))
+        result = data.get("data") or {}
+        # 会员等级：identity.level 优先（实际绿钻等级），缺失时按标志位映射
+        identity = result.get("identity") or {}
         try:
-            vip_level = int(result.get("vipLevel") or 0)
+            vip_level = int(identity.get("level") or 0)
         except (TypeError, ValueError):
             vip_level = 0
-        # 非会员强制等级 0（防御 isVip=False 但 vipLevel>0 的脏数据）
-        if not is_vip:
-            vip_level = 0
-        try:
-            expire_ts = int(result.get("vipExpireTime") or 0)
-        except (TypeError, ValueError):
+        if vip_level <= 0:
+            has_flag = any(
+                _safe_int(result.get(k)) > 0 for k in ("svip", "star", "ystar", "huge_vip")
+            )
+            vip_level = 1 if has_flag else 0
+        # 到期时间：userinfo.expire（秒/毫秒自适应）优先；缺失时解析
+        # identity.*_end（北京时间字符串）兜底，取各档会员最晚到期
+        userinfo = result.get("userinfo") or {}
+        expire_ts = _safe_int(userinfo.get("expire"))
+        if expire_ts > 10**12:      # 毫秒
+            expire_ts //= 1000
+        elif expire_ts <= 10**9:    # 无效/过早时间戳视为无到期信息
             expire_ts = 0
-        # 非会员/到期时间戳为 0 表示无到期信息
-        if vip_level <= 0 or expire_ts <= 0:
+        if expire_ts <= 0:
+            expire_ts = _expire_from_identity(identity)
+        if vip_level <= 0:
             expire_ts = 0
 
-        info = {
+        if vip_level <= 0:
+            # vip_info 对无效凭证也返回 200 全 0，用登录态敏感接口复判
+            probe = self.session.get(f"{self.base_url}/user/get_friend",
+                                     params={"page": 1, "num": 1}, timeout=10)
+            if probe.status_code == 401:
+                err["msg"] = "Cookie 无效（账号未登录或登录态失效）"
+                return err
+            if probe.status_code == 429:
+                err["msg"] = "QQ音乐API限流（429），请稍后重试"
+                return err
+
+        return {
             "ok": True,
-            "nickname": nickname,
+            "nickname": self._fetch_nickname(),
             "vip_type": vip_level,
             "vip_expire_ts": expire_ts,
             "msg": "",
         }
-        if not nickname:
-            # 昵称接口依赖完整网页登录态（eas_sid），缺字段时退化返回空串
-            info["msg"] = "昵称未获取到（Cookie 可能不完整），会员信息已更新"
-        return info
+
+    def _fetch_nickname(self) -> str:
+        """尽力而为获取账号昵称（/user/{euin}/homepage）
+
+        euin 取自录入的网页 Cookie（QQ/微信登录均有）；euin 缺失、请求
+        失败或解析失败一律返回空串，不影响登录判定——账号侧对空昵称
+        保留存量值不覆盖。
+        """
+        if not self._euin:
+            return ""
+        url = f"{self.base_url}/user/{urllib.parse.quote(self._euin, safe='')}/homepage"
+        try:
+            resp = self.session.get(url, timeout=10)
+            if resp.status_code != 200:
+                logger.debug("获取QQ昵称失败(euin=%s): HTTP %d", self._euin, resp.status_code)
+                return ""
+            data = resp.json()
+        except (requests.RequestException, ValueError) as e:
+            logger.debug("获取QQ昵称失败(euin=%s): %s", self._euin, e)
+            return ""
+        if not isinstance(data, dict) or data.get("code") != 0:
+            return ""
+        base_info = (data.get("data") or {}).get("base_info") or {}
+        return str(base_info.get("name") or "")
+
+    # ------------------------------------------------------------------
+    # 扫码登录（QQ / 微信）
+    # ------------------------------------------------------------------
+    # 支持的扫码登录类型（上游 WebQRLoginType：qq=手机QQ扫码，wx=微信扫码）
+    QR_LOGIN_TYPES = ("qq", "wx")
+
+    def create_qr_login(self, login_type: str = "qq") -> dict:
+        """生成扫码登录二维码（GET /login/qrcode/{login_type}）
+
+        上游登录路由不缓存、免鉴权（AuthPolicy.NONE），无需携带 Cookie。
+
+        Args:
+            login_type: "qq"=手机QQ扫码，"wx"=微信扫码
+
+        Returns:
+            {"ok": bool, "login_type": str, "identifier": str, "qr_img": str,
+             "msg": str}
+            identifier 用于轮询（check_qr_login）；qr_img 为可直接用于
+            <img src> 的 DataURL（取上游 img 字段，缺失时由 data+mimetype 拼）
+        """
+        login_type = (login_type or "").strip().lower()
+        if login_type not in self.QR_LOGIN_TYPES:
+            return {"ok": False, "login_type": login_type, "identifier": "",
+                    "qr_img": "",
+                    "msg": f"login_type 仅支持 {'/'.join(self.QR_LOGIN_TYPES)}"}
+        result = self._request(f"/login/qrcode/{login_type}", timeout=30)
+        identifier = str((result or {}).get("identifier") or "")
+        img = str((result or {}).get("img") or "")
+        if not img:
+            # 兜底：img 缺失时由 base64 data + mimetype 拼 DataURL
+            data = str((result or {}).get("data") or "")
+            mime = str((result or {}).get("mimetype") or "image/png")
+            if data:
+                img = f"data:{mime};base64,{data}"
+        if not identifier or not img:
+            return {"ok": False, "login_type": login_type, "identifier": identifier,
+                    "qr_img": "", "msg": "二维码生成失败（上游未返回图像或标识符）"}
+        return {"ok": True, "login_type": login_type, "identifier": identifier,
+                "qr_img": img, "msg": ""}
+
+    def check_qr_login(self, login_type: str, identifier: str) -> dict:
+        """轮询扫码登录状态（GET /login/qrcode/{login_type}/status）
+
+        上游 event 码：0=DONE 1=SCAN(等待扫码) 2=CONF(已扫码待确认)
+        3=TIMEOUT(二维码超时) 4=REFUSE(用户拒绝) -1=其他错误。
+        本方法映射为酷狗扫码语义 status（api 层与 accounts.js 复用同一套
+        前端状态机）：1→1 等待 2→2 已扫 0→4 成功 3→0 过期 4→3 拒绝。
+
+        成功时 credential 含 musicid/musickey/openid/unionid/refresh_token/
+        refresh_key/access_token/expired_at 等（QQ 登录无 openid/unionid，
+        微信登录 musickey 为 W_X_ 前缀），经 _credential_to_cookie 拼为
+        标准 Cookie 串（set_cookie 原生可解析，落库格式与手工录入一致）。
+
+        Returns:
+            {"ok": bool, "status": int, "cookie": str, "msg": str}
+            status=4 时 cookie 非空，可直接填入账号 Cookie 字段
+        """
+        empty = {"ok": False, "status": -1, "cookie": "", "msg": ""}
+        login_type = (login_type or "").strip().lower()
+        if login_type not in self.QR_LOGIN_TYPES:
+            empty["msg"] = f"login_type 仅支持 {'/'.join(self.QR_LOGIN_TYPES)}"
+            return empty
+        identifier = str(identifier or "").strip()
+        if not identifier:
+            empty["msg"] = "缺少二维码 identifier"
+            return empty
+        result = self._request(f"/login/qrcode/{login_type}/status",
+                               params={"identifier": identifier}, timeout=30)
+        if not result:
+            empty["msg"] = "扫码状态查询失败"
+            return empty
+        # 未知/缺失 event 码按 -1（其他错误）处理
+        try:
+            event = int(result.get("event"))
+        except (TypeError, ValueError):
+            event = -1
+        # 上游 event -> 酷狗语义 status
+        status = {0: 4, 1: 1, 2: 2, 3: 0, 4: 3}.get(event, -1)
+        if status < 0:
+            empty["msg"] = f"未知扫码状态码（event={event}）"
+            return empty
+        if status != 4:
+            return {"ok": True, "status": status, "cookie": "", "msg": ""}
+        credential = result.get("credential")
+        if not isinstance(credential, dict) or not credential:
+            return {"ok": False, "status": 4, "cookie": "",
+                    "msg": "授权成功但响应未包含凭证，请重试或改用手动填入"}
+        cookie = _credential_to_cookie(credential)
+        if not cookie:
+            return {"ok": False, "status": 4, "cookie": "",
+                    "msg": "授权成功但凭证缺少 musicid/musickey，请重试"}
+        return {"ok": True, "status": 4, "cookie": cookie, "msg": ""}
 
     # ------------------------------------------------------------------
     # 搜索
     # ------------------------------------------------------------------
     def search_songs(self, keyword: str, limit: int = 50, offset: int = 0) -> dict:
-        """搜索单曲（type=song）
+        """搜索单曲（search_type=0）
 
         Returns:
             {"items":[{"id"(songmid),"name","artists","album","fee"}], "total": N}
@@ -258,26 +503,26 @@ class QqClient:
         if not keyword:
             return {"items": [], "total": 0}
         page = offset // limit + 1 if limit > 0 else 1
-        result = self._request("/getSearchByKey", params={
-            "key": keyword, "type": "song",
-            "limit": min(limit, 100), "page": page,
+        result = self._request("/search/search_by_type", params={
+            "keyword": keyword, "search_type": _SEARCH_TYPE_SONG,
+            "num": min(limit, 100), "page": page,
         }, timeout=10)
-        songs = ((result.get("body") or {}).get("song") or {}).get("list") or []
-        total = (result.get("meta") or {}).get("sum") or len(songs)
+        songs = result.get("song") or []
+        total = result.get("total_num") or result.get("estimate_sum") or len(songs)
         out = []
         for s in songs:
             out.append({
                 "id": s.get("mid"),
-                # title 含高亮标记，优先取 name
+                # title 含 <em> 高亮标记，优先取 name
                 "name": s.get("name") or s.get("title") or "",
-                "artists": "/".join(ar.get("name", "") for ar in (s.get("singer") or [])),
-                "album": (s.get("album") or {}).get("name", ""),
-                "fee": 1 if (s.get("pay") or {}).get("pay_play") == 1 else 0,
+                "artists": _singers_text(s.get("singer")),
+                "album": (s.get("album") or {}).get("name", "") if isinstance(s.get("album"), dict) else "",
+                "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
             })
         return {"items": out, "total": total}
 
     def search_albums(self, keyword: str, limit: int = 50, offset: int = 0) -> dict:
-        """搜索专辑（type=album）
+        """搜索专辑（search_type=2）
 
         Returns:
             {"items":[{"id"(albumMID),"name","artist","size","publish_time"}], "total": N}
@@ -285,47 +530,39 @@ class QqClient:
         if not keyword:
             return {"items": [], "total": 0}
         page = offset // limit + 1 if limit > 0 else 1
-        result = self._request("/getSearchByKey", params={
-            "key": keyword, "type": "album",
-            "limit": min(limit, 100), "page": page,
+        result = self._request("/search/search_by_type", params={
+            "keyword": keyword, "search_type": _SEARCH_TYPE_ALBUM,
+            "num": min(limit, 100), "page": page,
         }, timeout=10)
-        albums = ((result.get("body") or {}).get("album") or {}).get("list") or []
-        total = (result.get("meta") or {}).get("sum") or len(albums)
+        albums = result.get("album") or []
+        total = result.get("total_num") or result.get("estimate_sum") or len(albums)
         out = []
         for a in albums:
-            # 上游字段：albumMID/albumName/singerName/publicTime/song_count
-            # （实测 2026-08-23，另有 singer_list 数组可作回退）
-            artist = a.get("singerName") or "/".join(
-                ar.get("name", "") for ar in (a.get("singer_list") or [])
-            )
-            try:
-                size = int(a.get("song_count") or a.get("size") or 0)
-            except (TypeError, ValueError):
-                size = 0
+            artist = _singers_text(a.get("singer")) or _singers_text(a.get("singer_list"))
             out.append({
-                "id": a.get("albumMID") or a.get("mid"),
-                "name": a.get("albumName") or a.get("name") or "",
+                "id": a.get("mid"),
+                "name": a.get("name") or a.get("title") or "",
                 "artist": artist or "",
-                "size": size,
-                "publish_time": a.get("publicTime") or a.get("publishDate") or "",
+                "size": 0,  # 搜索结果不含曲目数
+                "publish_time": a.get("time_public") or "",
             })
         return {"items": out, "total": total}
 
     def get_album_songs(self, albummid: str) -> list[dict]:
-        """获取专辑内全部歌曲
+        """获取专辑内全部歌曲（num 透传，一次取全量）
 
         Returns:
-            [{"id"(songmid),"name","artists","fee"}]（专辑详情无付费信息，fee=0）
+            [{"id"(songmid),"name","artists","fee"}]（fee 由 pay.pay_play 映射）
         """
-        result = self._request("/getAlbumInfo", params={"albummid": albummid})
-        songs = (result.get("data") or {}).get("list") or []
+        result = self._request(f"/album/{albummid}/songs", params={"num": 200, "page": 1})
+        songs = result.get("song_list") or []
         out = []
         for s in songs:
             out.append({
-                "id": s.get("songmid"),
-                "name": s.get("songname") or s.get("name") or "",
-                "artists": "/".join(ar.get("name", "") for ar in (s.get("singer") or [])),
-                "fee": 0,
+                "id": s.get("mid"),
+                "name": s.get("name") or s.get("title") or "",
+                "artists": _singers_text(s.get("singer")),
+                "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
             })
         return out
 
@@ -333,8 +570,9 @@ class QqClient:
     # 播放/下载地址
     # ------------------------------------------------------------------
     def get_song_urls(self, songmids: list[str], level: str = "exhigh") -> list[dict]:
-        """批量获取歌曲下载链接（多首时 songmid 逗号分隔批量请求）
+        """批量获取歌曲下载链接（POST /song/get_song_urls，多首一批）
 
+        返回的 purl 为相对路径，需经 /song/get_cdn_dispatch 取 CDN 域名拼接。
         匿名场景 QQ 仅能获取 128kbps 及以下音质（320/flac 需登录 cookie），
         故目标音质拿不到 url 时自动降级 128 重试一次（VIP 歌曲两档都拿不到，
         仍返回 None 交给上层走失败/切号逻辑）。
@@ -344,24 +582,24 @@ class QqClient:
             [{"url": str|None, "ext": str, "size": None, "is_trial": False,
               "level": str}]   # level 为实际生效档（内部降级 128 时为 standard）
         """
-        quality = QUALITY_LEVEL.get(level, "320")
+        quality = QUALITY_LEVEL.get(level, 12)
         play_url = self._fetch_play_url(songmids, quality)
 
         # 目标音质拿不到 url 的歌，降级 128 再试（免费歌匿名可拿 128）
         # downgraded 记录实际靠 128 降级拿到 url 的歌，用于输出循环修正扩展名
         downgraded: set[str] = set()
-        if quality != "128":
+        if quality != 13:
             missing = [m for m in songmids if not (play_url.get(str(m)) or {}).get("url")]
             if missing:
-                fallback = self._fetch_play_url(missing, "128")
+                fallback = self._fetch_play_url(missing, 13)
                 downgraded = {m for m in missing if (fallback.get(str(m)) or {}).get("url")}
                 for mid in missing:
                     if (fallback.get(str(mid)) or {}).get("url"):
                         play_url[str(mid)] = fallback[str(mid)]
 
         ext = QUALITY_EXT.get(quality, "mp3")
-        # 实际生效档回填统一档位名（320 由 higher/exhigh 两档共用，归 exhigh）
-        actual_level = "standard" if quality == "128" else _LEVEL_BY_QUALITY.get(quality, level)
+        # 实际生效档回填统一档位名（12 由 higher/exhigh 两档共用，归 exhigh）
+        actual_level = "standard" if quality == 13 else _LEVEL_BY_QUALITY.get(quality, level)
         out = []
         for mid in songmids:
             item = play_url.get(str(mid)) or {}
@@ -378,121 +616,152 @@ class QqClient:
             })
         return out
 
-    def _fetch_play_url(self, songmids: list[str], quality: str) -> dict:
-        """调 /getMusicPlay 批量取播放链接，返回 {mid: {url, error}}"""
+    def _get_cdn_base(self) -> str:
+        """取 CDN 域名（/song/get_cdn_dispatch，公开接口服务端缓存 60s）
+
+        固定取 sip[0]，避免同任务内随机选域导致 URL 域名不一致。
+        """
+        result = self._request("/song/get_cdn_dispatch", timeout=10)
+        sip = result.get("sip") or []
+        return sip[0] if sip else "http://aqqmusic.tc.qq.com/"
+
+    def _fetch_play_url(self, songmids: list[str], quality: int) -> dict:
+        """批量取播放链接，返回 {mid: {url, error}}
+
+        result=0 且 purl 非空视为成功；其余（104003 无权限/104004 vkey
+        失败/104013 设备受限/purl 空）视为取链失败，url=None。
+        """
         if not songmids:
             return {}
-        ids_str = ",".join(str(m) for m in songmids)
-        result = self._request(f"/getMusicPlay/{ids_str}", params={"quality": quality})
-        return result.get("playUrl") or {}
+        result = self._request("/song/get_song_urls", body={
+            "file_info": [{"mid": str(m)} for m in songmids],
+            "file_type": quality,
+        })
+        items = result.get("data") or []
+        if not items:
+            return {}
+        cdn = self._get_cdn_base()
+        out = {}
+        for it in items:
+            mid = str(it.get("mid") or "")
+            purl = it.get("purl") or ""
+            ok = _safe_int(it.get("result")) == _URL_RESULT_OK and purl
+            out[mid] = {"url": (cdn + purl) if ok else None}
+        return out
 
     def get_song_detail(self, songmids: list[str]) -> list[dict]:
-        """获取歌曲详情——调 /getSongInfo 批量取元数据，映射为 SongMeta 列表
+        """获取歌曲详情——调 POST /song/query_song 分批取元数据
 
-        artist 取上游主歌手（track_info.singer[0].name）；取不到时为空串，
-        触发 task_manager 用任务记录的 artists 回退决定下载子目录。
+        artist 取上游主歌手（singer[0].name）；封面由专辑 MID 拼标准 URL；
+        音轨号/碟号取 index_album/index_cd，专辑歌手取首歌手；
+        取不到时为空串/0，触发 task_manager 用任务记录的 artists 回退。
         """
         if not songmids:
             return []
-        ids_str = ",".join(str(m) for m in songmids)
-        result = self._request("/getSongInfo", params={"songmid": ids_str}, timeout=10)
-        mapping = result.get("songinfo") or {}
+        mapping: dict[str, dict] = {}
+        for i in range(0, len(songmids), _DETAIL_BATCH_SIZE):
+            batch = [str(m) for m in songmids[i:i + _DETAIL_BATCH_SIZE]]
+            result = self._request("/song/query_song", body={
+                "query_info": [{"mid": m} for m in batch],
+            }, timeout=10)
+            for t in (result.get("tracks") or []):
+                mid = str(t.get("mid") or "")
+                if mid:
+                    mapping[mid] = t
         out = []
         for mid in songmids:
             item = mapping.get(str(mid)) or {}
+            album = item.get("album") or {}
             out.append({
-                "title": item.get("title") or "",
-                "artist": item.get("artist") or "",
-                "album": item.get("album") or "",
-                "year": item.get("year") or "",
-                "cover_url": _fix_img_url(item.get("cover_url") or ""),
-                "duration_ms": item.get("duration_ms") or 0,
+                "title": item.get("name") or item.get("title") or "",
+                "artist": _singers_text(item.get("singer")),
+                "album": album.get("name", "") if isinstance(album, dict) else "",
+                "year": _year_from_date(item.get("time_public")),
+                "cover_url": _album_cover_url(album.get("mid", "")) if isinstance(album, dict) else "",
+                "duration_ms": (_safe_int(item.get("interval")) or 0) * 1000,
+                "track_no": _safe_int(item.get("index_album")),
+                "disc_no": _safe_int(item.get("index_cd")),
+                "albumartist": _first_singer(item.get("singer")),
             })
         return out
 
     def get_lyric(self, song_id: str) -> dict:
-        """获取歌词——QQ API 无歌词接口，返回空"""
-        return {"lrc": "", "tlyric": ""}
+        """获取歌词——调 /song/{mid}/lyric（value 兼容 mid/数字 ID）
+
+        返回 {"lrc": 原文, "tlyric": 翻译}；失败返回空（不阻断下载）。
+        """
+        result = self._request(f"/song/{song_id}/lyric", params={"trans": "true"}, timeout=10)
+        if not result:
+            return {"lrc": "", "tlyric": ""}
+        return {
+            "lrc": result.get("lyric") or "",
+            "tlyric": result.get("trans") or "",
+        }
 
     # ------------------------------------------------------------------
-    # 发现接口（排行榜 / 热门歌单 / 分类）
+    # 发现接口（排行榜 / 推荐歌单）
     # ------------------------------------------------------------------
     def get_toplists(self) -> list[dict]:
         """获取所有排行榜列表
 
         Returns:
-            [{"id"(topId),"name","description","","update_frequency","",
+            [{"id"(topId),"name","description","update_frequency",
               "cover_img_url","track_count":0}, ...]
             track_count 固定 0：上游 songList 仅为前 3 首预览，不能作曲目数；
-            真实曲目数在 get_playlist_detail 走 /getRanks 时以 totalNum 回填
+            真实曲目数在 get_playlist_detail 走 /top/{id}/detail 时以
+            total_num 回填
         """
-        result = self._request("/getTopLists")
-        top_list = (result.get("data") or {}).get("topList") or []
-        return [
-            {
-                "id": t.get("id"),
-                "name": t.get("topTitle") or t.get("title") or "",
-                "description": "",
-                "update_frequency": "",
-                "cover_img_url": _fix_img_url(t.get("picUrl") or ""),
-                "track_count": 0,
-            }
-            for t in top_list
-        ]
+        result = self._request("/top/get_category")
+        groups = result.get("group") or []
+        out = []
+        for g in groups:
+            for t in (g.get("toplist") or []):
+                out.append({
+                    "id": t.get("id"),
+                    "name": t.get("name") or t.get("title_detail") or "",
+                    "description": t.get("intro") or "",
+                    "update_frequency": t.get("period") or t.get("update_time") or "",
+                    "cover_img_url": _fix_img_url(t.get("head_pic_url") or t.get("front_pic_url") or ""),
+                    "track_count": 0,
+                })
+        return out
 
     def get_hot_playlists(self, cat: str = "全部", limit: int = 30,
                           order: str = "hot", offset: int = 0) -> tuple[list[dict], int]:
-        """获取热门/分类歌单
+        """获取热门歌单（降级：官方推荐歌单，无分类/分页能力）
 
-        Args:
-            cat: 分类名（经模块级分类缓存解析为 categoryId，解析失败用"全部"）
-            limit: 每页数量
-            order: 排序（QQ 服务端固定 sortId=5 热门，参数保留对齐签名）
-            offset: 偏移量 = page * limit（QQ page 从 0 开始）
+        新服务端移除了分类歌单浏览接口（旧 /getSongLists），此方法降级为
+        /recommend/get_recommend_songlist 单页结果；cat/order 参数保留
+        对齐签名但被忽略。翻页（offset>0）返回空页。
 
         Returns:
-            (playlists, total)：歌单列表与该分类歌单总数（上游 sum 字段）
+            (playlists, total)：歌单列表与总数（单页结果条数）
         """
-        page = offset // limit if limit > 0 else 0
-        category_id = self._resolve_category_id(cat)
-        result = self._request("/getSongLists", params={
-            "page": page, "limit": limit, "categoryId": category_id, "sortId": 5,
-        })
-        data = result.get("data") or {}
-        lst = data.get("list") or []
-        # 上游 sum 为该分类歌单总数（实测全部分类 11617），缺失时用当页数量
-        total = data.get("sum") or len(lst)
+        if offset > 0:
+            return [], 0
+        result = self._request("/recommend/get_recommend_songlist")
+        lst = result.get("songlists") or []
         playlists = []
-        for item in lst:
+        for item in lst[:limit]:
             try:
-                pid = int(item.get("disstid"))
+                pid = int(item.get("id"))
             except (TypeError, ValueError):
                 continue
-            creator = item.get("creator") or {}
             playlists.append({
                 # id 转 int：与 netease 数字 id 行为一致（前端数字比较逻辑兼容）
                 "id": pid,
-                "name": item.get("disstname") or item.get("title") or "",
-                "cover_img_url": _fix_img_url(item.get("imgurl") or item.get("cover") or ""),
-                "play_count": item.get("listen_num") or item.get("listennum") or 0,
-                "track_count": 0,
-                "creator": creator.get("name") or creator.get("nick") or item.get("username") or "",
-                "description": item.get("introduction") or "",
+                "name": item.get("title") or "",
+                "cover_img_url": _fix_img_url(item.get("picurl") or ""),
+                "play_count": item.get("listennum") or 0,
+                "track_count": item.get("songnum") or 0,
+                "creator": item.get("creator_nick") or "",
+                "description": item.get("desc") or "",
             })
-        return playlists, total
+        return playlists, len(playlists)
 
     def get_playlist_categories(self) -> list[dict]:
-        """获取所有歌单分类
-
-        Returns:
-            [{"name": 分类名}, ...]；"全部"固定在首位；解析失败回退 [{"name": "全部"}]
-        """
-        mapping = self._load_categories()
-        names = list(mapping.keys()) if mapping else []
-        if "全部" in names:
-            names.remove("全部")
-        names.insert(0, "全部")
-        return [{"name": n} for n in names]
+        """获取歌单分类（降级：新服务端无分类接口，固定返回"全部"）"""
+        return [{"name": "全部"}]
 
     # ------------------------------------------------------------------
     # 歌单/榜单详情（分流）
@@ -501,8 +770,8 @@ class QqClient:
         """获取歌单/榜单详情，包含歌曲列表
 
         QQ 榜单（topId，量级小）与歌单（disstid，10 位数字）ID 量级差异明显，
-        据此分流：pid < 10000 走 /getRanks（失败回退歌单接口），否则走
-        /getSongListDetail。
+        据此分流：pid < 10000 走 /top/{id}/detail（失败回退歌单接口），否则走
+        /songlist/{id}/detail。两者均按 num=100 分页在客户端聚合。
 
         Returns:
             {"name","track_count","tracks":[{"id"(songmid),"name","artists","fee"}]}
@@ -515,83 +784,167 @@ class QqClient:
         return self._songlist_detail(pid, limit)
 
     def _toplist_detail(self, top_id: int, limit: int) -> dict:
-        """榜单详情（/getRanks，最新一期）"""
-        result = self._request("/getRanks", params={"topId": top_id, "limit": 100, "page": 0})
-        data = result.get("data") or {}
-        songs = result.get("songInfoList") or []
-        if not songs:
-            return {}
+        """榜单详情（/top/{id}/detail，按 num=100 分页聚合）"""
         tracks = []
-        for s in songs[:limit]:
-            tracks.append({
-                "id": s.get("mid"),
-                "name": s.get("name") or "",
-                "artists": "/".join(ar.get("name", "") for ar in (s.get("singer") or [])),
-                "fee": 0,
+        total = 0
+        name = ""
+        for page in range(1, _DETAIL_MAX_PAGES + 1):
+            result = self._request(f"/top/{top_id}/detail", params={
+                "num": _DETAIL_PAGE_SIZE, "page": page,
             })
-        # 榜单元信息：title + totalNum（真实曲目数）
+            if not result:
+                break
+            info = result.get("info") or {}
+            if info:
+                name = info.get("name") or name
+            total = _safe_int(info.get("total_num")) or total
+            songs = result.get("songs") or []
+            if not songs:
+                break
+            for s in songs:
+                if len(tracks) >= limit:
+                    break
+                tracks.append({
+                    "id": s.get("mid"),
+                    "name": s.get("name") or s.get("title") or "",
+                    "artists": _singers_text(s.get("singer")),
+                    "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
+                })
+            if len(tracks) >= limit or len(songs) < _DETAIL_PAGE_SIZE:
+                break
+        if not tracks:
+            return {}
         return {
             "id": top_id,
-            "name": data.get("title") or str(top_id),
-            "track_count": data.get("totalNum") or len(tracks),
+            "name": name or str(top_id),
+            "track_count": total or len(tracks),
             "tracks": tracks,
         }
 
     def _songlist_detail(self, disstid: int, limit: int) -> dict:
-        """歌单详情（/getSongListDetail，服务端自动分页聚合全部歌曲）"""
-        result = self._request("/getSongListDetail", params={"disstid": disstid})
-        if not result:
-            return {}
-        songs = result.get("songs") or []
+        """歌单详情（/songlist/{id}/detail，按 num=100 分页聚合）"""
         tracks = []
-        for s in songs[:limit]:
-            tracks.append({
-                "id": s.get("songmid"),
-                "name": s.get("songname") or s.get("name") or "",
-                "artists": s.get("singers") or s.get("singer") or "",
-                "fee": 0,
+        name = ""
+        total = 0
+        for page in range(1, _DETAIL_MAX_PAGES + 1):
+            result = self._request(f"/songlist/{disstid}/detail", params={
+                "num": _DETAIL_PAGE_SIZE, "page": page,
             })
+            if not result:
+                break
+            info = result.get("info") or {}
+            if info:
+                name = info.get("title") or name
+            total = _safe_int(result.get("total")) or total
+            songs = result.get("songs") or []
+            if not songs:
+                break
+            for s in songs:
+                if len(tracks) >= limit:
+                    break
+                tracks.append({
+                    "id": s.get("mid"),
+                    "name": s.get("name") or s.get("title") or "",
+                    "artists": _singers_text(s.get("singer")),
+                    "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
+                })
+            if len(tracks) >= limit or not result.get("hasmore"):
+                break
+        if not tracks:
+            return {}
         return {
             "id": disstid,
-            "name": result.get("disstname") or str(disstid),
-            "track_count": result.get("total") or len(tracks),
+            "name": name or str(disstid),
+            "track_count": total or len(tracks),
             "tracks": tracks,
         }
 
-    # ------------------------------------------------------------------
-    # 分类映射（模块级缓存）
-    # ------------------------------------------------------------------
-    def _load_categories(self) -> dict[str, int]:
-        """加载"分类名 → categoryId"映射（模块级缓存，按 base_url 分桶）
 
-        调 /getRecommend 的 category 模块解析。上游为两级分组结构（实测
-        2026-08-23）：category.category[] 为分组（group_name），每组 items[]
-        为具体分类（item_name/item_id，item_id 即 getSongLists 的 categoryId）。
-        """
-        cache_key = self.base_url
-        cached = _CATEGORY_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
-        result = self._request("/getRecommend", params={"limit": 1})
-        groups = ((result.get("category") or {}).get("category")) or []
-        mapping: dict[str, int] = {}
-        for g in groups:
-            for item in (g.get("items") or []):
-                name = item.get("item_name") or item.get("name") or ""
-                cid = item.get("item_id") or item.get("id")
-                if not name or cid is None:
-                    continue
-                try:
-                    mapping[name] = int(cid)
-                except (TypeError, ValueError):
-                    continue
-        if mapping:
-            _CATEGORY_CACHE[cache_key] = mapping
-        return mapping
+def _safe_int(value) -> int:
+    """宽容整型转换（None/脏数据 → 0）"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
-    def _resolve_category_id(self, cat: str) -> int:
-        """分类名 → categoryId；空/"全部"或未命中回退全部分类"""
-        if not cat or cat == "全部":
-            return _ALL_CATEGORY_ID
-        mapping = self._load_categories()
-        return mapping.get(cat, _ALL_CATEGORY_ID)
+
+def _credential_to_cookie(credential: dict) -> str:
+    """扫码登录 Credential → 标准 Cookie 串（set_cookie 原生可解析）
+
+    Credential 字段参考上游 qqmusic_api.models.request.Credential（FastAPI
+    序列化默认 by_alias=True，故 snake_case/alias 双命名兼容）：
+        musicid / str_musicid  -> musicid（set_cookie 提取纯数字）
+        musickey               -> musickey（QQ 登录 Q_H_L_ 前缀 / 微信 W_X_ 前缀）
+        openid / unionid / refresh_token / refresh_key / access_token /
+        expired_at             -> 同名透传（set_cookie 白名单字段，微信
+                                  W_X_ 凭证续期必需）
+        encryptUin / encrypt_uin -> euin（/user/{euin}/homepage 取昵称用）
+    零值/空值字段跳过；musicid 与 musickey 缺一返回空串（登录态不完整）。
+    """
+    if not isinstance(credential, dict):
+        return ""
+
+    def pick(*names: str) -> str:
+        for n in names:
+            v = credential.get(n)
+            if v:
+                return str(v)
+        return ""
+
+    musicid = pick("musicid", "str_musicid")
+    musickey = pick("musickey")
+    if not musicid or not musickey:
+        return ""
+    parts = [f"musicid={musicid}", f"musickey={musickey}"]
+    for name in ("openid", "unionid", "refresh_token", "refresh_key",
+                 "access_token", "expired_at"):
+        value = pick(name)
+        if value:
+            parts.append(f"{name}={value}")
+    euin = pick("encryptUin", "encrypt_uin")
+    if euin:
+        parts.append(f"euin={euin}")
+    return ";".join(parts)
+
+
+# identity 块中 各档会员标志位 -> 到期时间字段（get_vip_info 返回结构）
+_IDENTITY_END_FIELDS = (
+    ("huge_vip", "huge_vip_end"),
+    ("star", "star_end"),
+    ("twelve", "twelve_end"),
+    ("group_vip_flag", "group_vip_end"),
+    ("cp_lover_flag", "cp_lover_end"),
+    ("eight", "eight_end"),
+)
+
+
+def _expire_from_identity(identity: dict) -> int:
+    """从 vip_info 的 identity 块解析会员到期时间戳（秒）
+
+    userinfo.expire 缺失（部分登录类型不下发，实测返回 0）时的兜底：
+    按 _IDENTITY_END_FIELDS 优先级扫描各档会员标志位，取第一个
+    flag>0 且到期字符串可解析的档位（对应用户主会员档位的到期）。
+    到期字符串为北京时间，实测存在两种格式："YYYY-MM-DD HH:MM:SS"
+    （如 huge_vip_end）与纯日期 "YYYY-MM-DD"（如 eight_end，按当天
+    零点计，界面仅展示日期不受影响）；无有效项返回 0。
+    """
+    for flag_key, end_key in _IDENTITY_END_FIELDS:
+        if _safe_int(identity.get(flag_key)) <= 0:
+            continue
+        raw = str(identity.get(end_key) or "").strip()
+        if not raw:
+            continue
+        ts = _parse_vip_end(raw)
+        if ts > 0:
+            return ts
+    return 0
+
+
+def _parse_vip_end(raw: str) -> int:
+    """解析会员到期字符串（北京时间，本地时区），兼容两种格式；失败返回 0"""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(datetime.strptime(raw, fmt).timestamp())
+        except ValueError:
+            continue
+    return 0
