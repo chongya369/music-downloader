@@ -25,6 +25,7 @@ import logging
 import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import requests
@@ -71,6 +72,13 @@ _DETAIL_BATCH_SIZE = 50
 # 歌单/榜单详情聚合分页大小与页数上限（防止异常大歌单死循环）
 _DETAIL_PAGE_SIZE = 100
 _DETAIL_MAX_PAGES = 50
+
+# 专辑曲目数探测并发数（search_albums 补齐用；/album/{mid}/songs?num=1
+# 单请求实测 ~400ms，50 条/页串行需 ~20s，8 并发约 2.5s）
+_SIZE_PROBE_WORKERS = 8
+
+# 专辑歌曲分页大小（num=200 实测上游可用；>200 首合辑靠翻页补全）
+_ALBUM_PAGE_SIZE = 200
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -544,28 +552,65 @@ class QqClient:
                 "id": a.get("mid"),
                 "name": a.get("name") or a.get("title") or "",
                 "artist": artist or "",
-                "size": 0,  # 搜索结果不含曲目数
+                "size": 0,
                 "publish_time": a.get("time_public") or "",
             })
+        # 补齐曲目数：搜索响应不含曲目数（旧服务端 song_count 字段已随服务端
+        # 切换消失），按专辑并发探测 /album/{mid}/songs 的 total_num；失败
+        # 保持 0（前端显示 "—"），不阻断搜索
+        mids = [a.get("mid") for a in albums if a.get("mid")]
+        if mids:
+            with ThreadPoolExecutor(max_workers=_SIZE_PROBE_WORKERS) as pool:
+                sizes = dict(zip(mids, pool.map(self._probe_album_size, mids)))
+            for item in out:
+                item["size"] = sizes.get(item.get("id"), 0)
         return {"items": out, "total": total}
 
+    def _probe_album_size(self, albummid: str) -> int:
+        """探测专辑真实曲目数（/album/{mid}/songs?num=1，读 total_num）
+
+        最小请求（只取 1 首即可读到总数）；尽力而为语义：请求失败、
+        限流（429 重试耗尽）或字段缺失返回 0，不影响搜索结果返回。
+        """
+        result = self._request(f"/album/{albummid}/songs",
+                               params={"num": 1, "page": 1}, timeout=10)
+        return _safe_int(result.get("total_num")) if result else 0
+
     def get_album_songs(self, albummid: str) -> list[dict]:
-        """获取专辑内全部歌曲（num 透传，一次取全量）
+        """获取专辑内全部歌曲（按 _ALBUM_PAGE_SIZE/页分页聚合取全量）
+
+        合辑可能超过单页上限，循环翻页至取满 total_num 或页空
+        （page 参数经服务端透传，实测 page=2 生效；_DETAIL_MAX_PAGES
+        封顶 1 万首防死循环）。分页中途失败导致取不全时整体视为
+        失败返回 []（fail-loud，防止静默下载半张专辑），上层
+        task_manager 对空列表返回 enqueued=0。
 
         Returns:
             [{"id"(songmid),"name","artists","fee"}]（fee 由 pay.pay_play 映射）
         """
-        result = self._request(f"/album/{albummid}/songs", params={"num": 200, "page": 1})
-        songs = result.get("song_list") or []
-        out = []
-        for s in songs:
-            out.append({
-                "id": s.get("mid"),
-                "name": s.get("name") or s.get("title") or "",
-                "artists": _singers_text(s.get("singer")),
-                "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
-            })
-        return out
+        tracks = []
+        total = 0
+        for page in range(1, _DETAIL_MAX_PAGES + 1):
+            result = self._request(f"/album/{albummid}/songs",
+                                   params={"num": _ALBUM_PAGE_SIZE, "page": page})
+            if not result:
+                break
+            total = _safe_int(result.get("total_num")) or total
+            songs = result.get("song_list") or []
+            if not songs:
+                break
+            for s in songs:
+                tracks.append({
+                    "id": s.get("mid"),
+                    "name": s.get("name") or s.get("title") or "",
+                    "artists": _singers_text(s.get("singer")),
+                    "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
+                })
+            if total and len(tracks) >= total:
+                break
+        if total and len(tracks) < total:
+            return []
+        return tracks
 
     # ------------------------------------------------------------------
     # 播放/下载地址

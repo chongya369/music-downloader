@@ -595,7 +595,7 @@ async function loadSearchResults() {
                         <td>${(curPage - 1) * limit + idx + 1}</td>
                         <td>${escapeHtml(a.artist)}</td>
                         <td>${escapeHtml(a.name)}</td>
-                        <td>${a.size || 0}</td>
+                        <td>${a.size || "—"}</td>
                         <td><small class="text-muted">${pubTime}</small></td>
                         <td>
                             <button class="btn btn-sm btn-success btn-dl-album"
