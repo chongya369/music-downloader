@@ -28,7 +28,7 @@ api/ 目录说明
 ------------------------------------------------
   对应 GitHub 项目：
       https://github.com/chongya369/QQMusicApi
-      （基于 luren-dc/QQMusicApi 体系构建，FastAPI/uvicorn 实现）
+ 
 
   Windows x64:   qqmusic-api-win-x64.exe
   Linux   x64:   qqmusic-api-linux-x64
