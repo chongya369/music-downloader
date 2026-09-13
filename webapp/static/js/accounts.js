@@ -449,6 +449,15 @@ function stopNcmQrPolling() {
     if (panel) panel.classList.add("d-none");
 }
 
+// 仅停止轮询、保留面板（800 过期等场景需要让提示保持可见）
+function stopNcmQrPollingKeepPanel() {
+    if (_ncmQrTimer) {
+        clearInterval(_ncmQrTimer);
+        _ncmQrTimer = null;
+    }
+    _ncmQrKey = "";
+}
+
 // A：抽函数统一管理「平台 -> UI」刷新逻辑
 function updateAddPlatformUI(platform) {
     const cfg = PLATFORM_ADD_HINTS[platform] || PLATFORM_ADD_HINTS.netease;
@@ -583,7 +592,9 @@ document.getElementById("btn-ncm-qr").addEventListener("click", async function()
                     statusEl.textContent = "✅ 登录成功，Cookie 已自动填入";
                     showToast("网易云扫码登录成功，Cookie 已填入", "成功");
                 } else if (st === 0) {
-                    stopNcmQrPolling();
+                    // 仅停止轮询、保留面板：让"已过期"提示可见（隐藏面板会导致
+                    // 成功前一轮的校验结果写到不可见元素上，用户什么都看不到）
+                    stopNcmQrPollingKeepPanel();
                     statusEl.textContent = "二维码已过期，请重新点击「扫码登录」";
                 }
             } catch (e) {

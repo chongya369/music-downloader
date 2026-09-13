@@ -113,8 +113,18 @@ def _refresh_account_info(acc: Account, cookie: str | None = None) -> str:
         info = client.get_account_info()
         if info.get("code") == 200:
             a = info.get("account") or {}
-            acc.nickname = a.get("userName") or a.get("nickname") or ""
-            acc.vip_type = a.get("vipType", 0)
+            p = info.get("profile") or {}
+            # profile 为空即匿名态（/user/account 未登录也返回 code=200）：
+            # 不覆盖账号原有信息，返回错误提示让用户重新扫码/检查 cookie
+            if not p:
+                logger.warning("网易云 Cookie 未生效(profile=null): %s", acc.name)
+                return "Cookie 未生效，请重新扫码获取"
+            # 昵称权威字段在 profile.nickname（account 无 nickname，userName
+            # 是登录名非昵称）；会员类型用 account.vipType（经典 0/11/12 语义，
+            # 与 vip_text_for 展示映射表一致。实测 profile.vipType=110、
+            # /vip/info 的 vipCode=100/300/220，均不在映射表内，弃用）
+            acc.nickname = (p.get("nickname") or "").strip() or (a.get("userName") or "")
+            acc.vip_type = int(a.get("vipType") or 0)
             acc.last_check_at = datetime.now()
         # 获取会员到期时间（接口失败则不更新该字段）
         vip_info = client.get_vip_info()

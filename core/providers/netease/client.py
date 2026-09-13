@@ -104,8 +104,14 @@ class NeteaseClient:
         return self._bridge.start().rstrip("/")
 
     def set_cookie(self, cookie: str) -> None:
-        """设置 Cookie（写入 session.headers 供所有请求携带）"""
-        self.session.headers["Cookie"] = cookie
+        """设置 Cookie（写入 session.headers 供所有请求携带）
+
+        统一规范化为 "k=v; k=v"（分号后带空格）格式：内置 ncm-api 服务端
+        按 /;\\s+/ 正则解析请求 Cookie 头，无空格分隔时整串会被当成单个
+        cookie，MUSIC_U 丢失导致所有请求降级为匿名态（实测确认）。
+        """
+        parts = [p.strip() for p in str(cookie or "").split(";") if p.strip()]
+        self.session.headers["Cookie"] = "; ".join(parts)
 
     @property
     def has_login(self) -> bool:
@@ -155,7 +161,9 @@ class NeteaseClient:
             {"ok": bool, "key": str, "qr_img": str, "msg": str}
             key 用于轮询（check_qr_login）；qr_img 可直接用于 <img src>
         """
-        body = self._request("/login/qr/key", timeout=15)
+        # 官方要求 key/create/check 链路均带 timestamp，防止 CDN/代理缓存
+        body = self._request("/login/qr/key",
+                             params={"timestamp": int(time.time() * 1000)}, timeout=15)
         if (body or {}).get("code") != 200:
             return {"ok": False, "key": "", "qr_img": "",
                     "msg": f"二维码 key 生成失败（code={(body or {}).get('code')}）"}
@@ -167,7 +175,8 @@ class NeteaseClient:
             return {"ok": False, "key": "", "qr_img": "",
                     "msg": "二维码 key 生成失败（上游未返回 unikey）"}
         body2 = self._request("/login/qr/create",
-                              params={"key": key, "qrimg": "true"}, timeout=15)
+                              params={"key": key, "qrimg": "true", "platform": "web",
+                                      "timestamp": int(time.time() * 1000)}, timeout=15)
         if (body2 or {}).get("code") != 200:
             return {"ok": False, "key": key, "qr_img": "",
                     "msg": f"二维码图片渲染失败（code={(body2 or {}).get('code')}）"}
@@ -232,6 +241,27 @@ class NeteaseClient:
         if not cookie:
             return {"ok": False, "status": 4, "cookie": "",
                     "msg": "授权成功但响应未包含 MUSIC_U，请重试或改用手动填入"}
+        # 803 后登录态校验：用下发的 cookie 调 /login/status 确认（官方流程
+        # 要求），拦截"MUSIC_U 未生效"的假成功。注意响应把 code/account/
+        # profile 包在 data 键里（实测 {"data":{"code":200,"profile":...}}），
+        # 需读内层。retries=1 保证 803 响应在下一轮轮询（2.5s）前返回，
+        # 避免下一轮查同一 key 得 800 过期、前端提前隐藏面板的竞态。
+        self.set_cookie(cookie)
+        try:
+            verify = self._request("/login/status",
+                                   params={"timestamp": int(time.time() * 1000)},
+                                   timeout=5, retries=1)
+        except Exception as e:
+            logger.warning("扫码后登录态校验异常: %s", e)
+            verify = None
+        if isinstance(verify, dict):
+            inner = verify.get("data") if isinstance(verify.get("data"), dict) else verify
+        else:
+            inner = {}
+        profile = inner.get("profile") if isinstance(inner, dict) else None
+        if inner.get("code") != 200 or not isinstance(profile, dict) or not profile:
+            return {"ok": False, "status": 4, "cookie": cookie,
+                    "msg": "扫码成功但登录态未生效（MUSIC_U 无效），请重新扫码或改用手动填入"}
         return {"ok": True, "status": 4, "cookie": cookie, "msg": ""}
 
     # ------------------------------------------------------------------
@@ -244,12 +274,14 @@ class NeteaseClient:
     def get_vip_info(self) -> dict:
         """获取会员权益信息（含到期时间）
 
-        /vip/info 返回的 data 结构：
+        /vip/info 返回的 data 结构（vipCode 为真实实测值）：
             {
-                "associator":  {"vipCode": 11, "expireTime": ms, "vipLevel": 1},  # 黑胶VIP
-                "musicPackage": {"vipCode": 0,  "expireTime": 0,   "vipLevel": 0},  # 音乐包
-                "redplus":     {"vipCode": 12, "expireTime": ms, "vipLevel": 1}   # SVIP
+                "associator":  {"vipCode": 100, "expireTime": ms, "vipLevel": 7},  # 黑胶VIP
+                "musicPackage": {"vipCode": 220, "expireTime": ms, "vipLevel": 7},  # 音乐包
+                "redplus":     {"vipCode": 300, "expireTime": ms, "vipLevel": 7}   # 黑胶VIP+
             }
+        注意 vipCode（100/220/300）与 account.vipType（0/11/12）是两套编码，
+        前者不用于展示映射；此处返回的 vip_type 仅供内部参考。
         选择策略：遍历 redplus(SVIP) / associator(黑胶VIP) / musicPackage(音乐包)，
         取到期时间最晚的会员（用户可能同时持有多种权益，最晚到期时间才是实际失效时间）
 
@@ -696,6 +728,8 @@ def _extract_login_cookie(raw: str) -> str:
 
     按 _LOGIN_COOKIE_KEYS 白名单逐片段提取（"k=v" 首个 '=' 分割，容忍
     base64 值中的 '='）；MUSIC_U 缺失返回空串（视为登录态不完整）。
+    以 "; "（分号+空格）连接：内置 ncm-api 服务端按 /;\\s+/ 正则解析
+    Cookie 头，无空格分隔时整串被当成单个 cookie，MUSIC_U 无法被识别。
     """
     if not raw:
         return ""
@@ -713,4 +747,4 @@ def _extract_login_cookie(raw: str) -> str:
             keep.append(f"{k}={v}")
     if not any(p.startswith("MUSIC_U=") for p in keep):
         return ""
-    return ";".join(keep)
+    return "; ".join(keep)
