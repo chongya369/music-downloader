@@ -19,11 +19,40 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # 父进程死亡后发送给 Linux 子进程的信号
 _LINUX_PDEATHSIG = 15  # SIGTERM
+
+
+def open_api_log(name: str):
+    """为 API 子进程打开日志文件（append + 行缓冲），返回 (文件对象, 路径)。
+
+    日志目录解析优先级：
+    1. APP_DATA_DIR/logs（fpk/网关模式，生命周期脚本注入的可写持久目录）
+    2. frozen：exe 同级目录 logs/
+    3. 源码运行：项目根 logs/
+
+    任一环节失败返回 (None, None)，调用方回退 DEVNULL——日志能力缺失
+    不得阻断服务启动。文件句柄由调用方持有并在进程重启/停止时关闭。
+    """
+    try:
+        app_data = os.environ.get("APP_DATA_DIR")
+        if app_data:
+            log_dir = Path(app_data).expanduser() / "logs"
+        elif getattr(sys, "frozen", False):
+            log_dir = Path(sys.executable).resolve().parent / "logs"
+        else:
+            # _proc.py(0) → providers(1) → core(2) → 项目根(3)，取 parents[2]
+            log_dir = Path(__file__).resolve().parents[2] / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"{name}.log"
+        fh = open(path, "a", buffering=1, encoding="utf-8", errors="replace")
+        return fh, str(path)
+    except Exception:
+        return None, None
 
 
 def _linux_pdeathsig_preexec() -> None:

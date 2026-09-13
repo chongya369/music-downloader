@@ -39,6 +39,9 @@ class NodeBridge:
         self.port: int | None = None
         self.base_url: str | None = None
         self._lock = threading.Lock()
+        # 子进程日志（open_api_log 打开的文件句柄及路径，重启/停止时关闭）
+        self._log_fh = None
+        self._log_path: str | None = None
 
     def status(self) -> dict:
         # 不加 self._lock——首次 start() 持锁最长 60s，共用锁会让设置页
@@ -79,11 +82,31 @@ class NodeBridge:
             env = {**os.environ, "PORT": str(self.port), "HOST": "127.0.0.1"}
             for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
                 env.pop(k, None)
+            # 匿名令牌持久化（fpk 部署）：ncm-api 把 anonymous_token 存在
+            # os.tmpdir()，require 时读入内存且所有上游请求自动携带 MUSIC_A。
+            # fpk 的 TRIM_PKGTMP 可能被系统清理，或首启（网络未就绪）刷新
+            # 失败导致令牌为空——扫码 check 将恒返回 801。改用 APP_DATA_DIR
+            # 下持久 tmp 目录；仅覆盖本子进程环境，主进程自身解压用的
+            # TMPDIR（生命周期脚本注入）不受影响。
+            app_data = os.environ.get("APP_DATA_DIR")
+            if app_data:
+                ncm_tmp = Path(app_data).expanduser() / "tmp"
+                try:
+                    ncm_tmp.mkdir(parents=True, exist_ok=True)
+                    env["TMPDIR"] = str(ncm_tmp)
+                except OSError:
+                    logger.warning("ncm-api 持久 tmp 目录创建失败，沿用系统 TMPDIR: %s", ncm_tmp)
+            # 子进程日志：写文件而非 DEVNULL——进程秒退/上游异常时保留现场
+            self._close_log()
+            log_fh, log_path = _proc.open_api_log("ncm-api")
+            self._log_fh = log_fh
+            self._log_path = log_path
             # spawn_protected 启用"父进程死亡即杀"（Win 作业对象 / Linux PDEATHSIG），
             # 下载器无论正常还是被强制退出，其启动的 API 进程都会被系统关闭
             self.proc = _proc.spawn_protected(
                 [str(self.bin_path)], cwd=str(self.bin_dir), env=env,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=log_fh if log_fh else subprocess.DEVNULL,
+                stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
             )
             self.base_url = f"http://127.0.0.1:{self.port}"
             try:
@@ -103,6 +126,16 @@ class NodeBridge:
             self.proc = None
             self.port = None
             self.base_url = None
+            self._close_log()
+
+    def _close_log(self) -> None:
+        """关闭当前子进程日志句柄（重启/停止时复用，幂等）"""
+        if self._log_fh is not None:
+            try:
+                self._log_fh.close()
+            except OSError:
+                pass
+            self._log_fh = None
 
     def _kill_proc(self) -> None:
         """terminate → 等待 → kill（stop 与 start 失败路径复用）"""
@@ -141,7 +174,9 @@ class NodeBridge:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise RuntimeError("API 进程异常退出，请检查二进制完整性")
+                tail = (f"（exit code={self.proc.returncode}，"
+                        f"输出见 {self._log_path}）") if self._log_path else ""
+                raise RuntimeError(f"API 进程异常退出{tail}，请检查二进制完整性")
             try:
                 requests.get(
                     f"{self.base_url}/", timeout=2,

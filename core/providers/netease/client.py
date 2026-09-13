@@ -189,6 +189,10 @@ class NeteaseClient:
         801→1 等待 802→2 已扫 803→4 成功 800→0 过期。
         网易云无"用户拒绝授权"态（QQ 的 REFUSE），status 3 不会出现。
 
+        参数带 noCookie=true（官方文档建议：扫码后状态异常时加此参数；
+        同时避免 enhanced 服务把上游匿名 cookie Set-Cookie 进本地会话）
+        与 timestamp 防缓存。
+
         成功时 body.cookie 为 Set-Cookie 数组 join(';') 串，混有
         Max-Age/Expires/Path 属性片段，经 _extract_login_cookie 清洗为
         纯 k=v 对（MUSIC_U 必含），落库格式与手工录入一致。
@@ -202,7 +206,10 @@ class NeteaseClient:
         if not key:
             empty["msg"] = "缺少二维码 key"
             return empty
-        body = self._request("/login/qr/check", params={"key": key}, timeout=15)
+        body = self._request("/login/qr/check",
+                             params={"key": key, "noCookie": "true",
+                                     "timestamp": int(time.time() * 1000)},
+                             timeout=15)
         if not isinstance(body, dict) or not body:
             empty["msg"] = "扫码状态查询失败"
             return empty
@@ -210,8 +217,13 @@ class NeteaseClient:
             code = int(body.get("code"))
         except (TypeError, ValueError):
             code = -1
+        # 诊断日志：上游原始 code 落 INFO——"扫码后恒 801"类问题需凭
+        # 日志判定是未扫码（801）还是查询失败（-1/异常体）。仅扫码登录
+        # 轮询期间产生（约 0.4 行/秒），量可控
+        logger.info("网易云扫码状态: key=%s… code=%s", key[:6], code)
         status = {801: 1, 802: 2, 800: 0, 803: 4}.get(code, -1)
         if status < 0:
+            logger.warning("网易云扫码未知状态码，原始响应: code=%s body=%s", code, body)
             empty["msg"] = f"未知扫码状态码（code={code}）"
             return empty
         if status != 4:
