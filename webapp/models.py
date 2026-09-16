@@ -11,7 +11,8 @@
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
+from sqlalchemy.engine import Engine
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -522,12 +523,23 @@ def _migrate_song_pk_to_composite(engine) -> None:
     print("[init_db] songs 主键已迁移为 (id, platform) 复合主键")
 
 
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    """Sqlite 连接级优化：WAL 允许读写并发（读不再被写锁阻塞），
+    busy_timeout 让偶发锁冲突等待而不是立即抛 database is locked。
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
+
 def init_db(app, db_path: str = "downloads.db") -> None:
     """初始化数据库：配置 SQLAlchemy、创建表、写入默认配置、兼容迁移"""
     abs_db_path = Path(db_path).resolve()
     abs_db_path.parent.mkdir(parents=True, exist_ok=True)
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{abs_db_path.as_posix()}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    event.listen(Engine, "connect", _set_sqlite_pragma)
     db.init_app(app)
 
     with app.app_context():
