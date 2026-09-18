@@ -11,6 +11,7 @@
 
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -95,6 +96,8 @@ class Downloader:
         max_retries: int = 3,
         timeout: int = 30,
         overwrite: bool = False,
+        max_total_seconds: int = 900,
+        idle_timeout: int = 60,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +105,37 @@ class Downloader:
         self.max_retries = max_retries
         self.timeout = timeout
         self.overwrite = overwrite
+        # 兜底保护：单首下载总时长上限 + 无数据空闲上限，防 CDN 慢速/静默拖死任务
+        self.max_total_seconds = max_total_seconds
+        self.idle_timeout = idle_timeout
+
+    def _safe_get(self, url: str, headers: dict) -> requests.Response:
+        """带 DNS 挂起保护的 GET 请求
+
+        requests 的 timeout 只覆盖 TCP 连接与读取，不覆盖 DNS 解析
+        （socket.getaddrinfo 会无限阻塞）。这里把请求放入 daemon 线程，
+        外层等待 timeout + 10s，超时视为 DNS/连接挂起并抛 requests.Timeout，
+        避免单首歌"永久下载中"拖死整个下载队列。
+        """
+        box: dict = {}
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                box["resp"] = requests.get(url, headers=headers, stream=True, timeout=self.timeout)
+            except Exception as e:  # 任何异常都回传主流程处理
+                box["err"] = e
+            finally:
+                done.set()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        # 等待 timeout + 10s：请求本身耗时已含 TCP timeout，多出的 10s 用于 DNS 解析
+        if not done.wait(self.timeout + 10):
+            raise requests.Timeout(f"请求超时（>{self.timeout + 10}s，可能 DNS 解析挂起）: {url}")
+        if "err" in box:
+            raise box["err"]
+        return box["resp"]
 
     def target_path(self, sub_dir: str | None, filename: str) -> Path:
         base = self.output_dir
@@ -165,12 +199,12 @@ class Downloader:
 
                 # 416 表示 Range 越界（文件已完成或范围无效），需先关闭原连接，
                 # 再无 Range 重试，避免在 with 块内重新赋值 resp 导致连接泄漏
-                resp = requests.get(url, headers=headers, stream=True, timeout=self.timeout)
+                resp = self._safe_get(url, headers)
                 if resp.status_code == 416:
                     resp.close()
                     resume_pos = 0
                     headers.pop("Range", None)
-                    resp = requests.get(url, headers=headers, stream=True, timeout=self.timeout)
+                    resp = self._safe_get(url, headers)
 
                 try:
                     resp.raise_for_status()
@@ -183,6 +217,8 @@ class Downloader:
                         resume_pos = 0
 
                     downloaded = resume_pos
+                    start_ts = time.monotonic()
+                    last_activity = start_ts
                     with open(str(tmp), mode) as f:
                         for chunk in resp.iter_content(self.chunk_size):
                             if chunk:
@@ -190,6 +226,18 @@ class Downloader:
                                 downloaded += len(chunk)
                                 if progress_callback:
                                     progress_callback(downloaded, total or None)
+                            now = time.monotonic()
+                            if chunk:
+                                last_activity = now
+                            # 兜底保护：无进度空闲 / 总时长超限立即中断本次尝试（走重试）
+                            elif now - last_activity > self.idle_timeout:
+                                raise requests.Timeout(
+                                    f"下载空闲超过 {self.idle_timeout}s，中断本次尝试"
+                                )
+                            if now - start_ts > self.max_total_seconds:
+                                raise requests.Timeout(
+                                    f"下载总时长超过 {self.max_total_seconds}s，中断本次尝试"
+                                )
                 finally:
                     resp.close()
 

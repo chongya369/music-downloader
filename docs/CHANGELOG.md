@@ -1,6 +1,19 @@
 # 更新日志
 
-本文件仅记录当前版本（0.6.2）的变更内容。
+本文件仅记录当前版本（0.6.3）的变更内容。
+
+## 0.6.3（2026-09-17）
+
+### 修复
+
+- **特定歌曲下载永久卡「下载中」**：下载 CDN 直链时 `requests` 的 `timeout` 只覆盖 TCP 连接与读取、**不覆盖 DNS 域名解析**——特定歌曲的 CDN 域名一旦解析挂起（DNS 故障 / 污染 / 代理异常），请求会无限阻塞，任务一直「下载中」且串行队列被无限期占用（表现为某几首歌卡住、进度不动、多次运行反复出现）。改为请求阶段放入守护线程并限制等待 `timeout+10s`（覆盖 DNS 挂起，超时即放弃本次尝试），流式阶段追加双重兜底（60s 无数据 / 单首总时长超 15 分钟立即中断），超时后按原机制重试 3 次，仍失败则标记失败可手动重试，正常歌曲下载不受影响
+- **飞牛/NAS 以非 root 用户启动即崩溃**：`@appcenter` 安装目录文件属主为 root，非 root 运行进程每次启动对 `ncm-api`/`qqmusic-api`/`kugou-api` 二进制强制 `chmod 0o755` 必抛 `PermissionError: Operation not permitted` 直接退出。改为兜底式权限处理：chmod 失败先忽略（执行位由打包/安装时以 root 设置），改用 `os.access(X_OK)` 校验，文件已可执行即正常启动；仅当「改不了权限且确实不可执行」才报错并提示手动 `chmod +x`
+- **fnOS 日志只显示警告/报错、INFO 不可见且 webapp.log 缺失**：日志初始化在部分 import 之后执行且 `basicConfig` 非强制，root logger 一旦被抢先配置 INFO 即失效；frozen 打包时日志目录按 exe 所在目录（安装目录，只读）计算，`logs/webapp.log` 建不出来只能降级仅控制台。日志初始化移至模块最前并加 `force=True` 强制 INFO 生效，控制台流兜底 `sys.stdout or sys.stderr`；fnOS（注入 `APP_DATA_DIR`）下日志改落可写数据卷 `data/logs/webapp.log`，本地与普通打包仍落 `_ROOT/logs` 行为不变
+- **API 二进制无法执行时拖垮整个 Web 服务**：`Popen` 在 exec 被系统拒绝（无执行权限 / 架构不匹配 / 缺 glibc 加载器 / Windows WinError 193 等）时抛 `OSError`，而 `main()` 与 Web 启停接口均只捕获 `RuntimeError`，异常逃逸导致整个服务启动失败。三个 bridge 的 `start()` 统一把 `OSError` 转为带原因的 `RuntimeError`，API 启动失败仅记警告日志，Web 服务正常启动，可在设置页查看状态并手动重试
+
+### 其他
+
+- **运行时日志落盘**：webapp 日志由仅控制台输出改为控制台 + `logs/webapp.log`（UTF-8），取流失败、下载超时/重试的具体原因（DNS 挂起 / 连接超时 / 空闲超时）均可事后查档定位；日志目录不可写时自动降级为仅控制台，不影响启动
 
 ## 0.6.2（2026-09-14）
 

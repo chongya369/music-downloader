@@ -25,6 +25,27 @@ for p in (str(_ROOT), str(_WEBAPP)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# 日志：控制台 + 落盘（UTF-8）。必须在任何 import 之前配置，且
+# force=True 强制 INFO 级别生效——即使第三方库预先配置过 root logger 也不被吞掉
+_log_handlers = [logging.StreamHandler(sys.stdout or sys.stderr)]
+# fnOS/服务场景安装目录只读：frozen 且注入了 APP_DATA_DIR 时，
+# 日志落到可写数据卷（data/logs）而非安装目录，保证 webapp.log 真实存在
+_log_dir = (Path(os.environ["APP_DATA_DIR"]).expanduser().resolve() / "logs"
+            if getattr(sys, "frozen", False) and os.environ.get("APP_DATA_DIR")
+            else _ROOT / "logs")
+try:
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(logging.FileHandler(str(_log_dir / "webapp.log"), encoding="utf-8"))
+except OSError as _e:
+    print(f"[webapp] 日志文件初始化失败，仅输出到控制台: {_e}", file=sys.stderr)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=_log_handlers,
+    force=True,
+)
+logger = logging.getLogger("webapp")
+
 
 def _parse_data_dir_arg(argv=None):
     """解析 --data-dir 启动参数；未知参数忽略，不影响其他启动方式"""
@@ -44,13 +65,6 @@ from core.providers.qq import bridge as qq_bridge
 from routes.api import api_bp
 from routes.views import views_bp
 from version import get_version
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-logger = logging.getLogger("webapp")
 
 # 客户端版本号（从项目根目录 VERSION 文件读取，统一管理）
 __version__ = get_version()

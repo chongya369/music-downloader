@@ -75,7 +75,18 @@ class NodeBridge:
                     "请从官方 Release 下载对应平台版本放到 source/api/ 目录"
                 )
             if sys.platform == "linux":
-                self.bin_path.chmod(0o755)
+                # NAS 套件安装目录常为 root 所有、运行用户无写权限，chmod 会抛
+                # PermissionError(EPERM)；执行位由打包/安装时设置，这里只做兜底：
+                # 失败则忽略，改用 X_OK 检查，仍不可执行才报错
+                try:
+                    self.bin_path.chmod(0o755)
+                except PermissionError:
+                    if not os.access(self.bin_path, os.X_OK):
+                        raise RuntimeError(
+                            f"无法为 {self.bin_path} 设置执行权限且文件不可执行\n"
+                            "请以 root 执行: chmod +x <该文件>"
+                        )
+                    logger.debug("%s 已可执行，跳过 chmod", self.bin_path.name)
             self.port = self._find_free_port(self._preferred_port)
             # 显式 HOST=127.0.0.1——server.js 中 HOST 缺省为空字符串，
             # 等效监听所有网卡；内置 API 无鉴权，暴露局域网有安全风险
@@ -103,11 +114,22 @@ class NodeBridge:
             self._log_path = log_path
             # spawn_protected 启用"父进程死亡即杀"（Win 作业对象 / Linux PDEATHSIG），
             # 下载器无论正常还是被强制退出，其启动的 API 进程都会被系统关闭
-            self.proc = _proc.spawn_protected(
-                [str(self.bin_path)], cwd=str(self.bin_dir), env=env,
-                stdout=log_fh if log_fh else subprocess.DEVNULL,
-                stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
-            )
+            # Popen 在 exec 被系统拒绝时抛 OSError（PermissionError / Exec
+            # format error / 缺 glibc 加载器 / WinError 193 等），统一转为
+            # RuntimeError 以兑现 start() 的异常契约——main() 与 Web 启停
+            # 路由均只捕获 RuntimeError，OSError 逃逸会导致整个服务启动失败
+            try:
+                self.proc = _proc.spawn_protected(
+                    [str(self.bin_path)], cwd=str(self.bin_dir), env=env,
+                    stdout=log_fh if log_fh else subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
+                )
+            except OSError as e:
+                self._close_log()
+                self.port = None
+                raise RuntimeError(
+                    f"API 进程启动失败（{e}），请检查二进制文件完整性与执行权限"
+                ) from e
             self.base_url = f"http://127.0.0.1:{self.port}"
             try:
                 self._wait_ready(self.timeout)
