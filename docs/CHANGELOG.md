@@ -6,44 +6,22 @@
 
 ### 重大变更
 
-- **音质档位扩展（网易云 / QQ）**：网易云新增 `jyeffect` / `dolby` / `vivid` / `jymaster` / `sky` 五档，其中 `jymaster` 进统一降级链、其余四档不进链（无对应权益时直接失败提示，不静默降档）；QQ 新增 `jymaster`（臻品母带，进链）与 `ogg640`（不进链，由客户端内部降 128 兜底）。`MusicProvider.QUALITY_ORDER` 首位插入 `jymaster`。
-- **`.ogg` 元数据完整写入**：新增 `write_ogg_tags`，字段集与 FLAC 逐行对齐（标题 / 歌手 / 专辑 / 年份 / 音轨号 / 碟号 / 专辑歌手 / 歌词 / 封面），容器经 `mutagen.File()` 嗅探 Vorbis / Opus 双兜底。封面须按 Vorbis Comment 规范写 `METADATA_BLOCK_PICTURE` —— mutagen 的 Ogg 容器没有 FLAC 那套 `add_picture`。
-- **下载任务控制**：新增单任务「暂停 / 继续 / 删除」与全局「暂停全部 / 继续全部」；暂停保留 `.part`、继续断点续传、删除即中止并清理临时文件。`Downloader.download()` 增设四段协作式中止检查（重试入口 / 发起连接前 / 每个数据分块 / 退避等待），响应延迟由「整首下完」降到亚秒级；新增 `paused` 状态并纳入去重与任务列表。
-
-### 功能
-
-- **任务控制接口**：新增 `POST /api/tasks/<pk>/pause|resume`、`DELETE /api/tasks/<pk>`、`POST /api/tasks/pause-all|resume-all`；`GET /api/tasks` 追加 `paused_all` / `has_active`，后者驱动导航栏「下载中 / 空闲」指示器。
-- **启动恢复**：进程重启时重建下载队列（`pending` 入队、中断的 `downloading` 回退 `pending` 后入队）；`paused` 刻意不恢复。
-- 三平台音质下拉按音质高→低排列（纯展示，不参与降级逻辑；QQ 保留 `hires` 并标注「同无损」）；设置页值域 `_VALID_LEVELS` 扩展至 10 档，新增档位保存不再被静默重置为空串。
+- **音质档位扩展**：网易云新增 5 档、QQ 新增 2 档（仅 `jymaster` 进统一降级链，其余档不进链、无权益时直接失败）。
+- **`.ogg` 元数据完整写入**：新增 `write_ogg_tags`，字段集与 FLAC 对齐（含封面，按 Vorbis Comment 写 `METADATA_BLOCK_PICTURE`）。
+- **下载任务控制**：单任务「暂停 / 继续 / 删除」+ 全局「暂停全部 / 继续全部」，新增 `paused` 状态与断点续传。
 
 ### 修复
 
-- **歌单同步因上游 null 字段整体崩溃**（`POST /api/sync/<pid>` 返回 500，`TypeError: sequence item 0: expected str instance, NoneType found`）：上游对已下架 / 失效曲目返回「键存在但值为 null」的结构，而 `dict.get(k, default)` 只在**键缺失**时生效。三层修复：解析层全字段归一（文本 `str(x or "")`、数值 `_to_int`）并改逐条 `try` / `continue` 取代列表推导式（单首脏数据不再中断整张歌单）；全仓 9 处 `.get(k, [])` / `.get(k, {})` 补 `or` 归一；无 `id` 的占位曲目在去重查询**之前**拦下并 `WARNING` 留痕（避免 `str(None) == "None"` 写入 `songs` 主键、把该歌永久卡成「已下载」）。
-- **失败写入 `None` 卡死任务**：`_mark_failed` 直接用入参构造 `Song`，而 `Song.name` 为 NOT NULL、`song_name` 列可为 NULL，`None` 在 `merge(Song(...))` 处抛 `IntegrityError`，且异常**早于** `task.status="failed"` → 任务卡在 `downloading` 且无任何失败记录。改为函数首行入口归一，单点防御全部 6 个调用方。
-- **空值透传造成的 500 与标签丢失**：`metadata.write_tags` 入口归一并新增 `_to_int` 处理 `dt` / `duration_ms`；网易云 `get_lyric` 的 null 归一为空串；`PUT /api/playlists/<pid>`（歌单名传 `null` 撞 NOT NULL）、`PUT /api/accounts/<aid>`、添加歌单 / 账号时字段传 `null` 直接 `.strip()` 等问题改为归一后校验。
-- **歌单同步失败返回 HTML 报错页**：`/api/sync/<pid>` 与 `/api/sync-all` 改为捕获异常返回 `{"code":1,"msg":...}`（HTTP 200），前端可正常提示。
-- **删除「小时限额等待」中的任务白占 worker**：该状态下任务为 `pending`，删除接口只清中止登记、等待循环又只认中止登记，单线程 worker 被白占满 30 分钟、后续任务集体停摆。等待循环改为回查任务行，5 秒内释放。
-- **暂停被失败标记覆盖**：暂停恰好落在「本例已注定失败」与「写库」之间时，任务会被改写为 `failed` 并留下失败记录；`_mark_failed` 增加 `paused` 优先判断。
-- **删除与入库竞态产生幽灵记录 / 孤儿文件**：`write_tags` 耗时可达数秒，期间删行仍会写入 `songs` 成功记录（下载历史看不到、却通过去重阻断该歌重下），本次产出也不被清理。入库前增加终检，并用 `DownloadOutcome.produced` 区分「本次真正产出」与「命中文件已存在提前返回」。
-- **中止登记泄漏误伤复用 pk 的新任务**：认领失败、全局暂停转 `paused`、任务行已消失三条路径未清中止登记，SQLite 复用 rowid 后残留的删除登记会让新任务被误中止并永久卡在 `downloading`。
-- 网易云 `get_song_urls` 空 `song_ids` 直接返回空列表，不再发一次注定失败、还要重试 3 次的批量请求。
-
-### 代码审查修复（28 项）
-
-对照《代码审查报告-2026-09-20》与《修复方案-2026-09-20》落地，语法级 0 缺陷（`py_compile` / `node --check` 全通过），全部为逻辑 / 边界 / 并发 / 类型契约类缺陷。逐条成因与改法见方案文档，此处按风险列名：
-
-- **高危（5）**：酷狗 `year` 字段遇整数型 `publish_date` 切片抛 `TypeError`；自动同步歌单缺 `isinstance` 守卫致整单静默中断；`_mark_failed` 的 `platform=None` 致任务永久卡 `downloading`；`_req_platform()` 无白名单致脏平台值落库污染两表；三平台 `_request` 返回点未归一到 dict。
-- **中危（15）**：酷狗热门歌单无页数上限可无限翻页；`ConnectionError` 直接抛致网络抖动被误判为鉴权失败而逐个换号；两处裸 `get_json(force=True)` 返回 HTML 400 页；前端 `api()` 未校验 `resp.ok`（5xx 可被误判为成功）；账号导入未防元素类型与 `enabled=null`；网易云扫码把网络瞬态误报为「MUSIC_U 无效」；gcid 磁盘缓存一次加载失败后本进程内不再重试；启动脚本三处确定性缺陷（bat 的 `&` 优先级、sh 的 `set -e` 死代码、只校验单个 API 二进制）并清理废弃 spec；Linux `preexec_fn` 在多线程父进程内 fork 不安全；QQ 专辑曲目数探测 8 线程共用 `Session`；`GET /api/songs` 的 `status` 非白名单值静默「不过滤」；各平台 `Session` 从不 `close()`；`_fit_path` 目录过长分支无日志；删除账号清空在途任务的 `account_id`；重试过滤缺平台维度。
-- **低危（8）**：`_abort` 登记补生命周期约束；`event.listen` 幂等保护；platform 归一化补 `accounts` 表；QQ `quality_key` 注解更正为 `int`；`_rank_of` 链外档位语义补注释；删除死代码 `Song.to_dict()`；fee 统计改用 `_safe_int`；前端 5 处轮询在页面隐藏时不发请求。
+- **歌单同步因上游 null 字段整体崩溃**（原返回 500）：解析层逐字段归一 + 逐条容错，无 `id` 占位曲目在去重前拦下。
+- **空值引发的故障**：失败写入 `None` 卡死任务、标签写不进去、若干接口 500、同步失败返回 HTML 报错页 —— 均改为入口归一 + 明确错误响应。
+- **任务状态与并发**：暂停被失败标记覆盖、删除与入库竞态产生幽灵记录 / 孤儿文件、删除限额等待中的任务白占 worker —— 均已修。
+- **代码审查 28 项**：类型与空值契约、参数与白名单校验、并发与资源（`preexec_fn` / Session 复用与泄漏）、不中断不失控（无限翻页 / 瞬时断连误换号 / 自动同步静默中断）四类，逐条见《修复方案-2026-09-20》。
 
 ### 其他
 
-- **接口语义实测（决定实现方式）**：`/song/download/url/v1` 的 `level` 必填，且多 id 会返回 HTTP 200 但 body 非 JSON（客户端按解析失败白重试约 9 秒）→ 高级档补链必须逐歌请求（请求数 = 1 + 缺失曲目数）；`/song/url/v1` 对未知 `level` 不报错而是静默降级 standard → 高级档必须显式传值。QQ 匿名请求 `file_type=8` 可拿到真实 OGG 文件（据此确认 `QUALITY_EXT[8] = "ogg"`），`file_type=1` 匿名无权限、越界值返回 422。
-- **补链实现约束与防御**：只针对试听接口未返回 `url` 的曲目；补链响应 `code != 200`、`data` 为空或 `url` 仍为空时保留原项；回填前比对返回 `id` 与请求 `id` 一致（防上游串号污染结果）。
-- **行为变更（空名曲目）**：曲名 / 歌单名为空不再静默兜底为「未知歌手 - 未知歌曲.mp3」，改为记一条明确失败（`error_msg="上游返回值为空，下载失败"`）；判定以单曲详情曲名为准，QQ / 酷狗无单曲详情接口、以任务记录名为准；恢复需手动「重试」（自动 / 定时同步不重试同歌单的 `failed` 终态）。添加歌单同理：上游歌单名为空直接拒绝（`code=1`），不再用 ID 兜底成 `18398083374` 这类无名记录。
-- **签名变更**：`Downloader.download()` 返回值 `Path | None` → `DownloadOutcome(path, produced)`。
-- **内部整理**：在途状态字面量收敛为 `models.ACTIVE_TASK_STATUSES`（含 `paused`）/ `RUNNABLE_TASK_STATUSES`，替换 `task_manager` / `routes` 的 8 处硬编码；移除从未被读取的 `TaskManager._current_pk`；`sync_all` 单歌单失败不再中断整批。
-- **文档与测试**：README 音质配置表按平台列出完整档位与降档链，`docs/技术文档.md` 补「分平台音质档位与取链路径」表与 `.ogg` 标签写入说明；新增 `.workbuddy/tests/test_quality_ext.py`（32 项）与接口探测脚本。
+- **行为变更**：曲名 / 歌单名为空不再兜底「未知歌曲」，改为记明确失败（恢复需手动重试；添加歌单空名直接拒绝）。
+- `Downloader.download()` 返回值改为 `DownloadOutcome(path, produced)`。
+- 新增任务控制接口与启动恢复；设置页值域扩展至 10 档；README / 技术文档已同步；新增 `test_quality_ext.py`（32 项）。
 
 ## 0.6.3（2026-09-17）
 
