@@ -156,9 +156,9 @@ set KG_BIN=api\kugou_api_win.exe
 set NCM_OK=1
 set QQ_OK=1
 set KG_OK=1
-if not exist "%NCM_BIN%" echo [WARN] Missing API binary: %NCM_BIN% (NetEase feature may be unavailable) & set NCM_OK=0
-if not exist "%QQ_BIN%" echo [WARN] Missing API binary: %QQ_BIN% (QQMusic feature may be unavailable) & set QQ_OK=0
-if not exist "%KG_BIN%" echo [WARN] Missing API binary: %KG_BIN% (KuGou feature may be unavailable) & set KG_OK=0
+if not exist "%NCM_BIN%" (echo [WARN] Missing API binary: %NCM_BIN% - NetEase feature may be unavailable & set NCM_OK=0)
+if not exist "%QQ_BIN%" (echo [WARN] Missing API binary: %QQ_BIN% - QQMusic feature may be unavailable & set QQ_OK=0)
+if not exist "%KG_BIN%" (echo [WARN] Missing API binary: %KG_BIN% - KuGou feature may be unavailable & set KG_OK=0)
 echo [STEP] API binary check done: NCM=%NCM_OK% QQ=%QQ_OK% KG=%KG_OK%
 
 echo.

@@ -12,6 +12,7 @@ API 地址每次请求时经 base_url 属性动态解析，无需手动指定。
 import logging
 import re
 import time
+import weakref
 from typing import Any
 
 import requests
@@ -27,6 +28,29 @@ def _to_int(value) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _join_artist_names(items) -> str:
+    """歌手数组（ar / artists）→ 'a/b/c' 文本，容忍 name 为 null 与非 dict 元素
+
+    上游对已下架/失效曲目会返回 {"ar": [{"name": null}]}：dict.get(k, default)
+    只在「键缺失」时给默认值，值为 null 时仍返回 None，直接 join 会抛
+    TypeError: sequence item 0: expected str instance, NoneType found。
+    此处统一收敛为 str 并整条剔除空名（'' 混入 join 会拼出 'a//b'）。
+    """
+    if not isinstance(items, list):
+        return ""
+    names = []
+    for a in items:
+        if not isinstance(a, dict):
+            continue
+        name = a.get("name")
+        if name is None:
+            continue
+        name = str(name).strip()
+        if name:
+            names.append(name)
+    return "/".join(names)
 
 
 # 官方常驻榜单 ID
@@ -48,13 +72,23 @@ OFFICIAL_TOPLISTS = {
 }
 
 # 音质等级 -> NeteaseCloudMusicApi level 参数值
+# 前 5 档为普通档（走 /song/url/v1 试听接口，现状零回归）；
+# 后 5 档为高级权益档（试听接口无 url 时逐歌调 /song/download/url/v1 补链）
 QUALITY_LEVEL = {
     "standard": "standard",  # 标准 128kbps
     "higher": "higher",      # 较高 192kbps
     "exhigh": "exhigh",      # 极高 320kbps MP3
     "lossless": "lossless",  # 无损 FLAC
     "hires": "hires",        # Hi-Res
+    "jymaster": "jymaster",  # 超清母带（SVIP；进统一降级链）
+    "jyeffect": "jyeffect",  # 高清臻音（SVIP）
+    "dolby": "dolby",        # 杜比全景声（SVIP）
+    "vivid": "vivid",        # 臻音全景声（SVIP）
+    "sky": "sky",            # 沉浸环绕声（SVIP）
 }
+
+# 需要 download 接口补链的高级档集合（这些档位的音源仅下载接口下发）
+_HI_LEVELS = frozenset({"jymaster", "jyeffect", "dolby", "vivid", "sky"})
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -86,6 +120,9 @@ class NeteaseClient:
         # 目标 http://127.0.0.1:port 在内网直连，显式关闭避免业务请求全走代理
         self.session.trust_env = False
         self.session.headers.update({"User-Agent": _UA})
+        # 工厂语义（get_provider 禁止缓存单例）：实例随调用结束丢弃，
+        # GC 时自动关闭连接池，避免每个调用点都要记得 close()
+        weakref.finalize(self, self.session.close)
         if cookie:
             self.set_cookie(cookie)
 
@@ -140,7 +177,10 @@ class NeteaseClient:
                 else:
                     resp = self.session.post(url, params=params, data=data, timeout=timeout)
                 resp.raise_for_status()
-                return resp.json()
+                # 返回点单点归一为 dict：上游改写成数组/字符串时调用点
+                # (body or {}).get(...) 兜不住（[] or {} 得 []），list 无 .get
+                body = resp.json()
+                return body if isinstance(body, dict) else {}
             except (requests.RequestException, ValueError) as e:
                 logger.warning("请求 %s 第 %d 次失败: %s", path, attempt, e)
                 if attempt < retries:
@@ -246,19 +286,32 @@ class NeteaseClient:
         # profile 包在 data 键里（实测 {"data":{"code":200,"profile":...}}），
         # 需读内层。retries=1 保证 803 响应在下一轮轮询（2.5s）前返回，
         # 避免下一轮查同一 key 得 800 过期、前端提前隐藏面板的竞态。
+        # 注意：MUSIC_U 只能经 set_cookie 写入 session header 供校验请求携带
+        # （_request 用 session.get/post 发送，无 header 即匿名校验、profile
+        # 必空），故 set_cookie 必须在校验之前、顺序不可调整。
         self.set_cookie(cookie)
-        try:
+        inner: dict = {}
+        # _request 已把 RequestException/ValueError 吞成 {"code": -1}，网络抖动
+        # 与 API 服务重启都表现为 code==-1；此处对网络瞬态重试一次，避免被
+        # code != 200 误判为「MUSIC_U 无效」而误导用户重新扫码
+        for _try in range(2):
             verify = self._request("/login/status",
                                    params={"timestamp": int(time.time() * 1000)},
                                    timeout=5, retries=1)
-        except Exception as e:
-            logger.warning("扫码后登录态校验异常: %s", e)
-            verify = None
-        if isinstance(verify, dict):
-            inner = verify.get("data") if isinstance(verify.get("data"), dict) else verify
-        else:
-            inner = {}
+            if isinstance(verify, dict) and isinstance(verify.get("data"), dict):
+                inner = verify.get("data")
+            elif isinstance(verify, dict):
+                inner = verify
+            else:
+                inner = {}
+            if inner.get("code") != -1:
+                break
         profile = inner.get("profile") if isinstance(inner, dict) else None
+        if inner.get("code") == -1:
+            # 网络瞬态而非凭证无效：提示重试，不误导重新扫码。
+            # （ok=false 时路由 ncm_qr_check 拦截，cookie 不会透传给前端）
+            return {"ok": False, "status": 4, "cookie": "",
+                    "msg": "登录态校验网络异常，请检查 API 服务后点击重试"}
         if inner.get("code") != 200 or not isinstance(profile, dict) or not profile:
             return {"ok": False, "status": 4, "cookie": cookie,
                     "msg": "扫码成功但登录态未生效（MUSIC_U 无效），请重新扫码或改用手动填入"}
@@ -342,9 +395,9 @@ class NeteaseClient:
         return [
             {
                 "id": item.get("id"),
-                "name": item.get("name"),
-                "description": item.get("description", ""),
-                "update_frequency": item.get("updateFrequency", ""),
+                "name": item.get("name") or "",
+                "description": item.get("description") or "",
+                "update_frequency": item.get("updateFrequency") or "",
                 "cover_img_url": (
                     item.get("picUrl")
                     or item.get("coverImgUrl")
@@ -352,7 +405,8 @@ class NeteaseClient:
                     or ""
                 ),
             }
-            for item in result.get("list", [])
+            for item in result.get("list") or []
+            if isinstance(item, dict)
         ]
 
     def get_playlist_detail(self, playlist_id: int, limit: int = 200) -> dict:
@@ -371,7 +425,13 @@ class NeteaseClient:
             logger.error("获取歌单 %s 详情失败: %s", playlist_id, result.get("msg"))
             return {}
 
-        playlist = result.get("playlist", {})
+        playlist = result.get("playlist")
+        if not isinstance(playlist, dict):
+            # playlist 缺失/为 null：视为「没拿到歌单」，返回空 dict 与 code!=200 同语义
+            # （不可用 or {} 伪装成"有效空歌单"——那会让调用方把 track_count 覆盖成 0）
+            logger.warning("歌单 %s 详情响应缺少 playlist（上游给出 %s），按获取失败处理",
+                           playlist_id, type(playlist).__name__)
+            return {}
         track_count = playlist.get("trackCount", 0)
 
         # 曲目来源：limit <= 1000 时 detail 一次拿全；
@@ -381,9 +441,21 @@ class NeteaseClient:
             raw_tracks = self._fetch_all_tracks(playlist_id, limit, track_count)
         if not raw_tracks:
             # 分页接口不可用/失败时回退 detail 自带的前 1000 首
-            raw_tracks = playlist.get("tracks", [])
+            raw_tracks = playlist.get("tracks") or []
 
-        tracks = [self._parse_track(t) for t in raw_tracks[:limit]]
+        # 逐首解析：单首脏数据不得中断整张歌单（原列表推导式无 per-item 容错），
+        # 且无 id 的失效占位曲目直接剔除（str(None) == "None" 会写进 Song 主键，
+        # 把该歌永久卡成"已下载"，整张歌单再也刷不进这首歌）
+        tracks = []
+        for t in raw_tracks[:limit]:
+            if not isinstance(t, dict):
+                continue
+            meta = self._parse_track(t)
+            if not meta.get("id"):
+                logger.warning("歌单 %s 存在无 id 曲目，已跳过: name=%r",
+                               playlist_id, meta.get("name"))
+                continue
+            tracks.append(meta)
         return {
             "id": playlist.get("id"),
             "name": playlist.get("name"),
@@ -424,25 +496,43 @@ class NeteaseClient:
 
     @staticmethod
     def _parse_track(t: dict) -> dict:
-        """解析曲目结构（/playlist/detail 与 /playlist/track/all 字段一致：ar/al/dt/fee）"""
-        artists = "/".join(ar.get("name", "") for ar in t.get("ar", []))
-        album = (t.get("al") or {}).get("name", "")
+        """解析曲目结构（/playlist/detail 与 /playlist/track/all 字段一致：ar/al/dt/fee）
+
+        全字段 null 归一（现场：/api/sync/18398083374 抛
+        TypeError: sequence item 0: expected str instance, NoneType found）。
+        上游失效/下架曲目会给出「键存在但值为 null」的结构，dict.get 的默认值
+        兜不住，故此处显式收敛：文本字段一律 str，数值字段一律 int，
+        保证返回值可直接入库（Song.name 为 NOT NULL 列，None 会抛 IntegrityError）。
+        """
+        al = t.get("al")
         return {
             "id": t.get("id"),
-            "name": t.get("name"),
-            "artists": artists,
-            "album": album,
-            "duration_ms": t.get("dt", 0),
-            # fee: 0=免费 1=VIP 4=购买专辑 8=低音质免费
-            "fee": t.get("fee", 0),
+            "name": str(t.get("name") or ""),
+            "artists": _join_artist_names(t.get("ar")),
+            "album": str((al.get("name") if isinstance(al, dict) else "") or ""),
+            "duration_ms": _to_int(t.get("dt")),
+            "fee": _to_int(t.get("fee")),
         }
 
     def get_song_urls(self, song_ids: list[int], level: str = "exhigh") -> list[dict]:
-        """批量获取歌曲下载链接"""
+        """批量获取歌曲下载链接
+
+        主路径恒为 /song/url/v1 试听接口批量（普通档与现状完全一致，零回归）；
+        高级档（_HI_LEVELS）下，试听接口未返回 url 的曲目再逐歌调
+        /song/download/url/v1 补链——该接口上游只接受单 id（2026-09-19 实测
+        逗号分隔多 id 返回「参数错误」），且 data 为单对象而非数组，
+        故必须逐歌请求（请求数 = 1 + 缺失曲目数）。
+
+        返回原始 data 列表（形状与现状一致，供 _transform.transform_song_urls
+        解析：url/type/size/freeTrialInfo/code/fee/level 字段齐备）。
+        """
+        if not song_ids:
+            return []
+        lv = QUALITY_LEVEL.get(level, "exhigh")
         ids_str = ",".join(str(s) for s in song_ids)
         result = self._request(
             "/song/url/v1",
-            params={"id": ids_str, "level": QUALITY_LEVEL.get(level, "exhigh")},
+            params={"id": ids_str, "level": lv},
         )
         if result.get("code") != 200:
             msg = result.get("msg") or result.get("message") or ""
@@ -461,7 +551,45 @@ class NeteaseClient:
                 }
                 for sid in song_ids
             ]
-        return result.get("data", [])
+        data = result.get("data") or []
+        if not isinstance(data, list):
+            # 防御：服务版本差异导致 data 非数组时退回空列表（同"缺项"语义）
+            logger.warning("歌曲下载链接响应 data 非数组: %s", type(data).__name__)
+            return []
+        if level in _HI_LEVELS:
+            self._fill_hi_level_urls(data, lv)
+        return data
+
+    def _fill_hi_level_urls(self, data: list[dict], level: str) -> None:
+        """高级档补链：对 data 中无 url 的曲目逐歌调下载接口，成功则就地回填
+
+        - 下载接口上游单 id 语义（批量实测返回参数错误），且响应 data 为
+          单对象；此处仍兼容数组形态做防御；
+        - 补链失败保留试听接口原项（通常无 url）：jymaster 由上层降级链
+          继续向低档回退，sky/vivid/dolby/jyeffect 不在链内 → 失败提示
+          （不静默降级）；
+        - 回填前校验 id 一致，防上游串号污染结果。
+        """
+        for idx, item in enumerate(data):
+            if not isinstance(item, dict) or item.get("url"):
+                continue
+            sid = item.get("id")
+            if sid is None:
+                continue
+            one = self._request("/song/download/url/v1",
+                                params={"id": sid, "level": level})
+            if not isinstance(one, dict) or one.get("code") != 200:
+                continue
+            fresh = one.get("data")
+            if isinstance(fresh, list):      # 兼容数组形态
+                fresh = fresh[0] if fresh else None
+            if not isinstance(fresh, dict) or not fresh.get("url"):
+                continue
+            if fresh.get("id") is not None and str(fresh.get("id")) != str(sid):
+                logger.warning("下载接口返回 id 与请求不一致，忽略补链: %s != %s",
+                               fresh.get("id"), sid)
+                continue
+            data[idx] = fresh
 
     def get_song_detail(self, song_ids: list[int]) -> list[dict]:
         """获取歌曲详情（含封面、专辑、发行时间）"""
@@ -470,7 +598,7 @@ class NeteaseClient:
         if result.get("code") != 200:
             logger.error("获取歌曲详情失败: %s", result.get("msg"))
             return []
-        return result.get("songs", [])
+        return result.get("songs") or []
 
     def get_album_meta(self, album_id) -> dict:
         """获取专辑元数据（专辑歌手 + 音轨号/碟号映射），按专辑 ID 缓存
@@ -506,9 +634,12 @@ class NeteaseClient:
         result = self._request("/lyric", params={"id": song_id})
         if result.get("code") != 200:
             return {"lrc": "", "tlyric": ""}
+        # lyric 键存在但值为 null（纯音乐/无歌词）→ or "" 归一，避免 None 透传到 mutagen
         return {
-            "lrc": (result.get("lrc") or {}).get("lyric", ""),
-            "tlyric": (result.get("tlyric") or {}).get("lyric", ""),
+            "lrc": ((result.get("lrc") or {}).get("lyric") or "")
+            if isinstance(result.get("lrc"), dict) else "",
+            "tlyric": ((result.get("tlyric") or {}).get("lyric") or "")
+            if isinstance(result.get("tlyric"), dict) else "",
         }
 
     def search_songs(self, keyword: str, limit: int = 50, offset: int = 0) -> dict:
@@ -535,18 +666,20 @@ class NeteaseClient:
             logger.warning("搜索单曲失败: %s", result.get("msg"))
             return {"items": [], "total": 0}
         body = result.get("result") or {}
-        songs = body.get("songs", [])
+        songs = body.get("songs") or []
         total = body.get("songCount", len(songs))
         out = []
         for s in songs:
-            artists = "/".join(ar.get("name", "") for ar in s.get("artists", []))
-            album = (s.get("album") or {}).get("name", "")
+            if not isinstance(s, dict):
+                continue
+            artists = _join_artist_names(s.get("artists"))
+            album = ((s.get("album") or {}).get("name") or "") if isinstance(s.get("album"), dict) else ""
             out.append({
                 "id": s.get("id"),
-                "name": s.get("name", ""),
+                "name": s.get("name") or "",
                 "artists": artists,
-                "album": album,
-                "fee": s.get("fee", 0),
+                "album": str(album),
+                "fee": _to_int(s.get("fee")),
             })
         return {"items": out, "total": total}
 
@@ -574,17 +707,19 @@ class NeteaseClient:
             logger.warning("搜索专辑失败: %s", result.get("msg"))
             return {"items": [], "total": 0}
         body = result.get("result") or {}
-        albums = body.get("albums", [])
+        albums = body.get("albums") or []
         total = body.get("albumCount", len(albums))
         out = []
         for a in albums:
-            artist = "/".join(ar.get("name", "") for ar in a.get("artists", []))
+            if not isinstance(a, dict):
+                continue
+            artist = _join_artist_names(a.get("artists"))
             out.append({
                 "id": a.get("id"),
-                "name": a.get("name", ""),
+                "name": a.get("name") or "",
                 "artist": artist,
-                "size": a.get("size", 0),
-                "publish_time": a.get("publishTime", 0),
+                "size": _to_int(a.get("size")),
+                "publish_time": _to_int(a.get("publishTime")),
             })
         return {"items": out, "total": total}
 
@@ -606,12 +741,13 @@ class NeteaseClient:
         out = []
         for s in songs:
             # /album 接口歌曲字段是 ar/al（非 artists/album）
-            artists = "/".join(ar.get("name", "") for ar in s.get("ar", []))
+            if not isinstance(s, dict):
+                continue
             out.append({
                 "id": s.get("id"),
-                "name": s.get("name", ""),
-                "artists": artists,
-                "fee": s.get("fee", 0),
+                "name": s.get("name") or "",
+                "artists": _join_artist_names(s.get("ar")),
+                "fee": _to_int(s.get("fee")),
             })
         return out
 
@@ -631,18 +767,19 @@ class NeteaseClient:
         return [
             {
                 "id": item.get("id"),
-                "name": item.get("name"),
-                "description": item.get("description", ""),
-                "update_frequency": item.get("updateFrequency", ""),
+                "name": item.get("name") or "",
+                "description": item.get("description") or "",
+                "update_frequency": item.get("updateFrequency") or "",
                 "cover_img_url": (
                     item.get("picUrl")
                     or item.get("coverImgUrl")
                     or item.get("coverUrl")
                     or ""
                 ),
-                "track_count": item.get("trackCount", 0),
+                "track_count": _to_int(item.get("trackCount")),
             }
-            for item in result.get("list", [])
+            for item in result.get("list") or []
+            if isinstance(item, dict)
         ]
 
     def get_hot_playlists(self, cat: str = "全部", limit: int = 30, order: str = "hot", offset: int = 0) -> tuple[list[dict], int]:
@@ -666,19 +803,21 @@ class NeteaseClient:
         playlists = [
             {
                 "id": item.get("id"),
-                "name": item.get("name"),
+                "name": item.get("name") or "",
                 "cover_img_url": (
                     item.get("picUrl")
                     or item.get("coverImgUrl")
                     or item.get("coverUrl")
                     or ""
                 ),
-                "play_count": item.get("playCount", 0),
-                "track_count": item.get("trackCount", 0),
-                "creator": (item.get("creator") or {}).get("nickname", ""),
-                "description": item.get("description", "") or "",
+                "play_count": _to_int(item.get("playCount")),
+                "track_count": _to_int(item.get("trackCount")),
+                "creator": ((item.get("creator") or {}).get("nickname") or "")
+                if isinstance(item.get("creator"), dict) else "",
+                "description": item.get("description") or "",
             }
-            for item in result.get("playlists", [])
+            for item in result.get("playlists") or []
+            if isinstance(item, dict)
         ]
         return playlists, total
 
@@ -694,12 +833,13 @@ class NeteaseClient:
             return []
         return [
             {
-                "name": item.get("name"),
-                "resource_type": item.get("resourceType", ""),
-                "category_group": item.get("categoryGroup", ""),
+                "name": item.get("name") or "",
+                "resource_type": item.get("resourceType") or "",
+                "category_group": item.get("categoryGroup") or "",
                 "hot": item.get("hot", False),
             }
-            for item in result.get("sub", [])
+            for item in result.get("sub") or []
+            if isinstance(item, dict)
         ]
 
 

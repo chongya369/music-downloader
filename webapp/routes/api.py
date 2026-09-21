@@ -1,17 +1,22 @@
 """JSON API 路由
 
-接口列表：
+接口列表（仅列常用主路径；完整路由见本文件 @api_bp.route 定义）：
 - GET    /api/playlists           获取关注的歌单列表
 - GET    /api/toplists            获取网易云所有官方榜单（供添加选择）
 - POST   /api/playlists           添加歌单（支持分享链接自动解析 ID）
-- PUT    /api/playlists/<id>      更新歌单设置（启用/limit）
-- DELETE /api/playlists/<id>      取消关注
-- POST   /api/sync/<id>           立即同步某歌单
+- PUT    /api/playlists/<pid>     更新歌单设置（启用/limit）
+- DELETE /api/playlists/<pid>     取消关注
+- POST   /api/sync/<pid>          立即同步某歌单
 - POST   /api/sync-all            同步所有已启用歌单
 - GET    /api/songs               分页查询下载历史
-- DELETE /api/songs/<id>          删除记录（?delete_file=1 删文件并级联删除所有关联记录）
-- POST   /api/retry               重试失败歌曲（支持单首/全部）
+- DELETE /api/songs/<pk>          删除记录（?delete_file=1 删文件并级联删除所有关联记录）
+- POST   /api/retry               重试失败歌曲（支持单首/全部，可带 platform 限定平台）
 - GET    /api/tasks               获取当前活跃任务进度
+- POST   /api/tasks/<pk>/pause    暂停指定下载任务（保留 .part 断点）
+- POST   /api/tasks/<pk>/resume   继续指定下载任务（断点续传）
+- DELETE /api/tasks/<pk>          删除指定下载任务（中止传输并清理临时文件）
+- POST   /api/tasks/pause-all     暂停全部下载任务
+- POST   /api/tasks/resume-all    继续全部下载任务
 - GET    /api/stats               获取统计数据（总览页用）
 - GET    /api/settings            获取配置
 - PUT    /api/settings            保存配置
@@ -25,7 +30,7 @@
 - POST   /api/qq/qr/check         轮询QQ音乐扫码登录状态（成功含 cookie）
 - POST   /api/ncm/qr/create       生成网易云扫码登录二维码
 - POST   /api/ncm/qr/check        轮询网易云扫码登录状态（成功含 cookie）
-- POST   /api/accounts/<id>/test  测试账号登录（netease/qq 平台）
+- POST   /api/accounts/<aid>/test 测试账号登录（netease/qq 平台）
 """
 
 import logging
@@ -38,7 +43,7 @@ from flask import Blueprint, current_app, jsonify, request, Response, session
 from sqlalchemy import func
 
 from auth import current_user
-from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for
+from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for, ACTIVE_TASK_STATUSES
 from core.providers.base import MusicProvider
 from core.providers.netease.client import OFFICIAL_TOPLISTS
 from core.providers.netease.parse_links import parse_playlist_id
@@ -240,11 +245,17 @@ def _get_client(platform: str = "netease") -> MusicProvider:
 
 
 def _req_platform() -> str:
-    """从请求中读取平台标识（POST 取 body.platform，GET 取 query.platform），默认 netease"""
+    """从请求中读取平台标识（POST 取 body.platform，GET 取 query.platform）
+
+    非白名单值一律回退 netease（单点防御：download_single_song 不经
+    get_provider 校验，脏值会一路落库污染 DownloadTask/Song.platform）。
+    """
     if request.method == "POST":
         data = _json_body()
-        return (data.get("platform") or "").strip().lower() or "netease"
-    return (request.args.get("platform") or "").strip().lower() or "netease"
+        p = (data.get("platform") or "").strip().lower() or "netease"
+    else:
+        p = (request.args.get("platform") or "").strip().lower() or "netease"
+    return p if p in PLATFORMS else "netease"
 
 
 def _safe_int(value, default: int, lo: int | None = None, hi: int | None = None) -> int:
@@ -302,7 +313,7 @@ def add_playlist():
          "platform": "netease" / "qq" / "kugou"}
     """
     data = _json_body()
-    source = data.get("source", "").strip()
+    source = (data.get("source") or "").strip()
     pl_type = data.get("type", "user")
     limit = _safe_int(data.get("limit", 100), 100, lo=1, hi=9999)
     platform = (data.get("platform") or "").strip().lower() or "netease"
@@ -335,7 +346,11 @@ def add_playlist():
         detail = client.get_playlist_detail(pid, limit=1)
         if not detail:
             return jsonify({"code": 1, "msg": "无法获取歌单信息，请检查 ID 或 Cookie"})
-        name = detail.get("name", str(pid))
+        # 上游歌单名为空（键存在值为 null）时不再回落 str(pid)：Playlist.name 是
+        # nullable=False，"18398083374" 这种无名记录同样是脏数据，明确拒绝更一致
+        name = detail.get("name")
+        if not (name or "").strip():
+            return jsonify({"code": 1, "msg": "上游返回歌单信息为空"}), 200
         track_count = detail.get("track_count", 0)
     except ValueError as e:
         return jsonify({"code": 1, "msg": str(e)})
@@ -361,21 +376,28 @@ def add_playlist():
 def update_playlist(pid: int):
     """更新歌单设置（enabled / limit_count / name）"""
     # platform 优先从 body 取、缺失回退 query（向后兼容，老脚本不传 platform
-    # 仍按原逻辑 Playlist.query.get(pid)），避免同 ID 跨平台歌单混淆
-    data = request.get_json(force=True)
-    body = data if isinstance(data, dict) else {}
+    # 仍按原逻辑 Playlist.query.get(pid)），避免同 ID 跨平台歌单混淆。
+    # 统一走 _json_body()（silent=True + isinstance 归一）：原
+    # request.get_json(force=True) 在空体/非法 JSON 时抛 BadRequest，
+    # Flask 返回 HTML 400 页，前端 resp.json() 抛 SyntaxError
+    body = _json_body()
     platform = (body.get("platform") or request.args.get("platform") or "").strip()
     pl = (Playlist.query.filter_by(id=pid, platform=platform).first()
           if platform else Playlist.query.get(pid))
     if not pl:
         return jsonify({"code": 1, "msg": "歌单不存在"})
 
-    if "enabled" in data:
-        pl.enabled = bool(data["enabled"])
-    if "limit_count" in data:
-        pl.limit_count = _safe_int(data["limit_count"], pl.limit_count, lo=1, hi=9999)
-    if "name" in data:
-        pl.name = data["name"]
+    # 统一用 body（非 dict 时为空 dict），避免 data 为 list/标量时下标或 .get 崩 500
+    if "enabled" in body:
+        pl.enabled = bool(body["enabled"])
+    if "limit_count" in body:
+        pl.limit_count = _safe_int(body["limit_count"], pl.limit_count, lo=1, hi=9999)
+    if "name" in body:
+        # 拒绝空/None：Playlist.name 是 NOT NULL，None 会抛 IntegrityError 500
+        new_name = (body.get("name") or "").strip()
+        if not new_name:
+            return jsonify({"code": 1, "msg": "歌单名不能为空"})
+        pl.name = new_name
     db.session.commit()
     return jsonify({"code": 0, "data": pl.to_dict()})
 
@@ -406,7 +428,12 @@ def sync_playlist(pid: int):
     if not pl:
         return jsonify({"code": 1, "msg": "歌单不存在"})
     tm = _get_task_manager()
-    count = tm.sync_playlist(pid)
+    # 兜底为业务错误码：上游/解析层意外异常时前端能正常提示，而不是弹 HTML 报错页
+    try:
+        count = tm.sync_playlist(pid)
+    except Exception as e:
+        logger.exception("同步歌单 %s 失败: %s", pid, e)
+        return jsonify({"code": 1, "msg": f"同步失败: {e}"}), 200
     return jsonify({"code": 0, "msg": f"已加入 {count} 首新歌到下载队列"})
 
 
@@ -414,7 +441,11 @@ def sync_playlist(pid: int):
 def sync_all():
     """同步所有已启用的歌单"""
     tm = _get_task_manager()
-    count = tm.sync_all()
+    try:
+        count = tm.sync_all()
+    except Exception as e:
+        logger.exception("同步全部歌单失败: %s", e)
+        return jsonify({"code": 1, "msg": f"同步失败: {e}"}), 200
     return jsonify({"code": 0, "msg": f"已加入 {count} 首新歌到下载队列"})
 
 
@@ -439,9 +470,11 @@ def get_songs():
     status = request.args.get("status", "")
     keyword = request.args.get("keyword", "").strip()
 
-    # download_tasks.status: done/skipped/failed/pending/downloading
+    # download_tasks.status: done/skipped/failed/pending/downloading/paused
     # 前端筛选 status: success/failed/skipped
     # 映射：success → done, skipped → skipped, failed → failed
+    # 注意：无筛选时不按状态过滤，因此在途任务（pending/downloading/paused）
+    # 也会出现在下载历史「全部」视图，display_status 原样为 paused
     # JOIN 补 platform 条件：两平台并存后防止跨平台 song_id 撞号导致文件信息张冠李戴
     query = db.session.query(
         DownloadTask, Song
@@ -449,13 +482,16 @@ def get_songs():
         Song, db.and_(DownloadTask.song_id == Song.id, DownloadTask.platform == Song.platform)
     )
 
+    # 白名单映射：未列出的值显式 400，避免 "?status=pending" 这类未知值
+    # 静默不进入任何分支 → 返回全部记录，与调用方语义正好相反
+    status_map = {"success": "done", "skipped": "skipped", "failed": "failed"}
     if status:
-        if status == "success":
-            query = query.filter(DownloadTask.status == "done")
-        elif status == "skipped":
-            query = query.filter(DownloadTask.status == "skipped")
-        elif status == "failed":
-            query = query.filter(DownloadTask.status == "failed")
+        mapped = status_map.get(status)
+        if mapped is None:
+            return jsonify({"code": 1,
+                            "msg": f"无效的 status 参数: {status}"
+                                   f"（可选: success/skipped/failed）"}), 400
+        query = query.filter(DownloadTask.status == mapped)
 
     if keyword:
         like = f"%{keyword}%"
@@ -535,22 +571,26 @@ def delete_song(pk: int):
     - delete_file=1：先删本地文件，再级联删除同 (song_id, platform) 的所有
       download_tasks 记录（done/failed/skipped）及 songs 表记录；
       文件删除失败则整体中断，数据库不动。
-    - 两种模式均要求该歌曲无 pending/downloading 任务，避免与下载中的
-      worker 竞态（任务行/Song 行被删后 worker 状态更新落空）。
+    - 两种模式均要求该歌曲无未结束任务（pending/downloading/paused），避免与
+      下载中的 worker 竞态（任务行/Song 行被删后 worker 状态更新落空）。
     """
     task = DownloadTask.query.get(pk)
     if not task:
         return jsonify({"code": 1, "msg": "记录不存在"})
 
-    # 前置阻断：该歌曲存在进行中的任务（含本记录自身）时禁止删除，
+    # 前置阻断：该歌曲存在未结束的任务（含本记录自身）时禁止删除，
     # 两种模式共用——级联删除会删掉进行中的任务行，仅删记录则本行
     # 就是进行中的任务，均会与 worker 竞态导致状态更新落空
     active = DownloadTask.query.filter(
         DownloadTask.song_id == task.song_id,
         DownloadTask.platform == task.platform,
-        DownloadTask.status.in_(["pending", "downloading"]),
+        DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
     ).first()
     if active:
+        # 按实际状态区分提示：paused 任务并非"正在下载"，
+        # 笼统说"正在下载中"会让用户困惑该去哪里处理
+        if active.status == "paused":
+            return jsonify({"code": 1, "msg": "该歌曲存在已暂停的下载任务，请先在「下载任务」中继续或删除后再删除记录"})
         return jsonify({"code": 1, "msg": "该歌曲正在下载中，请等待完成后再删除"})
 
     delete_file = request.args.get("delete_file") in ("1", "true", "True")
@@ -662,12 +702,16 @@ def retry_failed():
 
     请求体：
         {"song_ids": [1,2,3]}  指定重试
+        {"song_ids": [1,2,3], "platform": "netease"}  指定平台重试
         {} 或 {"song_ids": null}  全部重试
+    不传 platform 时行为与旧版一致（全部平台）；传 platform 时仅重试该平台
+    （Song 为 (id, platform) 复合主键，同 id 双平台并存时避免误重试）
     """
     data = _json_body()
     song_ids = data.get("song_ids")
+    platform = (data.get("platform") or "").strip() or None
     tm = _get_task_manager()
-    count = tm.retry_failed(song_ids)
+    count = tm.retry_failed(song_ids, platform)
     if count == 0:
         return jsonify({"code": 0, "msg": "没有需要重试的歌曲"})
     return jsonify({"code": 0, "msg": f"已加入 {count} 首到重试队列"})
@@ -678,9 +722,65 @@ def retry_failed():
 # ======================================================================
 @api_bp.route("/tasks")
 def get_tasks():
-    """获取当前活跃任务（pending + downloading）"""
+    """获取当前活跃任务（pending + downloading + paused）
+
+    额外返回两个全局标志：
+        paused_all: 是否处于「暂停全部」状态
+        has_active: 是否存在未暂停的在途任务（驱动导航栏"下载中/空闲"指示器，
+                    避免全部暂停时恒显"下载中"）
+    """
     tm = _get_task_manager()
-    return jsonify({"code": 0, "data": tm.get_active_tasks()})
+    return jsonify({
+        "code": 0,
+        "data": tm.get_active_tasks(),
+        "paused_all": tm.is_globally_paused(),
+        "has_active": tm.has_active_task(),
+    })
+
+
+@api_bp.route("/tasks/<int:pk>/pause", methods=["POST"])
+def pause_task(pk: int):
+    """暂停指定下载任务"""
+    tm = _get_task_manager()
+    ok, msg = tm.pause_task(pk)
+    return jsonify({"code": 0 if ok else 1, "msg": msg})
+
+
+@api_bp.route("/tasks/<int:pk>/resume", methods=["POST"])
+def resume_task(pk: int):
+    """继续（恢复）指定已暂停任务"""
+    tm = _get_task_manager()
+    ok, msg = tm.resume_task(pk)
+    return jsonify({"code": 0 if ok else 1, "msg": msg})
+
+
+@api_bp.route("/tasks/<int:pk>", methods=["DELETE"])
+def delete_task(pk: int):
+    """删除指定下载任务
+
+    下载中的任务会被中止，残留 .part 临时文件由 worker 收尾清理。
+    注意与 DELETE /api/songs/<pk> 的区别：本接口删的是"任务"，
+    不动 songs 表（下载历史记录）。
+    """
+    tm = _get_task_manager()
+    ok, msg = tm.delete_task(pk)
+    return jsonify({"code": 0 if ok else 1, "msg": msg})
+
+
+@api_bp.route("/tasks/pause-all", methods=["POST"])
+def pause_all_tasks():
+    """暂停全部在途任务"""
+    tm = _get_task_manager()
+    n = tm.pause_all()
+    return jsonify({"code": 0, "msg": f"已暂停 {n} 个任务" if n else "没有可暂停的任务"})
+
+
+@api_bp.route("/tasks/resume-all", methods=["POST"])
+def resume_all_tasks():
+    """继续全部已暂停任务"""
+    tm = _get_task_manager()
+    n = tm.resume_all()
+    return jsonify({"code": 0, "msg": f"已继续 {n} 个任务" if n else "没有已暂停的任务"})
 
 
 # ======================================================================
@@ -754,8 +854,14 @@ _NUMERIC_SETTINGS = {
 }
 
 # 音质档位设置项（档位值沿用网易云语义）与合法值域
+# 三平台共用值域：各平台下拉为其子集（QQ 独有 ogg640，网易云独有
+# jyeffect/dolby/vivid/sky，酷狗沿用普通档）；未列出的档位会在保存时
+# 被重置为空串，新增档位必须同步补进本表
 _LEVEL_SETTINGS = {"level_netease", "level_qq", "level_kugou"}
-_VALID_LEVELS = {"standard", "exhigh", "lossless", "hires"}
+_VALID_LEVELS = {
+    "standard", "exhigh", "lossless", "hires",
+    "jymaster", "ogg640", "jyeffect", "dolby", "vivid", "sky",
+}
 
 
 @api_bp.route("/settings", methods=["PUT"])
@@ -767,8 +873,8 @@ def save_settings():
     ncm_api_port 修改需在API服务停止状态下进行。
     """
     from models import DEFAULT_SETTINGS
-    data = request.get_json(force=True)
-    if not isinstance(data, dict):          # JSON 数组体会让后续 data.items() 抛 500
+    data = _json_body()
+    if not isinstance(data, dict):          # 保留原防御（_json_body 已保证 dict，此检查恒真，0 成本）
         return jsonify({"code": 1, "msg": "请求体必须是 JSON 对象"}), 400
     allowed = set(DEFAULT_SETTINGS.keys())
 
@@ -1067,11 +1173,12 @@ def add_account():
     网易云/QQ/酷狗添加后自动测试登录，回填昵称/会员信息；其他平台暂不自动登录。
     """
     data = _json_body()
-    platform = data.get("platform", "netease").strip() or "netease"
+    # 统一 (x or "") 归一：JSON 传 null 时 .get 的默认值不生效，直接 .strip() 会 500
+    platform = (data.get("platform") or "netease").strip() or "netease"
     if platform not in PLATFORMS:
         return jsonify({"code": 1, "msg": f"不支持的平台: {platform}，可选: {PLATFORM_NAMES}"})
-    name = data.get("name", "").strip()
-    cookie = data.get("cookie", "").strip()
+    name = (data.get("name") or "").strip()
+    cookie = (data.get("cookie") or "").strip()
     quota_limit = _safe_int(data.get("quota_limit", 0), 0, lo=0, hi=1000000)
 
     if not name:
@@ -1134,7 +1241,11 @@ def update_account(aid: int):
 
     data = _json_body()
     if "name" in data:
-        acc.name = data["name"]
+        # 拒绝空/None：Account.name 是 NOT NULL，None 会抛 IntegrityError 500
+        new_name = (data.get("name") or "").strip()
+        if not new_name:
+            return jsonify({"code": 1, "msg": "账号别名不能为空"})
+        acc.name = new_name
     if "quota_limit" in data:
         acc.quota_limit = _safe_int(data["quota_limit"], acc.quota_limit, lo=0, hi=1000000)
     if "enabled" in data:
@@ -1157,9 +1268,15 @@ def delete_account(aid: int):
     if not acc:
         return jsonify({"code": 1, "msg": "账号不存在"})
     name = acc.name
-    # 解除歌曲和任务的关联
+    # 解除歌曲和任务的关联。
+    # 在途任务（pending/downloading/paused）刻意保留 account_id：worker 完成后
+    # 会把 account_id 写回，此刻清空既丢失归属又会产生"已删除账号"的悬空引用；
+    # 已完成/失败/跳过任务是终结态，解绑安全
     Song.query.filter_by(account_id=aid).update({"account_id": None})
-    DownloadTask.query.filter_by(account_id=aid).update({"account_id": None})
+    DownloadTask.query.filter(
+        DownloadTask.account_id == aid,
+        ~DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
+    ).update({"account_id": None}, synchronize_session=False)
     db.session.delete(acc)
     db.session.commit()
     logger.info("删除账号: %s (id=%s)", name, aid)
@@ -1218,6 +1335,10 @@ def import_accounts():
     imported = 0
     skipped = 0
     for a in accounts:
+        # 元素类型守卫：list 内混入 str/数字时 a.get(...) 抛 AttributeError → 500
+        if not isinstance(a, dict):
+            skipped += 1
+            continue
         name = (a.get("name") or "").strip()
         cookie = (a.get("cookie") or "").strip()
         if not name or not cookie:
@@ -1230,15 +1351,19 @@ def import_accounts():
         if Account.query.filter_by(platform=platform, name=name).first():
             skipped += 1
             continue
+        # enabled 归一：键存在值为 null 时 .get 默认值不生效（返回 None 写进
+        # Boolean 列），显式把 None 视作默认 True
+        enabled_raw = a.get("enabled")
+        enabled = bool(True if enabled_raw is None else enabled_raw)
         acc = Account(
             platform=platform,
             name=name,
             cookie=cookie,
-            nickname=a.get("nickname", ""),
+            nickname=(a.get("nickname") or ""),
             vip_type=_safe_int(a.get("vip_type", 0), 0, lo=0),
             quota_limit=_safe_int(a.get("quota_limit", 0), 0, lo=0, hi=1000000),
             sort_order=_safe_int(a.get("sort_order", 0), 0, lo=0),
-            enabled=a.get("enabled", True),
+            enabled=enabled,
         )
         # 解析会员到期时间
         expire_str = a.get("vip_expire_at")
@@ -1505,7 +1630,7 @@ def discover_search():
         client = _get_client(platform)
         if search_type == "album":
             res = client.search_albums(keyword, limit=limit, offset=offset)
-            items = res.get("items", [])
+            items = res.get("items") or []
             total = res.get("total", 0)
             pages = (total + limit - 1) // limit if limit > 0 else 0
             return jsonify({
@@ -1520,7 +1645,7 @@ def discover_search():
             })
         else:
             res = client.search_songs(keyword, limit=limit, offset=offset)
-            items = res.get("items", [])
+            items = res.get("items") or []
             total = res.get("total", 0)
             pages = (total + limit - 1) // limit if limit > 0 else 0
     except Exception as e:
@@ -1539,7 +1664,7 @@ def discover_search():
             pending_rows = db.session.query(DownloadTask.song_id).filter(
                 DownloadTask.song_id.in_(ids),
                 DownloadTask.platform == platform,
-                DownloadTask.status.in_(["pending", "downloading"]),
+                DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
             ).all()
             downloaded_ids |= {r[0] for r in pending_rows}
 

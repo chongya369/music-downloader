@@ -25,6 +25,7 @@ import logging
 import re
 import time
 import urllib.parse
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -35,21 +36,29 @@ from . import bridge
 logger = logging.getLogger(__name__)
 
 # 统一音质等级（网易云语义）-> 服务端 file_type 整型枚举
-# （EnumIntMapping 按成员位置索引：13=MP3_128, 12=MP3_320, 7=FLAC, 1=MASTER）
-# 刻意不映射 m4a/ape 档：输出仅 mp3/flac，复用现有 MP3/FLAC 标签写入能力
+# （EnumIntMapping 按成员位置索引：13=MP3_128, 12=MP3_320, 8=OGG_640,
+#  7=FLAC, 1=MASTER）
+# 刻意不映射 m4a/ape 档：输出仅 mp3/flac/ogg，复用现有标签写入能力
+# jymaster(1) 进入统一降级链（最高档，失败沿链向低档回退）；
+# ogg640(8) 不在 QUALITY_ORDER 内，不进降级链，失败由内部降 128 兜底
 QUALITY_LEVEL = {
     "standard": 13,   # 标准 128kbps mp3 (M500)
     "higher": 12,     # 较高 320kbps mp3 (M800)
     "exhigh": 12,     # 极高 320kbps mp3 (M800)
     "lossless": 7,    # 无损 flac (F000)
-    "hires": 7,       # Hi-Res（映射 flac；MASTER=1 需账号权益，暂不启用）
+    "hires": 7,       # Hi-Res（映射 flac）
+    "jymaster": 1,    # 臻品母带 flac (MASTER, FLAC 24bit/192kHz)，需豪华绿钻权益
+    "ogg640": 8,      # SQ 无损 OGG 640k (OGG_640)，该档不进统一降级链
 }
 
-# file_type -> 文件扩展名
+# file_type -> 文件扩展名（必须与 QUALITY_LEVEL 同步加档，
+# 漏加会被 get_song_urls 的 QUALITY_EXT.get(quality, "mp3") 静默错标扩展名）
 QUALITY_EXT = {
     13: "mp3",
     12: "mp3",
     7: "flac",
+    1: "flac",
+    8: "ogg",
 }
 
 # 实际 file_type -> 统一音质档位名（level 回填用；12 归 exhigh）
@@ -57,6 +66,8 @@ _LEVEL_BY_QUALITY = {
     13: "standard",
     12: "exhigh",
     7: "lossless",
+    1: "jymaster",
+    8: "ogg640",
 }
 
 # get_song_urls 结果码（UrlinfoItem.result）
@@ -103,10 +114,27 @@ def _album_cover_url(album_mid: str) -> str:
 
 
 def _singers_text(singer) -> str:
-    """singer 数组 → 'a/b/c' 文本"""
+    """singer 数组 → 'a/b/c' 文本（容忍 name 为 null / 元素非 dict）
+
+    上游可能返回 {"singer": [{"name": null}]}：dict.get(k, default) 只在键缺失时
+    给默认值，值为 null 时仍返回 None，直接 join 会抛 TypeError。
+    此处统一收敛为 str 并整条剔除空名（'' 混入会拼出 'a//b'）。
+    """
     if isinstance(singer, str):
         return singer
-    return "/".join(s.get("name", "") for s in (singer or []) if isinstance(s, dict))
+    if not isinstance(singer, list):
+        return ""
+    names = []
+    for s in singer:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("name")
+        if name is None:
+            continue
+        name = str(name).strip()
+        if name:
+            names.append(name)
+    return "/".join(names)
 
 
 def _first_singer(singer) -> str:
@@ -143,6 +171,9 @@ class QqClient:
         # 显式关闭代理环境变量读取，避免本机 API 请求走代理
         self.session.trust_env = False
         self.session.headers.update({"User-Agent": _UA})
+        # 工厂语义（get_provider 禁止缓存单例）：实例随调用结束丢弃，
+        # GC 时自动关闭连接池，避免每个调用点都要记得 close()
+        weakref.finalize(self, self.session.close)
         if cookie:
             self.set_cookie(cookie)
 
@@ -213,15 +244,19 @@ class QqClient:
     # 底层请求
     # ------------------------------------------------------------------
     def _request(self, path: str, params: dict | None = None, body: dict | None = None,
-                 retries: int = 3, timeout: int = 15) -> dict:
+                 retries: int = 3, timeout: int = 15, session=None) -> dict:
         """调用 QQ音乐 API 接口，返回 data 部分
 
         - 连接失败：抛 RuntimeError（中文提示，供上层捕获展示）
         - 上游限流（HTTP 429）：等待 1.5s 重试，重试耗尽返回 {}
         - 凭证无效（401）/ 参数错误（422）：确定性错误不重试，记日志返回 {}
         - 其他失败：记日志返回 {}
+        - session：可选独立 Session（默认主 Session）。并发探测
+          （_probe_album_size）传入独立 Session，避免多线程改写
+          self.session 的 headers/CookieJar 叠加成串号状态
         """
-        method = self.session.post if body is not None else self.session.get
+        sess = session or self.session
+        method = sess.post if body is not None else sess.get
         kwargs = {"timeout": timeout}
         if params:
             kwargs["params"] = params
@@ -254,8 +289,18 @@ class QqClient:
                     logger.warning("QQ音乐API业务失败: %s %s", path,
                                    (data or {}).get("msg") if isinstance(data, dict) else data)
                     return {}
-                return data.get("data") or {}
+                # 返回点单点归一为 dict：上游 data 为数组时原样返回会违反
+                # -> dict 签名，调用点 result.get(...) 直接抛 AttributeError
+                payload = data.get("data")
+                return payload if isinstance(payload, dict) else {}
             except requests.exceptions.ConnectionError as e:
+                # 与 kugou/client.py 对齐：瞬时断连先按既有退避重试，
+                # 耗尽后才抛 RuntimeError，避免网络抖动被误判为鉴权失败而换号
+                logger.warning("连接QQ音乐API失败 %s 第 %d/%d 次: %s",
+                               path, attempt, retries, e)
+                if attempt < retries:
+                    time.sleep(1.5)
+                    continue
                 raise RuntimeError(
                     f"无法连接QQ音乐API服务（{self.base_url}），"
                     f"请检查服务是否运行或地址配置是否正确: {e}"
@@ -519,12 +564,15 @@ class QqClient:
         total = result.get("total_num") or result.get("estimate_sum") or len(songs)
         out = []
         for s in songs:
+            if not isinstance(s, dict):
+                continue
             out.append({
                 "id": s.get("mid"),
                 # title 含 <em> 高亮标记，优先取 name
                 "name": s.get("name") or s.get("title") or "",
                 "artists": _singers_text(s.get("singer")),
-                "album": (s.get("album") or {}).get("name", "") if isinstance(s.get("album"), dict) else "",
+                "album": ((s.get("album") or {}).get("name") or "")
+                if isinstance(s.get("album"), dict) else "",
                 "fee": 1 if ((s.get("pay") or {}).get("pay_play")) == 1 else 0,
             })
         return {"items": out, "total": total}
@@ -547,6 +595,8 @@ class QqClient:
         total = result.get("total_num") or result.get("estimate_sum") or len(albums)
         out = []
         for a in albums:
+            if not isinstance(a, dict):
+                continue
             artist = _singers_text(a.get("singer")) or _singers_text(a.get("singer_list"))
             out.append({
                 "id": a.get("mid"),
@@ -558,7 +608,7 @@ class QqClient:
         # 补齐曲目数：搜索响应不含曲目数（旧服务端 song_count 字段已随服务端
         # 切换消失），按专辑并发探测 /album/{mid}/songs 的 total_num；失败
         # 保持 0（前端显示 "—"），不阻断搜索
-        mids = [a.get("mid") for a in albums if a.get("mid")]
+        mids = [a.get("mid") for a in albums if isinstance(a, dict) and a.get("mid")]
         if mids:
             with ThreadPoolExecutor(max_workers=_SIZE_PROBE_WORKERS) as pool:
                 sizes = dict(zip(mids, pool.map(self._probe_album_size, mids)))
@@ -571,9 +621,17 @@ class QqClient:
 
         最小请求（只取 1 首即可读到总数）；尽力而为语义：请求失败、
         限流（429 重试耗尽）或字段缺失返回 0，不影响搜索结果返回。
+        用独立 Session 隔离并发：probe 不需要 cookie，不复用主 Session，
+        避免 8 线程并发改写 self.session 的 headers/CookieJar 状态。
         """
-        result = self._request(f"/album/{albummid}/songs",
-                               params={"num": 1, "page": 1}, timeout=10)
+        with requests.Session() as s:
+            # 与主 Session 对齐：固定 UA；显式关闭代理环境变量读取
+            # （目标为 127.0.0.1 的本机 API，走代理会直接失败）
+            s.trust_env = False
+            s.headers.update({"User-Agent": _UA})
+            result = self._request(f"/album/{albummid}/songs",
+                                   params={"num": 1, "page": 1},
+                                   timeout=10, session=s)
         return _safe_int(result.get("total_num")) if result else 0
 
     def get_album_songs(self, albummid: str) -> list[dict]:
@@ -711,6 +769,8 @@ class QqClient:
                 "query_info": [{"mid": m} for m in batch],
             }, timeout=10)
             for t in (result.get("tracks") or []):
+                if not isinstance(t, dict):
+                    continue
                 mid = str(t.get("mid") or "")
                 if mid:
                     mapping[mid] = t
@@ -721,9 +781,9 @@ class QqClient:
             out.append({
                 "title": item.get("name") or item.get("title") or "",
                 "artist": _singers_text(item.get("singer")),
-                "album": album.get("name", "") if isinstance(album, dict) else "",
+                "album": (album.get("name") or "") if isinstance(album, dict) else "",
                 "year": _year_from_date(item.get("time_public")),
-                "cover_url": _album_cover_url(album.get("mid", "")) if isinstance(album, dict) else "",
+                "cover_url": _album_cover_url(album.get("mid") or "") if isinstance(album, dict) else "",
                 "duration_ms": (_safe_int(item.get("interval")) or 0) * 1000,
                 "track_no": _safe_int(item.get("index_album")),
                 "disc_no": _safe_int(item.get("index_cd")),

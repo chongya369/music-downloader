@@ -163,29 +163,40 @@
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">网易云音质</label>
+                        <!-- 选项按音质从高到低排列（纯展示秩序，不参与降级逻辑） -->
                         <select class="form-select" name="level_netease">
-                            <option value="standard">标准 128kbps MP3</option>
-                            <option value="exhigh">极高 320kbps（需会员）</option>
-                            <option value="lossless">无损 FLAC（需黑胶VIP）</option>
+                            <option value="sky">沉浸环绕声（需SVIP）</option>
+                            <option value="jymaster">超清母带（需SVIP）</option>
+                            <option value="vivid">臻音全景声（需SVIP）</option>
+                            <option value="dolby">杜比全景声（需SVIP）</option>
+                            <option value="jyeffect">高清臻音（需SVIP）</option>
                             <option value="hires">Hi-Res（需豪华VIP）</option>
+                            <option value="lossless">无损 FLAC（需黑胶VIP）</option>
+                            <option value="exhigh">极高 320kbps（需会员）</option>
+                            <option value="standard">标准 128kbps MP3</option>
                         </select>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">QQ音乐音质</label>
+                        <!-- 选项按音质从高到低排列；hires 与 lossless 同为 FLAC，
+                             保留 hires 项避免存量设置显示空白 -->
                         <select class="form-select" name="level_qq">
-                            <option value="standard">标准 128kbps MP3</option>
-                            <option value="exhigh">320kbps MP3（需登录）</option>
+                            <option value="jymaster">臻品母带 FLAC 24bit/192kHz（需豪华绿钻）</option>
+                            <option value="hires">无损 FLAC（Hi-Res 档同无损）</option>
                             <option value="lossless">无损 FLAC（需绿钻）</option>
-                            <option value="hires">无损 FLAC（同无损档）</option>
+                            <option value="ogg640">OGG 640k SQ 无损（需VIP，备选）</option>
+                            <option value="exhigh">320kbps MP3（需登录）</option>
+                            <option value="standard">标准 128kbps MP3</option>
                         </select>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label">酷狗音乐音质</label>
+                        <!-- 选项按音质从高到低排列（仅重排原有档位，档位集不变） -->
                         <select class="form-select" name="level_kugou">
-                            <option value="standard">标准 128kbps MP3</option>
-                            <option value="exhigh">320kbps MP3（需登录）</option>
-                            <option value="lossless">无损 FLAC（需VIP）</option>
                             <option value="hires">Hi-Res（需豪华VIP）</option>
+                            <option value="lossless">无损 FLAC（需VIP）</option>
+                            <option value="exhigh">320kbps MP3（需登录）</option>
+                            <option value="standard">标准 128kbps MP3</option>
                         </select>
                     </div>
                     <div class="col-md-6">

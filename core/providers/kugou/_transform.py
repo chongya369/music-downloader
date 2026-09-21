@@ -48,8 +48,8 @@ def fix_cover_url(url: str, size: str = "480") -> str:
 
     上游封面形如 http://imge.kugou.com/stdmusic/{size}/20240122/xxx.jpg，
     必须替换后才能访问（实测 480 档返回 HTTP 200 / image/jpeg）。
-    空值防御：返回空串。
+    空值防御：返回空串（同时容忍上游把 url 给成非字符串）。
     """
     if not url:
         return ""
-    return url.replace("{size}", size)
+    return str(url).replace("{size}", size)

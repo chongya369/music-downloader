@@ -7,6 +7,14 @@
 from datetime import datetime
 
 
+def _to_int(value) -> int:
+    """宽容整型转换（None/脏值 → 0），避免 None 透传到下游 mutagen/DB"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def transform_song_urls(raw_list: list[dict], song_ids: list[str]) -> list[dict]:
     """将网易云 /song/url/v1 返回转换为 UrlInfo 列表
 
@@ -20,10 +28,12 @@ def transform_song_urls(raw_list: list[dict], song_ids: list[str]) -> list[dict]
     # 以 str(id) 为键建映射
     mapping: dict[str, dict] = {}
     for item in raw_list:
-        sid = str(item.get("id", ""))
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("id") or "")
         mapping[sid] = {
             "url": item.get("url"),
-            "ext": (item.get("type") or "mp3").lower(),
+            "ext": str(item.get("type") or "mp3").lower(),
             "size": item.get("size"),
             "is_trial": bool(item.get("freeTrialInfo")),
             # 诊断字段：code=-110 无音源/-105 需付费/200 正常；err 接口级失败信息
@@ -63,16 +73,16 @@ def transform_song_detail(raw_list: list[dict], song_ids: list[str]) -> list[dic
     # 以 str(id) 为键建映射
     mapping: dict[str, dict] = {}
     for item in raw_list:
-        sid = str(item.get("id", ""))
-        album_info = item.get("al") or {}
-        artists_list = item.get("ar") or []
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("id") or "")
+        album_info = item.get("al") if isinstance(item.get("al"), dict) else {}
+        artists_list = item.get("ar") if isinstance(item.get("ar"), list) else []
 
-        # 主歌手
-        if artists_list:
-            primary_artist = artists_list[0].get("name", "") or ""
-            if not primary_artist.strip():
-                primary_artist = "群星"
-        else:
+        # 主歌手（ar 可能为 null / [null]，逐层守卫）
+        first = artists_list[0] if artists_list and isinstance(artists_list[0], dict) else {}
+        primary_artist = str(first.get("name") or "").strip()
+        if not primary_artist:
             primary_artist = "群星"
 
         # 发行年份
@@ -85,14 +95,14 @@ def transform_song_detail(raw_list: list[dict], song_ids: list[str]) -> list[dic
                 year = ""
 
         mapping[sid] = {
-            "title": item.get("name", ""),
+            "title": str(item.get("name") or ""),
             "artist": primary_artist,
-            "album": album_info.get("name", ""),
+            "album": str(album_info.get("name") or ""),
             "year": year,
-            "cover_url": album_info.get("picUrl", ""),
-            "duration_ms": item.get("dt", 0),
+            "cover_url": str(album_info.get("picUrl") or ""),
+            "duration_ms": _to_int(item.get("dt")),
             # 专辑 ID：供 provider 层经 /album 补全音轨号/碟号/专辑歌手
-            "album_id": album_info.get("id", ""),
+            "album_id": album_info.get("id") or "",
             # /song/detail 无音轨号/碟号/专辑歌手，默认空，由 provider 层补全
             "track_no": 0,
             "disc_no": 0,

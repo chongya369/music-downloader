@@ -5,6 +5,7 @@
 - 断点续传下载（HTTP Range）
 - 失败重试
 - 已存在文件跳过
+- 协作式中断（用户暂停/删除任务）
 
 注意：下载去重改由数据库（models.Song）处理，本模块只负责文件下载本身。
 """
@@ -14,10 +15,46 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# 中止检查回调：返回 True 表示调用方要求立即中止本次下载
+AbortCheck = Callable[[], bool]
+
+
+class DownloadAborted(Exception):
+    """用户主动中止下载（暂停 / 删除任务）
+
+    刻意继承 Exception 而非 IOError/OSError：download() 内部对
+    OSError / RequestException / 裸 Exception 都有"记日志 + 进重试"的
+    处理分支，误继承会让中止被吞掉并最终返回 None（被上层判为下载失败）。
+
+    part_path 指向当前未完成的 .part 临时文件：暂停时调用方保留它以便
+    后续 Range 续传，删除任务时调用方负责清理。
+    """
+
+    def __init__(self, part_path: Path):
+        super().__init__("下载已被用户中止")
+        self.part_path = part_path
+
+
+class DownloadOutcome(NamedTuple):
+    """下载结果
+
+    produced: True  = 本次调用真正写盘（传输完成后临时文件覆盖目标）
+              False = 命中"目标已存在且大小相符"提前返回，未做任何写入
+
+    区分二者的原因：提前返回时 path 指向的是调用前就已存在于磁盘上的
+    文件，并非本次任务的产物。调用方若要"删除任务时一并清理产物"，
+    必须只在 produced=True 时删除，否则会误删用户既有文件。
+    """
+
+    path: Path
+    produced: bool
+
 
 _INVALID_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f]")
@@ -76,6 +113,10 @@ def _fit_path(path: Path, max_path_len: int = 240) -> Path:
         logger.info("路径过长，截断文件名: %s -> %s", name, truncated.name)
         return truncated
 
+    # 目录部分已占满可用长度、文件名无需截断，但 full 仍超限（父目录本身过长）：
+    # 无日志时下游 open() 抛的 OSError 无法归因到"路径过长"，故此处补告警
+    logger.warning("路径仍超过 %d 字符上限且无法通过截断文件名解决: %s",
+                   max_path_len, full)
     return path
 
 
@@ -154,7 +195,8 @@ class Downloader:
         filename: str,
         expected_size: int | None = None,
         progress_callback=None,
-    ) -> Path | None:
+        abort_check: AbortCheck | None = None,
+    ) -> DownloadOutcome | None:
         """下载文件到指定子目录，支持断点续传
 
         Args:
@@ -163,9 +205,16 @@ class Downloader:
             filename: 目标文件名
             expected_size: 预期文件大小（字节），用于校验
             progress_callback: 可选的进度回调 callback(downloaded_bytes, total_bytes)
+            abort_check: 可选的中止检查回调，返回 True 时立即抛出
+                DownloadAborted 并保留 .part（供断点续传）；默认 None = 不可中断
 
         Returns:
-            下载完成的文件路径，失败返回 None
+            DownloadOutcome（path 为下载完成的文件路径，produced 表示是否本次写盘）；
+            失败返回 None
+
+        Raises:
+            DownloadAborted: abort_check 返回 True。此为正常控制流，
+                不是错误，调用方不得计入重试与失败统计。
         """
         try:
             target = self.target_path(sub_dir, filename)
@@ -175,7 +224,8 @@ class Downloader:
                     logger.warning("文件已存在但大小不符，重新下载: %s", target.name)
                 else:
                     logger.info("跳过已存在: %s", target.relative_to(self.output_dir))
-                    return target
+                    # produced=False：该文件并非本次调用产出（可能早于本次任务存在）
+                    return DownloadOutcome(target, False)
 
             # 检查路径长度，防止临时文件路径溢出
             tmp = target.with_suffix(target.suffix + ".part")
@@ -191,16 +241,29 @@ class Downloader:
             )
             return None
 
+        def _aborted() -> bool:
+            """是否已被要求中止（abort_check 为空时恒为 False）"""
+            return abort_check is not None and abort_check()
+
         for attempt in range(1, self.max_retries + 1):
             try:
+                # 中止检查点①：重试循环入口。用户已放弃的任务不应再发起请求
+                if _aborted():
+                    raise DownloadAborted(tmp)
+
                 headers = {}
                 if resume_pos > 0:
                     headers["Range"] = f"bytes={resume_pos}-"
 
-                # 416 表示 Range 越界（文件已完成或范围无效），需先关闭原连接，
-                # 再无 Range 重试，避免在 with 块内重新赋值 resp 导致连接泄漏
+                # 中止检查点②：发起连接前（_safe_get 最长阻塞 timeout+10s，
+                # 期间对外部信号无感知，故在其之前抢一次判断）
+                if _aborted():
+                    raise DownloadAborted(tmp)
+
                 resp = self._safe_get(url, headers)
                 if resp.status_code == 416:
+                    # 416 表示 Range 越界（文件已完成或范围无效），需先关闭原连接，
+                    # 再无 Range 重试，避免在此处重新赋值 resp 导致连接泄漏
                     resp.close()
                     resume_pos = 0
                     headers.pop("Range", None)
@@ -221,6 +284,10 @@ class Downloader:
                     last_activity = start_ts
                     with open(str(tmp), mode) as f:
                         for chunk in resp.iter_content(self.chunk_size):
+                            # 中止检查点③：主中断点。64KB 分块粒度，
+                            # 暂停/删除的响应延迟通常在 100ms 内
+                            if _aborted():
+                                raise DownloadAborted(tmp)
                             if chunk:
                                 f.write(chunk)
                                 downloaded += len(chunk)
@@ -247,8 +314,13 @@ class Downloader:
 
                 tmp.replace(target)
                 logger.info("下载完成: %s", target.relative_to(self.output_dir))
-                return target
+                # produced=True：本次调用真正完成了写盘
+                return DownloadOutcome(target, True)
 
+            except DownloadAborted:
+                # 必须置于最前：否则会被下面的 except Exception 捕获 →
+                # 记日志 → 进入重试 → 最终 return None，用户的中止被当失败
+                raise
             except OSError as e:
                 logger.error(
                     "下载 %s 第 %d/%d 次失败 [Errno %d]: %s (路径: %s)",
@@ -267,7 +339,13 @@ class Downloader:
             if tmp.exists():
                 resume_pos = tmp.stat().st_size
             if attempt < self.max_retries:
-                time.sleep(1.5 * attempt)
+                # 中止检查点④：退避等待分段进行。整段 sleep(1.5*attempt) 会让
+                # 暂停最多多等 4.5s（max_retries=3 时的最坏情况）
+                backoff_end = time.monotonic() + 1.5 * attempt
+                while time.monotonic() < backoff_end:
+                    if _aborted():
+                        raise DownloadAborted(tmp)
+                    time.sleep(min(0.2, max(0.0, backoff_end - time.monotonic())))
 
         logger.error("下载失败，已达最大重试次数: %s", filename)
         if tmp.exists():

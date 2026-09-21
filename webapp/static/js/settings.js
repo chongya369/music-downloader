@@ -278,9 +278,12 @@ document.getElementById("btn-ncm-stop").addEventListener("click", async function
     }
 });
 
-// 3s 轮询状态
+// 3s 轮询状态（页面在后台时不发无谓请求）
 refreshNcmStatus();
-setInterval(refreshNcmStatus, 3000);
+setInterval(() => {
+    if (document.hidden) return;
+    refreshNcmStatus();
+}, 3000);
 
 // ======================================================================
 // QQ音乐API服务状态轮询与启停
@@ -375,9 +378,12 @@ document.getElementById("btn-qq-stop").addEventListener("click", async function(
     }
 });
 
-// 3s 轮询状态
+// 3s 轮询状态（页面在后台时不发无谓请求）
 refreshQqStatus();
-setInterval(refreshQqStatus, 3000);
+setInterval(() => {
+    if (document.hidden) return;
+    refreshQqStatus();
+}, 3000);
 
 // ======================================================================
 // 酷狗音乐API服务状态轮询与启停
@@ -472,6 +478,9 @@ document.getElementById("btn-kugou-stop").addEventListener("click", async functi
     }
 });
 
-// 3s 轮询状态
+// 3s 轮询状态（页面在后台时不发无谓请求）
 refreshKugouStatus();
-setInterval(refreshKugouStatus, 3000);
+setInterval(() => {
+    if (document.hidden) return;
+    refreshKugouStatus();
+}, 3000);

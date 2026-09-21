@@ -32,6 +32,14 @@ async function api(url, options = {}) {
         if (resp.status === 403) {
             throw new Error("无权限执行此操作");
         }
+        // 非 2xx：后端异常页（如 HTML 500）在此拦截。
+        // 否则 resp.json() 抛 SyntaxError 掩盖真实原因；且若 5xx 恰好返回
+        // {"code":0,...} 形状的 body 还会被误判为成功
+        if (!resp.ok) {
+            let detail = "";
+            try { detail = (await resp.json()).msg || ""; } catch (_) {}
+            throw new Error(detail || `服务异常 (HTTP ${resp.status})`);
+        }
         const data = await resp.json();
         // 业务层 401 也跳转登录（兼容后端返回 200+code:401 的情况）
         if (data.code === 401) {
@@ -89,6 +97,7 @@ function statusBadge(status) {
         skipped: '<span class="badge bg-secondary">已下载</span>',
         pending: '<span class="badge bg-warning">等待中</span>',
         downloading: '<span class="badge bg-primary">下载中</span>',
+        paused: '<span class="badge bg-secondary">已暂停</span>',
         done: '<span class="badge bg-success">完成</span>',
     };
     return map[status] || '<span class="badge bg-secondary">' + status + '</span>';
@@ -113,8 +122,10 @@ function updateSyncIndicator(active) {
 async function refreshGlobalTaskStatus() {
     try {
         const data = await api("/api/tasks");
-        const tasks = data.data || [];
-        updateSyncIndicator(tasks.length > 0);
+        // 用服务端 has_active（存在未被暂停的在途任务）而非任务数量：
+        // 「暂停全部」后任务仍在列表中，按数量判断会让导航栏恒显"下载中"，
+        // 与用户刚点下的暂停语义冲突。判定逻辑放服务端可避免与后端语义漂移
+        updateSyncIndicator(!!data.has_active);
     } catch (e) {
         // 静默失败：指示器是辅助信息，不应弹错提示
         console.error("刷新任务状态失败:", e);
@@ -125,8 +136,12 @@ async function refreshGlobalTaskStatus() {
 function startGlobalStatusPolling() {
     // 立即刷新一次，避免页面初始的"加载中..."停留过久
     refreshGlobalTaskStatus();
-    // 每 2 秒刷新一次（与原 dashboard.js 间隔一致）
-    setInterval(refreshGlobalTaskStatus, 2000);
+    // 每 2 秒刷新一次（与原 dashboard.js 间隔一致）；
+    // 页面在后台时不发无谓请求，切回前台下一轮自动恢复
+    setInterval(() => {
+        if (document.hidden) return;
+        refreshGlobalTaskStatus();
+    }, 2000);
 }
 
 if (document.readyState === "loading") {

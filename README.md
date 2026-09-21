@@ -8,9 +8,14 @@
 
 - **三平台支持**：网易云 / QQ 音乐 / 酷狗音乐账号管理、歌单同步与下载（三平台均支持扫码登录）
 - **多账号调度**：接力 / 轮询两种模式，VIP 偏好过滤，单账号月额度 + 每小时限额管控
-- **音质控制**：三平台独立音质设置，目标音质不可用时自动降档（hires → lossless → exhigh → standard）
+- **音质控制**：三平台独立音质设置，档位覆盖普通档与会员高阶档（QQ 臻品母带/OGG 640k，网易云超清母带/杜比全景声/沉浸环绕声等），目标音质取不到流时按平台沿降档链回退：
+
+  - **网易云**：`jymaster → hires → lossless → exhigh → higher → standard`（`higher` 为旧档，仅降级链内保留、界面不暴露）；`jyeffect` / `dolby` / `vivid` / `sky` 四档**不进降级链**，无对应权益时直接失败提示，不静默降档
+  - **QQ 音乐**：`jymaster → hires → exhigh → standard`（`hires` 与 `lossless` 同为 FLAC、`exhigh` 与 `higher` 同为 320k，链内已去重）；`ogg640` 不进链，由客户端内部降 128 兜底
+  - **酷狗音乐**：**外层不降档**（档位在客户端内部降级；匿名状态下服务端强制封顶 128kbps）
 - **定时同步**：多时间点 cron 触发 + 随机抖动延迟，歌单更新自动下载新歌
-- **下载增强**：断点续传、失败重试、MP3/FLAC 元数据与封面歌词写入、路径长度保护
+- **下载增强**：断点续传、失败重试、MP3/FLAC/OGG 元数据与封面歌词写入、路径长度保护
+- **任务控制**：下载任务可逐个暂停 / 继续 / 删除，也可一键暂停全部 / 继续全部；暂停保留断点文件、继续时断点续传，删除立即中止并清理临时文件
 - **发现页**：官方排行榜、热门歌单、搜索歌曲/专辑、单曲/专辑批量下载
 - **API 服务内置**：三平台 API 二进制随仓库内置，启动即自动拉起，无需外部搭建
 - **部署灵活**：Windows / Linux 源码运行或单文件 exe，飞牛 fnOS 应用中心一键安装（统一网关接入）
@@ -84,9 +89,9 @@ python -m venv .venv
 | `kugou_api_base_url` | `http://127.0.0.1:45603` | 自定义酷狗音乐 API 服务 URL，`use_custom_kugou_api_url` 为 `true` 时生效 |
 | `web_port` | `*:45600` | Web 服务监听地址（`host:port` 格式，如 `*:45600` 或 `127.0.0.1:45600`，`*` 表示所有网卡，修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录；fnOS 网关模式首启自动固定到数据卷绝对路径） |
-| `level_netease` | （空） | 网易云音质：standard / exhigh / lossless / hires（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
-| `level_qq` | （空） | QQ 音乐音质：standard / exhigh / lossless / hires（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
-| `level_kugou` | （空） | 酷狗音乐音质：standard / exhigh / lossless / hires（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
+| `level_netease` | （空） | 网易云音质（高→低）：sky / jymaster / vivid / dolby / jyeffect / hires / lossless / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
+| `level_qq` | （空） | QQ 音乐音质（高→低）：jymaster / hires / lossless / ogg640 / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
+| `level_kugou` | （空） | 酷狗音乐音质（高→低）：hires / lossless / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
 | `enable_quality_fallback` | `true` | 目标音质取不到流时是否自动向低音质档回退 |
 | `write_metadata` | `true` | 是否写入元数据（标题/艺术家/专辑/封面/歌词） |
 | `write_lyric` | `true` | 是否下载并写入歌词 |
@@ -153,6 +158,9 @@ A: 该歌曲需要会员权限，请确保有可用的 VIP 账号。接力模式
 ### Q: 下载失败提示"试听片段"？
 A: 当前账号无该歌曲完整版权，只能拿到试听片段（已自动跳过不下载残缺文件）。接力模式会自动换更高权益账号；均不可用则标记失败。
 
+### Q: 同步后歌单里有个别歌显示失败，提示"上游返回值为空"？
+A: 上游对已下架 / 失效曲目会返回空曲名。0.7.0 起程序不再用「未知歌曲」兜底（原先会下载成 `未知歌手 - 未知歌曲.mp3`），而是记一条明确的失败记录。判定以**单曲详情的曲名**为准：歌单层名为空但详情名正常时仍正常下载；QQ / 酷狗无单曲详情接口，以任务记录名为准。恢复需在「下载」页手动「重试」——自动 / 定时同步不会重试同一歌单内已失败的终态记录。
+
 ### Q: 所有账号都提示"小时限额已满"？
 A: 所有启用账号在当前自然小时内的成功下载数已达 `hourly_limit_per_account` 上限，系统会自动暂停 30 分钟后继续，无需手动干预。
 
@@ -170,6 +178,10 @@ A: `web_port` 修改后需重启服务才生效（fnOS 在应用中心重启本�
 
 ### Q: 路径过长导致下载失败？
 A: 系统对路径长度有保护机制：非法字符自动清洗为 `_`、超过 240 字符自动截断文件名。若仍失败（如目录部分本身过长），请缩短 `output_dir` 路径。
+
+### Q: 如何暂停或删除某个下载任务？
+
+在「下载」页「下载任务」标签下，每个任务右侧有「暂停 / 继续」与「删除」按钮，任务卡片右上角另有「暂停全部 / 继续全部」。暂停会保留已下载的临时文件，点「继续」后从断点续传；删除会立即停止传输并清理临时文件（注意：这里删的是「任务」，「下载历史」里的记录需另行删除）。
 
 ## 打包与开发
 
@@ -191,4 +203,4 @@ chmod +x build_linux.sh && ./build_linux.sh
 
 ## 版本
 
-当前版本：**0.6.3**（见 [version.txt](version.txt)，更新日志见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+当前版本：**0.7.0**（见 [version.txt](version.txt)，更新日志见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）

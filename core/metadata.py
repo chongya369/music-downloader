@@ -3,15 +3,21 @@
 支持：
 - MP3 (ID3v2)：标题、艺术家、专辑、年份、音轨号、碟号、专辑歌手、封面、原文/翻译歌词
 - FLAC (Vorbis Comment)：同上
+- OGG (Vorbis / Opus，同为 Vorbis Comment)：字段集与 FLAC 对齐，
+  封面按规范写 METADATA_BLOCK_PICTURE（base64 的 FLAC Picture 块）
 """
 
+import base64
 import logging
 from pathlib import Path
 
 import requests
+from mutagen import File as MutagenFile
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK, USLT
 from mutagen.mp3 import MP3
+from mutagen.oggopus import OggOpus
+from mutagen.oggvorbis import OggVorbis
 
 logger = logging.getLogger(__name__)
 
@@ -147,25 +153,106 @@ def write_flac_tags(
         return False
 
 
+def write_ogg_tags(
+    file_path: Path,
+    title: str,
+    artist: str,
+    album: str,
+    year: str = "",
+    cover_url: str = "",
+    lyric: str = "",
+    tlyric: str = "",
+    track_no: int = 0,
+    disc_no: int = 0,
+    albumartist: str = "",
+) -> bool:
+    """写入 OGG（Vorbis / Opus）Vorbis Comment 标签
+
+    字段集与 write_flac_tags 逐行对齐（音轨号/碟号 str() 化）。容器类型经
+    mutagen.File 嗅探：QQ 的 OGG 640k 理论为 Vorbis，Opus 做兜底。
+
+    封面：mutagen 的 OggVorbis/OggOpus 均无 FLAC 那套 add_picture/
+    clear_pictures，按 Vorbis Comment 规范写 METADATA_BLOCK_PICTURE =
+    base64(FLAC Picture 块)——与 foobar2000 / 各播放器读法一致。
+    """
+    try:
+        audio = MutagenFile(str(file_path))
+        if not isinstance(audio, (OggVorbis, OggOpus)):
+            logger.error("写入 OGG 标签失败 %s: 不支持的容器类型 %s",
+                         file_path.name, type(audio).__name__)
+            return False
+        audio["title"] = title
+        audio["artist"] = artist
+        audio["album"] = album
+        if year:
+            audio["date"] = year
+        else:
+            audio.pop("date", None)
+        if track_no > 0:
+            audio["tracknumber"] = str(track_no)
+        else:
+            audio.pop("tracknumber", None)
+        if disc_no > 0:
+            audio["discnumber"] = str(disc_no)
+        else:
+            audio.pop("discnumber", None)
+        if albumartist:
+            audio["albumartist"] = albumartist
+        else:
+            audio.pop("albumartist", None)
+        if lyric:
+            audio["lyrics"] = lyric
+        if tlyric:
+            audio["translation"] = tlyric
+        elif "translation" in audio:
+            audio.pop("translation", None)
+
+        # 清封面（等价于 FLAC 的 clear_pictures）
+        audio.pop("metadata_block_picture", None)
+        cover = _download_cover(cover_url)
+        if cover:
+            pic = Picture()
+            pic.type = 3
+            pic.mime = _guess_cover_mime(cover)
+            pic.desc = "Cover"
+            pic.data = cover
+            audio["metadata_block_picture"] = [
+                base64.b64encode(pic.write()).decode("ascii")
+            ]
+
+        audio.save()
+        return True
+    except Exception as e:
+        logger.error("写入 OGG 标签失败 %s: %s", file_path.name, e)
+        return False
+
+
 def write_tags(file_path: Path, meta: dict) -> bool:
-    """根据扩展名自动选择写入器"""
+    """根据扩展名自动选择写入器
+
+    入口归一：meta 字段可能为 None（上游「键存在值为 null」，dict.get 默认值
+    兜不住），而 mutagen 的 `audio["title"] = None` / `TIT2(text=None)` 会直接
+    抛异常导致整首歌标签写不进去。此处单点收敛为 ""，各写入器无需再防御。
+    """
     ext = file_path.suffix.lower()
     common = dict(
-        title=meta.get("title", ""),
-        artist=meta.get("artist", ""),
-        album=meta.get("album", ""),
-        year=meta.get("year", ""),
-        cover_url=meta.get("cover_url", ""),
-        lyric=meta.get("lyric", ""),
-        tlyric=meta.get("tlyric", ""),
+        title=str(meta.get("title") or ""),
+        artist=str(meta.get("artist") or ""),
+        album=str(meta.get("album") or ""),
+        year=str(meta.get("year") or ""),
+        cover_url=str(meta.get("cover_url") or ""),
+        lyric=str(meta.get("lyric") or ""),
+        tlyric=str(meta.get("tlyric") or ""),
         track_no=_as_int(meta.get("track_no")),
         disc_no=_as_int(meta.get("disc_no")),
-        albumartist=meta.get("albumartist", ""),
+        albumartist=str(meta.get("albumartist") or ""),
     )
     if ext == ".mp3":
         return write_mp3_tags(file_path, **common)
     if ext == ".flac":
         return write_flac_tags(file_path, **common)
+    if ext == ".ogg":
+        return write_ogg_tags(file_path, **common)
     logger.warning("不支持的格式，跳过元数据写入: %s", ext)
     return False
 

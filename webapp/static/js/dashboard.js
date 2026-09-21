@@ -76,6 +76,12 @@ async function loadAccountsStats() {
 loadStats();
 loadAccountsStats();
 
-// 每 30 秒刷新统计和账号状态
-setInterval(loadStats, 30000);
-setInterval(loadAccountsStats, 30000);
+// 每 30 秒刷新统计和账号状态（页面在后台时不发无谓请求）
+setInterval(() => {
+    if (document.hidden) return;
+    loadStats();
+}, 30000);
+setInterval(() => {
+    if (document.hidden) return;
+    loadAccountsStats();
+}, 30000);

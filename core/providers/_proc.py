@@ -55,17 +55,45 @@ def open_api_log(name: str):
         return None, None
 
 
+# 父进程内解析并缓存的 prctl 符号（None=尚未解析，False=解析失败已禁用）
+_LINUX_PRCTL = None
+
+
+def _linux_prctl():
+    """父进程内一次性解析 prctl 符号并缓存，子进程回调只做纯 C 调用
+
+    ctypes.CDLL(None, use_errno=True) 内部是 dlopen + 符号查找（可能触发
+    解释器内部加锁），不是 async-signal-safe；多线程父进程（Flask 请求线程 /
+    APScheduler / worker 均已运行）内 fork 后执行有低概率 exec 前死锁
+    （Python 3.12 起对该组合告警），故将其前移到 fork 之前完成。
+    解析失败返回 None（调用方回退朴素 Popen）。
+    """
+    global _LINUX_PRCTL
+    if _LINUX_PRCTL is None:
+        import ctypes
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            fn = libc.prctl
+            fn.argtypes = [ctypes.c_int, ctypes.c_ulong]
+            fn.restype = ctypes.c_int
+            _LINUX_PRCTL = fn
+        except Exception:
+            _LINUX_PRCTL = False
+    return _LINUX_PRCTL or None
+
+
 def _linux_pdeathsig_preexec() -> None:
     """Linux 子进程内（fork 后、exec 前）启用父亡信号，并回查 ppid 防竞态。
 
     该回调只在子进程地址空间执行，须自包含（不依赖闭包安全），失败只静默忽略。
+    本回调绝不调用 dlopen/ctypes.CDLL——prctl 符号已在父进程解析并缓存；
+    getppid/kill 均为 libc async-signal-safe 调用。
     """
+    prctl = _linux_prctl()
+    if prctl is None:
+        return
     try:
-        import ctypes
-
-        libc = ctypes.CDLL(None, use_errno=True)
-        PR_SET_PDEATHSIG = 1
-        libc.prctl(PR_SET_PDEATHSIG, _LINUX_PDEATHSIG)
+        prctl(1, _LINUX_PDEATHSIG)        # PR_SET_PDEATHSIG = 1
         # 竞态回查：若父进程在 prctl 设置前已退出，本进程已被 init(ppid=1) 收养，
         # 此时父亡信号不会再触发，改为立即自杀。
         if os.getppid() == 1:
@@ -199,5 +227,8 @@ def spawn_protected(cmd, cwd=None, env=None, stdout=None, stderr=None):
         _attach_windows_job(proc)
         return proc
     if sys.platform.startswith("linux"):
-        kwargs["preexec_fn"] = _linux_pdeathsig_preexec
+        # 必须在 fork 之前（父进程内）完成 prctl 符号解析；解析失败则不挂
+        # preexec_fn，回退朴素 Popen（正常退出仍由 bridge.stop() 兜底）
+        if _linux_prctl() is not None:
+            kwargs["preexec_fn"] = _linux_pdeathsig_preexec
     return subprocess.Popen(cmd, **kwargs)

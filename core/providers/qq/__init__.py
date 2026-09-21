@@ -80,11 +80,12 @@ class QqProvider(MusicProvider):
         return _is_vip_song(fee)
 
     # ------------------------------------------------------------------
-    # 音质降级链适配（QQ 档位重复：hires/lossless 同 flac、exhigh/higher 同 320）
+    # 音质降级链适配（QQ 档位重复：hires/lossless 同 flac(7)、
+    # exhigh/higher 同 320(12)；jymaster=1、ogg640=8 各占独立档）
     # ------------------------------------------------------------------
-    def quality_key(self, level: str) -> str:
-        """归一化到 QQ 实际 quality 参数值，链内去重避免重复请求"""
-        return QUALITY_LEVEL.get(level, "320")
+    def quality_key(self, level: str) -> int:
+        """归一化到 QQ 实际 quality 参数值（int），链内去重避免重复请求"""
+        return QUALITY_LEVEL.get(level, 12)   # 默认 12 = 较高 320kbps (M800)
 
     # ------------------------------------------------------------------
     # 旁路代理方法（与 NeteaseProvider 签名对齐，*args/**kwargs 透传防签名漂移）

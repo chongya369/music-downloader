@@ -8,7 +8,15 @@ from abc import ABC, abstractmethod
 
 
 def _rank_of(order: list[str], level: str) -> int:
-    """档位在有序表中的秩（越高越大）；未知档位返回 -1"""
+    """档位在有序表中的秩（越高越大）；未知档位返回 -1
+
+    L-5 已知取舍（本次不改行为）：调用方在 `_rank_of(act) > _rank_of(chain[i+1])`
+    中比较时，若 act 为链外档位（不在 QUALITY_ORDER 内）则 -1 > X 恒 False，
+    不会触发「跳过中间档」的保存兜底，而是走「已降到链尾」分支直接返回结果。
+    实测三平台 get_song_urls 回填的 info["level"] 均取自各自 QUALITY_ORDER
+    （QQ 的 ogg640 也不进降级链、由 client 内部降 128），未观测到链外档位，
+    故按已知取舍处理；若后续取证发现链外档位，再改为「链外跳过、继续试中间档」。
+    """
     try:
         return order.index(level)
     except ValueError:
@@ -24,7 +32,11 @@ class MusicProvider(ABC):
     platform: str = ""
 
     # 音质从高到低的完整顺序（子类可覆写为去重后的子集）
-    QUALITY_ORDER: list[str] = ["hires", "lossless", "exhigh", "higher", "standard"]
+    # 表内档位参与统一降级链；不在表内的档位（QQ ogg640、网易云
+    # jyeffect/dolby/vivid/sky）经 quality_chain 返回 [level] 即不降级
+    QUALITY_ORDER: list[str] = [
+        "jymaster", "hires", "lossless", "exhigh", "higher", "standard",
+    ]
 
     @abstractmethod
     def get_song_urls(self, song_ids: list[str], level: str) -> list[dict]:

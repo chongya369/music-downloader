@@ -25,8 +25,19 @@ from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import func
 
-from models import Account, DownloadTask, Playlist, Setting, Song, db, get_api_base_url
-from core.downloader import Downloader, build_filename, sanitize_filename
+from models import (
+    ACTIVE_TASK_STATUSES,
+    PLATFORMS,
+    RUNNABLE_TASK_STATUSES,
+    Account,
+    DownloadTask,
+    Playlist,
+    Setting,
+    Song,
+    db,
+    get_api_base_url,
+)
+from core.downloader import DownloadAborted, Downloader, build_filename, sanitize_filename
 from core.metadata import write_tags
 from core.providers.netease import NeteaseProvider
 from core.providers import get_provider
@@ -62,6 +73,18 @@ def _setting_int(key: str, default: int) -> int:
         return int(Setting.get(key, str(default)))
     except (TypeError, ValueError):
         logger.warning("设置项 %s 值非法，回退默认 %s", key, default)
+        return default
+
+
+def _safe_int(value, default: int) -> int:
+    """安全解析整数：非数字/None 返回 default
+
+    fee 列在 SQLite 动态类型下可能存任意文本，重试统计不容忍脏值中断
+    （int() 抛 ValueError 会穿透 retry_failed 的歌曲遍历，整个重试请求 500）。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return default
 
 
@@ -340,6 +363,16 @@ class TaskManager:
         self._scheduler = BackgroundScheduler()
         self._started = False
         self._account_selector = AccountSelector(app)
+        # ------------------------------------------------------------------
+        # 用户任务控制（暂停 / 继续 / 删除）共享状态
+        # ------------------------------------------------------------------
+        # _control_lock 保护下面两个字段
+        self._control_lock = threading.Lock()
+        # pk -> 中止原因（"pause" / "delete"）。刻意按 pk 逐一登记，而不是只记
+        # 一个"当前任务"：worker 在「原子认领数据库状态」与「进入传输循环」之间
+        # 存在一个窗口，只按"当前任务"比对会把落在窗口内的暂停/删除请求丢掉。
+        self._abort: dict[int, str] = {}
+        self._pause_all = False
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -350,6 +383,9 @@ class TaskManager:
             return
         self._started = True
         self._stop_event.clear()
+        self._reset_control_state()
+        # 重建下载队列（队列是进程内对象，不恢复会导致遗留任务永不处理）
+        self._recover_tasks()
 
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="download-worker")
         self._worker_thread.start()
@@ -357,6 +393,51 @@ class TaskManager:
         self._scheduler.start()
         self._refresh_schedule()
         logger.info("TaskManager 已启动")
+
+    def _reset_control_state(self) -> None:
+        """重置内存控制状态（start 时调用）
+
+        _abort / _pause_all 都是进程内状态，刻意不持久化：
+        重启后视为「未暂停」，避免用户忘记解除而任务永久停摆。
+        单任务的 paused 状态由数据库持久，重启后仍可通过「继续」恢复。
+        """
+        with self._control_lock:
+            self._abort.clear()
+            self._pause_all = False
+
+    def _recover_tasks(self) -> None:
+        """启动时重建下载队列
+
+        队列是进程内 queue.Queue，进程重启不会自动恢复。若不在此重建，
+        上次退出时残留在库里的 pending/downloading 任务将永远不被处理
+        （前端一直显示"等待中"）。
+
+        - downloading：视为上次进程被中断的任务，回退为 pending 后重新入队
+        - pending：直接重新入队
+        - paused：**刻意排除**。它是用户的显式状态，重启后应保持暂停，
+          等用户在界面上点「继续」（否则用户暂停的任务会被静默跑掉）
+        """
+        with self.app.app_context():
+            tasks = DownloadTask.query.filter(
+                DownloadTask.status.in_(RUNNABLE_TASK_STATUSES)
+            ).order_by(DownloadTask.created_at).all()
+            reset = 0
+            pks: list[int] = []
+            for t in tasks:
+                if t.status == "downloading":
+                    t.status = "pending"
+                    t.progress = 0
+                    reset += 1
+                pks.append(t.pk)
+            if reset:
+                db.session.commit()
+        for pk in pks:
+            self._task_queue.put(pk)
+        if pks:
+            logger.info(
+                "启动恢复：重新入队 %d 个任务（其中 %d 个中断任务回退为 pending）",
+                len(pks), reset,
+            )
 
     def stop(self) -> None:
         if not self._started:
@@ -513,10 +594,15 @@ class TaskManager:
             limit = pl.limit_count
             pl_name = pl.name
 
-        detail = client.get_playlist_detail(playlist_id, limit=limit)
+        try:
+            detail = client.get_playlist_detail(playlist_id, limit=limit)
+        except Exception as e:
+            # 上游/解析层异常不得穿透到 sync_all：单歌单失败不拖垮整批同步
+            logger.exception("拉取歌单 %s 详情失败: %s", pl_name, e)
+            return 0
         if not detail:
             return 0
-        tracks = detail.get("tracks", [])
+        tracks = detail.get("tracks") or []
 
         with self.app.app_context():
             pl = Playlist.query.get(playlist_id)
@@ -529,7 +615,19 @@ class TaskManager:
             excluded_count = 0
             failed_skipped = 0
             for t in tracks:
-                sid = str(t["id"])
+                # 元素类型守卫（与 search_and_download:797 / download_album:879 对齐）：
+                # 上游返回 str/None 元素时 .get 抛 AttributeError，会被
+                # _sync_all_playlists 的 per-item except 吞掉 → 该歌单本轮
+                # 静默中断、新增 0 首，而自动同步是无人值守路径
+                if not isinstance(t, dict):
+                    continue
+                # 无 id 的占位曲目（上游失效；QQ mid 缺失等）：跳过并入日志，
+                # 避免 str(None) == "None" 进入 Song 主键，把该歌永久卡成"已下载"。
+                # 必须在去重查询之前拦下，否则 "None" 会先进入下面两条 query。
+                sid = str(t.get("id") or "")
+                if not sid:
+                    logger.warning("歌单 %s 存在无 id 曲目，已跳过: name=%r", pl_name, t.get("name"))
+                    continue
                 existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
                 if existing:
                     # 已下载：在当前歌单记录一条"已下载"任务（不重复下载）
@@ -540,8 +638,8 @@ class TaskManager:
                         task = DownloadTask(
                             platform=platform,
                             song_id=sid,
-                            song_name=t["name"],
-                            artists=t.get("artists", ""),
+                            song_name=t.get("name") or "",
+                            artists=t.get("artists") or "",
                             playlist_id=playlist_id,
                             playlist_name=pl_name,
                             status="skipped",
@@ -554,7 +652,7 @@ class TaskManager:
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
                     DownloadTask.platform == platform,
-                    DownloadTask.status.in_(["pending", "downloading"]),
+                    DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
                 ).first()
                 if pending:
                     continue
@@ -570,18 +668,20 @@ class TaskManager:
                     failed_skipped += 1
                     continue
                 # 排除关键字过滤（仅当 scope 包含 playlist 时）
-                if self._exclude_enabled("playlist") and self._should_exclude(t.get("name", ""), t.get("artists", "")):
+                _tname = t.get("name") or ""
+                _tartists = t.get("artists") or ""
+                if self._exclude_enabled("playlist") and self._should_exclude(_tname, _tartists):
                     excluded_count += 1
-                    logger.info("歌单同步跳过(命中排除关键字): %s - %s", t.get("artists", ""), t.get("name", ""))
+                    logger.info("歌单同步跳过(命中排除关键字): %s - %s", _tartists, _tname)
                     continue
                 new_tracks.append(t)
 
             for t in new_tracks:
                 task = DownloadTask(
                     platform=platform,
-                    song_id=str(t["id"]),
-                    song_name=t["name"],
-                    artists=t.get("artists", ""),
+                    song_id=str(t.get("id") or ""),
+                    song_name=t.get("name") or "",
+                    artists=t.get("artists") or "",
                     playlist_id=playlist_id,
                     playlist_name=pl_name,
                     status="pending",
@@ -635,7 +735,12 @@ class TaskManager:
         for plat, group in groups.items():
             client = self._get_client_default(platform=plat)
             for pl_id, pl_name in group:
-                total += self._sync_playlist(client, pl_id, platform=plat)
+                # 单歌单容错：一个坏歌单不得让「同步全部」整批中断，
+                # 后排歌单仍能正常入库（与 _sync_all_playlists 的 per-item except 对齐）
+                try:
+                    total += self._sync_playlist(client, pl_id, platform=plat)
+                except Exception as e:
+                    logger.exception("同步歌单 %s 失败: %s", pl_name, e)
         return total
 
     # ------------------------------------------------------------------
@@ -695,7 +800,7 @@ class TaskManager:
         """
         client = self._get_client_default(platform=platform)
         search_res = client.search_songs(keyword, limit=limit, offset=offset)
-        tracks = search_res.get("items", [])
+        tracks = search_res.get("items") or []
         total = len(tracks)
         if total == 0:
             return {"enqueued": 0, "excluded": 0, "skipped": 0, "total": 0}
@@ -708,13 +813,17 @@ class TaskManager:
 
         with self.app.app_context():
             for t in tracks:
+                if not isinstance(t, dict):
+                    continue
                 sid = str(t["id"]) if t.get("id") else ""
                 if not sid:
                     continue
                 # 排除关键字过滤（仅当 scope 包含 search 时）
-                if search_scope_enabled and self._should_exclude(t.get("name", ""), t.get("artists", "")):
+                _tname = t.get("name") or ""
+                _tartists = t.get("artists") or ""
+                if search_scope_enabled and self._should_exclude(_tname, _tartists):
                     excluded += 1
-                    logger.info("搜索下载跳过(命中排除关键字): %s - %s", t.get("artists", ""), t.get("name", ""))
+                    logger.info("搜索下载跳过(命中排除关键字): %s - %s", _tartists, _tname)
                     continue
                 # 过滤已下载成功
                 existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
@@ -725,7 +834,7 @@ class TaskManager:
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
                     DownloadTask.platform == platform,
-                    DownloadTask.status.in_(["pending", "downloading"]),
+                    DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
                 ).first()
                 if pending:
                     skipped += 1
@@ -743,8 +852,8 @@ class TaskManager:
                 task = DownloadTask(
                     platform=platform,
                     song_id=sid,
-                    song_name=t.get("name", ""),
-                    artists=t.get("artists", ""),
+                    song_name=t.get("name") or "",
+                    artists=t.get("artists") or "",
                     playlist_id=None,
                     playlist_name=pl_name,
                     status="pending",
@@ -786,13 +895,17 @@ class TaskManager:
 
         with self.app.app_context():
             for t in tracks:
+                if not isinstance(t, dict):
+                    continue
                 sid = str(t["id"]) if t.get("id") else ""
                 if not sid:
                     continue
                 # 排除关键字过滤（与搜索下载一致，受 search 场景配置控制）
-                if search_scope_enabled and self._should_exclude(t.get("name", ""), t.get("artists", "")):
+                _tname = t.get("name") or ""
+                _tartists = t.get("artists") or ""
+                if search_scope_enabled and self._should_exclude(_tname, _tartists):
                     excluded += 1
-                    logger.info("专辑下载跳过(命中排除关键字): %s - %s", t.get("artists", ""), t.get("name", ""))
+                    logger.info("专辑下载跳过(命中排除关键字): %s - %s", _tartists, _tname)
                     continue
                 existing = Song.query.filter_by(id=sid, platform=platform, status="success").first()
                 if existing:
@@ -801,7 +914,7 @@ class TaskManager:
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == sid,
                     DownloadTask.platform == platform,
-                    DownloadTask.status.in_(["pending", "downloading"]),
+                    DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
                 ).first()
                 if pending:
                     skipped += 1
@@ -820,8 +933,8 @@ class TaskManager:
                 task = DownloadTask(
                     platform=platform,
                     song_id=sid,
-                    song_name=t.get("name", ""),
-                    artists=t.get("artists", ""),
+                    song_name=t.get("name") or "",
+                    artists=t.get("artists") or "",
                     playlist_id=None,
                     playlist_name=pl_name,
                     status="pending",
@@ -851,6 +964,10 @@ class TaskManager:
         Returns:
             True=已入队，False=已存在或失败
         """
+        # 白名单收敛（防御绕过路由直达本方法的调用方）：脏平台值不落库
+        platform = platform or "netease"
+        if platform not in PLATFORMS:
+            platform = "netease"
         song_id = str(song_id)
         with self.app.app_context():
             existing = Song.query.filter_by(id=song_id, platform=platform, status="success").first()
@@ -859,7 +976,7 @@ class TaskManager:
             pending = DownloadTask.query.filter(
                 DownloadTask.song_id == song_id,
                 DownloadTask.platform == platform,
-                DownloadTask.status.in_(["pending", "downloading"]),
+                DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
             ).first()
             if pending:
                 return False
@@ -882,9 +999,19 @@ class TaskManager:
     # ------------------------------------------------------------------
     # 重试
     # ------------------------------------------------------------------
-    def retry_failed(self, song_ids: list[str] | None = None) -> int:
+    def retry_failed(self, song_ids: list[str] | None = None, platform: str | None = None) -> int:
+        """重试失败歌曲
+
+        Args:
+            song_ids: 仅重试指定歌曲 ID（None=全部）
+            platform: 仅重试指定平台（None=全部平台）。Song 是 (id, platform)
+                复合主键，同 id 跨平台是合法状态，不带平台维度过滤会误命中
+                另一平台的同号歌
+        """
         with self.app.app_context():
             query = Song.query.filter_by(status="failed")
+            if platform:
+                query = query.filter(Song.platform == platform)
             if song_ids:
                 query = query.filter(Song.id.in_([str(s) for s in song_ids]))
             failed_songs = query.all()
@@ -895,7 +1022,7 @@ class TaskManager:
                 pending = DownloadTask.query.filter(
                     DownloadTask.song_id == song.id,
                     DownloadTask.platform == platform,
-                    DownloadTask.status.in_(["pending", "downloading"]),
+                    DownloadTask.status.in_(ACTIVE_TASK_STATUSES),
                 ).first()
                 if pending:
                     continue
@@ -909,7 +1036,7 @@ class TaskManager:
                     *( [DownloadTask.playlist_id == song.playlist_id] if song.playlist_id is not None
                        else [DownloadTask.playlist_id.is_(None)] ),
                 ).all()
-                fee = next((int(f[0]) for f in fee_rows if f[0] is not None), 0)
+                fee = next((_safe_int(f[0], 0) for f in fee_rows if f[0] is not None), 0)
                 deleting = DownloadTask.query.filter(
                     DownloadTask.song_id == song.id,
                     DownloadTask.platform == platform,
@@ -950,6 +1077,11 @@ class TaskManager:
                 continue
             try:
                 self._process_task(pk)
+            except DownloadAborted:
+                # 用户主动中止（暂停/删除）：正常控制流，不得改写任务状态。
+                # 若无此分支，会被下面的 except Exception 捕获并调用
+                # _mark_failed_by_pk，把 paused 任务错误地改写为 failed
+                logger.info("任务 %s 已被用户中止", pk)
             except Exception as e:
                 logger.exception("处理任务 %s 异常: %s", pk, e)
                 try:
@@ -959,16 +1091,94 @@ class TaskManager:
             finally:
                 self._task_queue.task_done()
 
+    # ------------------------------------------------------------------
+    # 用户任务控制：暂停 / 继续 / 删除
+    # ------------------------------------------------------------------
+    def _mark_abort(self, pk: int, reason: str) -> None:
+        """登记中止原因（"pause" / "delete"）
+
+        登记的生命周期约束（新增登记路径必须满足其中一条，否则 _abort
+        注册表会泄漏；pk 被 SQLite rowid 复用时可能误中止新任务）：
+        ① 任务即将被下载循环消费（status=downloading）：由 _process_task 的
+           try/finally 统一清理；
+        ② 任务不会进入传输循环（status=pending/paused）：登记方必须保证存在
+           匹配的 _clear_abort（现状：_process_task 状态守门两处已显式清理）。
+        当前仅 pause_task / pause_all / delete_task(downloading) 三处登记，
+        均满足上述之一；非这两类生命周期必须同时注册清理。
+        """
+        with self._control_lock:
+            self._abort[pk] = reason
+
+    def _clear_abort(self, pk: int) -> None:
+        with self._control_lock:
+            self._abort.pop(pk, None)
+
+    def _consume_abort(self, task_pk: int, cleanup_path: Path | None = None,
+                       default_reason: str = "pause") -> None:
+        """消费中止登记并做收尾
+
+        - delete：删除残留文件（.part 或本次任务产出的成品），避免孤儿文件
+        - pause ：保留残留文件，供后续 Range 断点续传
+        两种情况都**不改任务状态**：暂停状态由控制接口写入，删除则由接口删行。
+
+        Args:
+            cleanup_path: 需要清理的文件路径；None 表示此刻尚无文件产物
+                （如取流前就被中止）。仅 delete 且路径非空时才会删除。
+            default_reason: 登记缺失时假定的原因。任务行已消失（被删除）时
+                调用方应传 "delete"，否则会按 pause 语义保留下一个孤儿文件
+        """
+        reason = self._abort.pop(task_pk, default_reason)
+        if reason == "delete" and cleanup_path is not None:
+            try:
+                cleanup_path.unlink(missing_ok=True)
+                logger.info("删除任务：已清理文件 %s", cleanup_path)
+            except OSError as e:
+                logger.warning("删除任务：清理文件失败 %s: %s", cleanup_path, e)
+        elif reason == "pause":
+            logger.info("任务已暂停：保留断点文件，等待续传 pk=%s", task_pk)
+
+    def _download_abort_check(self, task_pk: int):
+        """构造传给 Downloader 的中止检查回调
+
+        刻意闭包捕获 task_pk（而不是查询"当前正在跑哪个任务"）：接力模式下
+        会递归换账号重下，必须始终针对同一个任务判断中止。
+        """
+        return lambda: task_pk in self._abort
+
     def _process_task(self, task_pk: int) -> None:
         """处理单个下载任务（支持多账号）"""
         with self.app.app_context():
             task = DownloadTask.query.get(task_pk)
             if not task:
+                # 任务行已消失（已被删除）：丢弃本 pk 的残留中止登记。必须清理：
+                # SQLite 会复用已删除行的 rowid，残留的 "delete" 登记会让一个
+                # 恰好复用了同一 pk 的新任务被误中止，并永久卡在 downloading
+                self._clear_abort(task_pk)
                 return
-            task.status = "downloading"
-            task.progress = 0
-            db.session.commit()
+            # 状态守门①：非 pending 一律跳过。
+            # 出现非 pending 有三种可能：用户已暂停/删除；本 pk 被重复入队
+            # （「继续」会再次入队，而旧的队列条目可能仍在）而任务已完成；
+            # 全局暂停时被就地转为 paused。三者都应放弃处理。
+            if task.status != "pending":
+                if task.status == "paused":
+                    # 顺手清掉暂停时登记的中止标记：该任务未在传输，
+                    # 标记不会被下载循环消费，留着会在注册表里泄漏。
+                    # 仅对 paused 清理：status=downloading 说明同一 pk 的另一
+                    # 个队列条目正在传输，此刻清理会把它的中止标记一并抹掉
+                    self._clear_abort(task_pk)
+                return
+            # 状态守门②：全局暂停中。就地转为 paused 而不是跳过，
+            # 让任务在界面上明确显示为「已暂停」而非一直「等待中」
+            if self._pause_all:
+                task.status = "paused"
+                db.session.commit()
+                # 「暂停全部」会给本 pk 登记中止标记，而本任务并未进入传输
+                # 循环去消费它；此处一并清理，避免注册表泄漏
+                self._clear_abort(task_pk)
+                return
 
+            # 先把后续要用的字段读出来：下面用条件 UPDATE 认领后 session
+            # 会过期，若此时任务行已被删除，惰性刷新会抛 ObjectDeletedError
             sid = task.song_id
             sname = task.song_name
             artists = task.artists
@@ -985,60 +1195,131 @@ class TaskManager:
             mode = Setting.get("download_mode", "fallback")
             prefer_non_vip = Setting.get("prefer_non_vip", "false") == "true"
 
-        # 选择账号（按 VIP 偏好过滤）
-        if mode == "round_robin":
-            account = self._account_selector.pick_for_round_robin(prefer_non_vip, fee, platform=platform)
-        else:
-            # 接力模式
-            account = self._account_selector.pick_for_fallback(prefer_non_vip, fee, platform=platform)
-
-        if not account:
-            # 无可用账号：区分"全部因小时限额满"和"无账号/月额度满"
-            if self._account_selector.all_hourly_limited(platform=platform):
-                # 所有账号当前自然小时下载限额已满：挂起任务等待限额恢复，
-                # 每 60 秒复查一次，自然小时切换/有账号恢复即提前结束等待
-                logger.warning(
-                    "所有账号当前自然小时下载限额已满，任务等待限额恢复（最长 %d 秒）",
-                    _HOURLY_PAUSE_SECONDS,
-                )
-                # 先把任务状态回退为 pending 并写入提示（前端任务列表可见），
-                # 避免前端一直显示 downloading
-                with self.app.app_context():
-                    t = DownloadTask.query.get(task_pk)
-                    if t:
-                        t.status = "pending"
-                        t.progress = 0
-                        t.error_msg = "所有账号小时限额已满，等待恢复后自动继续"
-                        db.session.commit()
-                deadline = time.time() + _HOURLY_PAUSE_SECONDS
-                while time.time() < deadline and not self._stop_event.is_set():
-                    if not self._account_selector.all_hourly_limited(platform=platform):
-                        break                                   # 自然小时切换/有账号恢复，提前结束
-                    self._stop_event.wait(min(60.0, max(1.0, deadline - time.time())))
-                # 重新入队前清掉提示
-                with self.app.app_context():
-                    t = DownloadTask.query.get(task_pk)
-                    if t and t.error_msg:
-                        t.error_msg = ""
-                        db.session.commit()
-                # 暂停结束后把任务重新放回队列
-                self._task_queue.put(task_pk)
+            # 原子认领：条件 UPDATE + rowcount，替代原先的「读→改→提交」。
+            # 后者在并发下会把用户刚写入的 paused 覆盖回 downloading，
+            # 导致「点了暂停但任务照跑」
+            claimed = db.session.query(DownloadTask).filter(
+                DownloadTask.pk == task_pk,
+                DownloadTask.status == "pending",
+            ).update({"status": "downloading", "progress": 0}, synchronize_session=False)
+            db.session.commit()
+            if not claimed:
+                # 认领失败：状态在窗口内被第三方改掉（暂停全部/暂停/删除）。
+                # 若最终状态仍是 downloading，说明是同一 pk 的另一个队列条目
+                # 正在传输，必须保留它的中止标记；否则（paused / 行已被删除）
+                # 清理本 pk 的残留登记，避免注册表随任务数增长而泄漏
+                left = db.session.query(DownloadTask.status).filter(
+                    DownloadTask.pk == task_pk).scalar()
+                if left != "downloading":
+                    self._clear_abort(task_pk)
                 return
-            self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "无可用账号（全部达额度或未配置）", platform=platform)
+
+        try:
+            # 选择账号（按 VIP 偏好过滤）
+            if mode == "round_robin":
+                account = self._account_selector.pick_for_round_robin(prefer_non_vip, fee, platform=platform)
+            else:
+                # 接力模式
+                account = self._account_selector.pick_for_fallback(prefer_non_vip, fee, platform=platform)
+
+            if not account:
+                # 无可用账号：区分"全部因小时限额满"和"无账号/月额度满"
+                if self._account_selector.all_hourly_limited(platform=platform):
+                    self._wait_for_hourly_quota(task_pk, platform)
+                    return
+                self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, "无可用账号（全部达额度或未配置）", platform=platform)
+                return
+
+            if mode == "round_robin":
+                # 轮询模式：单账号失败不切换，直接标记失败
+                self._download_with_account(task_pk, account, sid, sname, artists, pl_id, pl_name,
+                                            level, write_meta, write_lyric, switch_on_fail=False,
+                                            prefer_non_vip=prefer_non_vip, fee=fee,
+                                            quality_fallback=quality_fallback)
+            else:
+                # 接力模式：失败或达额度时切换到下一个账号
+                self._download_with_account(task_pk, account, sid, sname, artists, pl_id, pl_name,
+                                            level, write_meta, write_lyric, switch_on_fail=True,
+                                            prefer_non_vip=prefer_non_vip, fee=fee,
+                                            quality_fallback=quality_fallback)
+        finally:
+            # 本次传输已结束：清掉残留的中止登记，避免注册表随任务数增长。
+            # 各中止分支内已用 _consume_abort 消费过一次，此处重复清理安全
+            self._clear_abort(task_pk)
+
+    def _wait_for_hourly_quota(self, task_pk: int, platform: str) -> None:
+        """所有账号自然小时限额已满时挂起任务，等待限额恢复
+
+        三条退出路径，粒度不同：
+        - 中止登记 5s：暂停必须立即让出 worker，否则最长要等
+          _HOURLY_PAUSE_SECONDS 才响应
+        - 任务行回查 5s：删除路径刻意不留中止登记（避免 rowid 复用时误伤新
+          任务），只能靠主键点查发现"行已没了"；PK 点查极廉价，且本循环只在
+          「所有账号小时限额已满」这种罕见状态下运行，不会成为热点
+        - 限额复查 60s：每次复查都要扫全部账号（多次查询），
+          降到 5s 会让数据库查询量增加 12 倍，收益却很小
+        """
+        logger.warning(
+            "所有账号当前自然小时下载限额已满，任务等待限额恢复（最长 %d 秒）",
+            _HOURLY_PAUSE_SECONDS,
+        )
+        # 先把任务状态回退为 pending 并写入提示（前端任务列表可见），
+        # 避免前端一直显示 downloading
+        with self.app.app_context():
+            t = DownloadTask.query.get(task_pk)
+            if t is None:
+                # 任务在认领后已被删除：无需等待，直接收尾
+                self._consume_abort(task_pk, default_reason="delete")
+                return
+            if t.status == "downloading":
+                # 仅在仍是"下载中"时回退。若用户此刻已点暂停（状态已是
+                # paused），这里覆盖成 pending 会把暂停状态吃掉
+                t.status = "pending"
+                t.progress = 0
+                t.error_msg = "所有账号小时限额已满，等待恢复后自动继续"
+                db.session.commit()
+
+        deadline = time.time() + _HOURLY_PAUSE_SECONDS
+        next_quota_check = 0.0
+        aborted = False
+        # 仅在循环内未留下中止登记（即"行已被删除"）时才作为收尾依据
+        default_reason = "pause"
+        while time.time() < deadline and not self._stop_event.is_set():
+            if self._abort.get(task_pk):
+                aborted = True
+                break
+            # 任务行被删除：删除路径不留中止登记，只能靠回查主键发现。
+            # 不查会导致 worker 一直等到 _HOURLY_PAUSE_SECONDS 结束，
+            # 单线程 worker 被白占，后续所有任务集体停摆
+            with self.app.app_context():
+                if DownloadTask.query.get(task_pk) is None:
+                    aborted = True
+                    default_reason = "delete"
+                    break
+            now = time.time()
+            if now >= next_quota_check:
+                next_quota_check = now + 60.0
+                if not self._account_selector.all_hourly_limited(platform=platform):
+                    break                                   # 自然小时切换/有账号恢复，提前结束
+            self._stop_event.wait(5.0)
+
+        if aborted:
+            # 用户暂停/删除：不再入队。暂停状态已由接口写入，删除已删行
+            self._consume_abort(task_pk, default_reason=default_reason)
             return
 
-        if mode == "round_robin":
-            # 轮询模式：单账号失败不切换，直接标记失败
-            self._download_with_account(task_pk, account, sid, sname, artists, pl_id, pl_name,
-                                        level, write_meta, write_lyric, switch_on_fail=False,
-                                        prefer_non_vip=prefer_non_vip, fee=fee,
-                                        quality_fallback=quality_fallback)
-        else:
-            # 接力模式：失败或达额度时切换到下一个账号
-            self._download_with_account(task_pk, account, sid, sname, artists, pl_id, pl_name,
-                                        level, write_meta, write_lyric, switch_on_fail=True,
-                                        prefer_non_vip=prefer_non_vip, fee=fee,
-                                        quality_fallback=quality_fallback)
+        # 重新入队前清掉提示（中止路径不清，保留 paused 任务的原有提示）
+        with self.app.app_context():
+            t = DownloadTask.query.get(task_pk)
+            if t is None:
+                return                                      # 任务已被删除，不入队
+            if t.status != "pending":
+                return                                      # 期间被暂停，交给「继续」处理
+            if t.error_msg:
+                t.error_msg = ""
+                db.session.commit()
+        # 等待结束后把任务重新放回队列
+        self._task_queue.put(task_pk)
 
     def _download_with_account(
         self,
@@ -1057,6 +1338,7 @@ class TaskManager:
         fee: int = 0,
         tried: set[int] | None = None,
         quality_fallback: bool = True,
+        abort_check=None,
     ) -> None:
         """用指定账号下载一首歌
 
@@ -1066,11 +1348,21 @@ class TaskManager:
             fee: 歌曲费用类型（1=VIP歌曲）
             tried: 本次接力链路已尝试的账号 ID 集合（递归透传，防止无限切换）
             quality_fallback: 目标档取不到流时是否沿音质链向低档回退
+            abort_check: 用户中止检查回调（暂停/删除任务）；递归换号时透传同一个，
+                保证始终针对同一任务判断。为 None 时按 task_pk 自行构造
         """
         tried = tried if tried is not None else set()
         tried.add(account.id)
+        if abort_check is None:
+            abort_check = self._download_abort_check(task_pk)
         client = self._get_client_for_account(account)
         logger.info("下载 [%s - %s] 使用账号: %s", artists, sname, account.name)
+
+        # 中止检查点（取流前）：get_song_url_with_fallback 可能沿音质链多次往返，
+        # 且 provider 内部无取消钩子，先消费一次中止请求让暂停响应更及时
+        if abort_check():
+            self._consume_abort(task_pk)
+            return
 
         # 获取下载链接（quality_fallback 开启时沿音质链逐档回退，取实际生效档）
         if quality_fallback:
@@ -1112,7 +1404,8 @@ class TaskManager:
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
                                                 level, write_meta, write_lyric, switch_on_fail=True,
                                                 prefer_non_vip=prefer_non_vip, fee=fee, tried=tried,
-                                                quality_fallback=quality_fallback)
+                                                quality_fallback=quality_fallback,
+                                                abort_check=abort_check)
                     return
             self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
                               f"{reason}（已尝试 {len(tried)} 个账号）", account_id=account.id, platform=account.platform)
@@ -1121,6 +1414,12 @@ class TaskManager:
         # 只有有 url 时才取扩展名和大小
         ext = url_info.get("ext", "mp3")
         size = url_info.get("size")
+
+        # 中止检查点（元数据前）：_fetch_meta_with_retry 内部含重试与 sleep，
+        # 在此抢一次判断可把暂停的最坏延迟从"多次重试"压到"单次请求"
+        if abort_check():
+            self._consume_abort(task_pk)
+            return
 
         # 获取歌曲详情与歌词（空结果瞬时重试兜底）
         meta, lyric, tlyric = _fetch_meta_with_retry(client, str(sid), write_lyric)
@@ -1135,6 +1434,18 @@ class TaskManager:
         # 详情本来就要取封面；QQ 无单曲详情接口时 title 为空自然回退）
         if (meta.get("title") or "").strip():
             sname = meta["title"].strip()
+
+        # 关键字段守门：权威曲名为空 = 上游脏数据（解析层已把 null 归一为 ""）。
+        # 判失败而非静默兜底：在下载历史留一条明确记录，优于产出
+        # 「未知歌手 - 未知歌曲.mp3」这类无名文件。
+        # 位置必须在 meta 标题覆盖之后：此处 sname 才是最终落盘/入库用名；
+        # 且每次重试都会重新拉 /song/detail，上游恢复后手动重试即可成功。
+        # 传 sname or "" / artists or ""：语义明确（真正的数据防御在 _mark_failed 入口归一）。
+        if not (sname or "").strip():
+            self._mark_failed(task_pk, sid, sname or "", artists or "",
+                              pl_id, pl_name, "上游返回值为空，下载失败",
+                              account_id=account.id, platform=account.platform)
+            return
 
         # 主歌手 = 第一个歌手（下载子目录）。优先任务记录的 artists
         # （三平台均含全部歌手；分隔符不统一：网易云/QQ 用 '/'，酷狗
@@ -1169,18 +1480,29 @@ class TaskManager:
                         db.session.commit()
 
         try:
-            path = downloader.download(
+            outcome = downloader.download(
                 url=url,
                 sub_dir=primary_artist,
                 filename=filename,
                 expected_size=size,
                 progress_callback=progress_cb,
+                abort_check=abort_check,
             )
+        except DownloadAborted as e:
+            # 用户暂停/删除：正常控制流。不改任务状态、不计失败，
+            # delete 时清理残留文件，pause 时保留 .part 供断点续传
+            self._consume_abort(task_pk, e.part_path)
+            return
         except OSError as e:
             logger.error("下载 %s - %s 时 [Errno %d]: %s", artists, sname, e.errno or 0, e)
             self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
                               f"下载异常 [Errno {e.errno}]: {e}", account_id=account.id, platform=account.platform)
             return
+
+        path = outcome.path if outcome else None
+        # produced=False 表示命中"目标已存在且大小相符"提前返回，
+        # 该文件早于本次任务就存在，删除任务时不得删除它
+        produced = outcome.produced if outcome else False
 
         if not path:
             if switch_on_fail:
@@ -1192,7 +1514,8 @@ class TaskManager:
                     self._download_with_account(task_pk, next_acc, sid, sname, artists, pl_id, pl_name,
                                                 level, write_meta, write_lyric, switch_on_fail=True,
                                                 prefer_non_vip=prefer_non_vip, fee=fee, tried=tried,
-                                                quality_fallback=quality_fallback)
+                                                quality_fallback=quality_fallback,
+                                                abort_check=abort_check)
                     return
             self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name,
                               f"下载失败（重试耗尽）（已尝试 {len(tried)} 个账号）",
@@ -1219,19 +1542,32 @@ class TaskManager:
 
         # 标记成功（记录 account_id 用于额度统计）
         with self.app.app_context():
+            # 删除竞态终检：上面的 write_tags 含封面下载与标签写入，耗时可达
+            # 数秒，期间任务行可能已被 delete_task 删除。此时若照常入库，会产生
+            # "幽灵 success 记录"——下载历史（以 download_tasks 为数据源）里
+            # 看不到它，却通过歌曲去重阻断该歌重新下载。
+            # 放在同一事务内把窗口从"秒级"压到"毫秒级"（残余 TOCTOU 见方案 B11）
+            gone = DownloadTask.query.get(task_pk) is None
+            if gone or self._abort.get(task_pk) == "delete":
+                # gone=True 说明任务行已消失（删除已提交），此时本次产出的文件
+                # 必然是孤儿，default_reason 传 delete 才能把它清掉
+                self._consume_abort(task_pk, path if produced else None,
+                                    default_reason="delete" if gone else "pause")
+                return
+
             Song.query.filter_by(id=sid, platform=account.platform, status="failed").delete()
             song = Song(
                 id=sid,
                 platform=account.platform,
                 name=sname,
-                artists=artists,
-                album=album_name,
-                duration_ms=duration_ms,
+                artists=artists or "",
+                album=album_name or "",
+                duration_ms=duration_ms or 0,
                 quality=actual_level,
                 file_path=str(path),
                 file_size=path.stat().st_size if path.exists() else 0,
                 playlist_id=pl_id,
-                source_name=pl_name,
+                source_name=pl_name or "",
                 status="success",
                 account_id=account.id,
             )
@@ -1265,7 +1601,26 @@ class TaskManager:
         Args:
             platform: 平台标识，默认 netease
         """
+        # 入口归一（单点防御全部调用方）：song_name 列可为 NULL，而 Song.name /
+        # Song.artists 都是 NOT NULL——None 会在下面 merge(Song(...)) 处抛
+        # IntegrityError，且异常早于 task.status="failed"，使任务停在 downloading
+        # 且无失败记录。此处收敛后，任何调用方传 None（含 task.song_name 为 NULL
+        # 的 _mark_failed_by_pk 转发路径）都安全。
+        name = name or ""
+        artists = artists or ""
+        # platform 是 Song 复合主键一部分（NOT NULL）、source_name 列可 NULL：
+        # None 会在 merge(Song(...)) 抛 IntegrityError，且异常早于
+        # task.status="failed"，使任务永久卡在 downloading 且无失败记录
+        pl_name = pl_name or ""
+        platform = platform or "netease"
         with self.app.app_context():
+            # 用户的暂停请求可能恰好落在「本例已注定失败」与「写库」之间：
+            # 此时以 paused 为准，songs 失败记录与任务行都不写，保持两者一致。
+            # 任务不会被卡死：失败路径已清掉 .part，用户点「继续」即重新下载
+            cur = DownloadTask.query.get(task_pk)
+            if cur is not None and cur.status == "paused":
+                logger.info("任务 %s 已处于暂停状态，跳过失败标记（%s）", task_pk, reason)
+                return
             # 按 (id, platform) 查询（N1 复合主键后天然防跨平台撞号）：
             # 已有 success 记录时不覆盖（跳过 delete + merge），只更新任务行
             existing = Song.query.filter_by(id=sid, platform=platform).first()
@@ -1307,12 +1662,146 @@ class TaskManager:
         self._mark_failed(task_pk, sid, sname, artists, pl_id, pl_name, reason, account_id=account_id, platform=platform)
 
     # ------------------------------------------------------------------
+    # 用户任务控制接口（供 routes/api.py 调用）
+    # ------------------------------------------------------------------
+    def pause_task(self, pk: int) -> tuple[bool, str]:
+        """暂停单个任务
+
+        返回值 (是否成功, 面向用户的提示)。
+        对"等待中"的任务只能在队列里保留 pk、等 worker 认领时跳过
+        （queue.Queue 无删除指定元素的能力）；对"下载中"的任务则靠
+        _abort 登记让下载循环在下一个分块退出。
+        """
+        # 必须先登记再去改库：worker 并发认领时，若先改库后登记，
+        # 认领后的分块循环可能抢在登记之前完成首次判断而漏掉中止
+        self._mark_abort(pk, "pause")
+        with self.app.app_context():
+            task = DownloadTask.query.get(pk)
+            if not task:
+                self._clear_abort(pk)
+                return False, "任务不存在"
+            if task.status not in RUNNABLE_TASK_STATUSES:
+                self._clear_abort(pk)
+                return False, f"任务当前状态（{task.status}）不可暂停"
+            # progress 刻意保留：让用户看到任务停在哪里；
+            # error_msg 清空：原提示（如"小时限额已满，等待恢复后自动继续"）
+            # 在暂停后已不成立，留着会误导
+            DownloadTask.query.filter(DownloadTask.pk == pk).update(
+                {"status": "paused", "error_msg": ""}, synchronize_session=False)
+            db.session.commit()
+        logger.info("任务已暂停: pk=%s", pk)
+        return True, "已暂停"
+
+    def resume_task(self, pk: int) -> tuple[bool, str]:
+        """继续（恢复）单个已暂停任务
+
+        会顺带解除全局暂停标记：用户点「继续」就是想让它跑，
+        否则会出现"点了继续但任务纹丝不动"的困惑。
+        """
+        with self.app.app_context():
+            task = DownloadTask.query.get(pk)
+            if not task:
+                return False, "任务不存在"
+            if task.status != "paused":
+                return False, f"任务当前状态（{task.status}）不可继续"
+            task.status = "pending"
+            task.error_msg = ""
+            task.progress = 0
+            db.session.commit()
+        # 顺序要求：必须先清中止标记再入队，否则 worker 立即取到任务时
+        # 仍会看到残留标记而再次中止
+        self._clear_abort(pk)
+        with self._control_lock:
+            self._pause_all = False
+        self._task_queue.put(pk)
+        logger.info("任务已继续: pk=%s", pk)
+        return True, "已继续"
+
+    def delete_task(self, pk: int) -> tuple[bool, str]:
+        """删除单个任务
+
+        正在下载的任务会被中止，其残留 .part 由 worker 收尾清理；
+        接口本身不等 worker 结束（避免 HTTP 请求被长时间阻塞）。
+        """
+        with self.app.app_context():
+            task = DownloadTask.query.get(pk)
+            if not task:
+                return False, "任务不存在"
+            status = task.status
+            if status not in ACTIVE_TASK_STATUSES:
+                return False, f"任务已结束（{status}），无需删除"
+            if status == "downloading":
+                # 登记删除原因：worker 中止后会删掉 .part（暂停则保留）
+                self._mark_abort(pk, "delete")
+            else:
+                # 未在传输：清掉暂停时留下的登记，避免注册表泄漏
+                self._clear_abort(pk)
+            DownloadTask.query.filter(DownloadTask.pk == pk).delete(synchronize_session=False)
+            db.session.commit()
+        logger.info("任务已删除: pk=%s (原状态 %s)", pk, status)
+        return True, "已删除任务"
+
+    def pause_all(self) -> int:
+        """暂停全部在途任务，返回受影响数量"""
+        with self._control_lock:
+            self._pause_all = True
+        with self.app.app_context():
+            pks = [r[0] for r in db.session.query(DownloadTask.pk).filter(
+                DownloadTask.status.in_(RUNNABLE_TASK_STATUSES)).all()]
+            for p in pks:
+                # 逐一登记而不是只登记"当前正在下载的那个"：与「暂停全部」
+                # 并发的 worker 可能正处于「认领状态 → 进入传输」的窗口内，
+                # 此刻它尚未成为"当前任务"，只登记一个会漏掉它 —— 表现为
+                # 界面显示已暂停、文件却仍在下载
+                self._mark_abort(p, "pause")
+            if pks:
+                DownloadTask.query.filter(DownloadTask.pk.in_(pks)).update(
+                    {"status": "paused"}, synchronize_session=False)
+                db.session.commit()
+        logger.info("已暂停全部任务：%d 个", len(pks))
+        return len(pks)
+
+    def resume_all(self) -> int:
+        """继续全部已暂停任务，返回受影响数量"""
+        with self._control_lock:
+            self._pause_all = False
+        with self.app.app_context():
+            pks = [r[0] for r in db.session.query(DownloadTask.pk).filter(
+                DownloadTask.status == "paused").order_by(DownloadTask.created_at).all()]
+            if pks:
+                DownloadTask.query.filter(DownloadTask.pk.in_(pks)).update(
+                    {"status": "pending", "progress": 0, "error_msg": ""},
+                    synchronize_session=False)
+                db.session.commit()
+        for pk in pks:
+            self._clear_abort(pk)
+            self._task_queue.put(pk)
+        logger.info("已继续全部任务：%d 个", len(pks))
+        return len(pks)
+
+    def is_globally_paused(self) -> bool:
+        """全局暂停标记（内存态，不跨进程重启保留）"""
+        with self._control_lock:
+            return self._pause_all
+
+    def has_active_task(self) -> bool:
+        """是否存在未被暂停的在途任务（驱动前端导航栏"下载中/空闲"指示器）
+
+        全部暂停时返回 False —— 否则导航栏会恒显"下载中..."，
+        与用户刚点下的"暂停全部"语义直接冲突
+        """
+        with self.app.app_context():
+            return db.session.query(DownloadTask.pk).filter(
+                DownloadTask.status.in_(RUNNABLE_TASK_STATUSES)
+            ).first() is not None
+
+    # ------------------------------------------------------------------
     # 状态查询
     # ------------------------------------------------------------------
     def get_active_tasks(self) -> list[dict]:
         with self.app.app_context():
             tasks = DownloadTask.query.filter(
-                DownloadTask.status.in_(["pending", "downloading"])
+                DownloadTask.status.in_(ACTIVE_TASK_STATUSES)
             ).order_by(DownloadTask.created_at).all()
             # 关联账号名
             result = []

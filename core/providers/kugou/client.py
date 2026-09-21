@@ -27,6 +27,7 @@ import logging
 import re
 import threading
 import time
+import weakref
 
 import requests
 
@@ -164,6 +165,9 @@ def _load_gcid_cache() -> None:
                     except (TypeError, ValueError):
                         continue
     except (OSError, ValueError) as e:
+        # 复位以便下次重试：原实现在 try 之前置位，一次瞬时 IO 错误/文件损坏
+        # 后整个进程生命周期内映射恒 miss（依赖 gcid 的歌单接口持续失败）
+        _gcid_file_loaded = False
         logger.warning("加载酷狗 gcid 映射缓存失败（忽略，冷启动重建）: %s", e)
 
 
@@ -241,6 +245,9 @@ class KuGouClient:
         # 显式关闭代理环境变量读取，避免本机 API 请求走代理
         self.session.trust_env = False
         self.session.headers.update({"User-Agent": _UA})
+        # 工厂语义（get_provider 禁止缓存单例）：实例随调用结束丢弃，
+        # GC 时自动关闭连接池，避免每个调用点都要记得 close()
+        weakref.finalize(self, self.session.close)
 
     @property
     def base_url(self) -> str:
@@ -348,6 +355,12 @@ class KuGouClient:
                         time.sleep(1.5 * attempt)
                         continue
                     return {}
+                # 返回点单点归一为 dict：resp.json() 合法但可能为数组/字符串，
+                # 下游 data.get(...) 会抛 AttributeError（(x or {}) 兜不住非空非 dict）
+                if not isinstance(data, dict):
+                    logger.warning("请求 %s 返回非对象 JSON: %s",
+                                   path, type(data).__name__)
+                    data = {}
                 # dfid 失效：废弃后重试（下轮 _build_cookie 会重新注册）
                 if data.get("error_code") == _DFID_STALE_CODE:
                     logger.info("dfid 失效(152)，重新注册: %s", path)
@@ -357,6 +370,14 @@ class KuGouClient:
                     return data
                 return data
             except requests.exceptions.ConnectionError as e:
+                # 瞬时断连（API 子进程重启/端口漂移/网络抖动）走重试路径。
+                # 原实现直接抛 RuntimeError 会被上层判为「接口/鉴权级失败」
+                # 触发换号，而换号对网络抖动毫无意义（一次抖动放大成 N 次无效请求）
+                logger.warning("连接酷狗API失败 %s 第 %d/%d 次: %s",
+                               path, attempt, retries, e)
+                if attempt < retries:
+                    time.sleep(1.5 * attempt)
+                    continue
                 raise RuntimeError(
                     f"无法连接酷狗音乐API服务（{self.base_url}），"
                     f"请检查服务是否运行或地址配置是否正确: {e}"
@@ -399,7 +420,7 @@ class KuGouClient:
         # 形态 4：歌单曲目型（mixsongid 顶层字段是本形态唯一标识）
         if "mixsongid" in raw:
             singer_names = [str(s.get("name") or "").strip()
-                            for s in (raw.get("singerinfo") or [])]
+                            for s in (raw.get("singerinfo") or []) if isinstance(s, dict)]
             artists = "/".join(n for n in singer_names if n)
             name = str(raw.get("name") or "")
             # 上游 /playlist/track/all 的 name 是「歌手 - 歌名」合并串
@@ -436,9 +457,13 @@ class KuGouClient:
             return None
         name = (base.get("audio_name") or raw.get("audio_name")
                 or base.get("songname") or raw.get("songname") or "")
-        # 嵌套型有 authors 数组；扁平型只有 author_name 字符串
+        # 嵌套型有 authors 数组；扁平型只有 author_name 字符串。
+        # authors 项可能为 null（键存在值为 null），直接 join 会抛 TypeError，
+        # 故与上方 singerinfo 同款「先归一、再 if 过滤」处理（避免拼出 " /B"、"a//b"）。
+        author_names = [str(a.get("author_name") or "").strip()
+                        for a in (raw.get("authors") or []) if isinstance(a, dict)]
         artists = (base.get("author_name") or raw.get("author_name")
-                   or "/".join(a.get("author_name", "") for a in (raw.get("authors") or []))
+                   or "/".join(n for n in author_names if n)
                    or "")
         album = ((raw.get("album_info") or {}).get("album_name")
                  or raw.get("album_name") or "")
@@ -521,7 +546,9 @@ class KuGouClient:
             "artist": base.get("author_name") or (entry or {}).get("artists") or "",
             "album": album_info.get("album_name") or base.get("album_name")
                      or (entry or {}).get("album") or "",
-            "year": (base.get("publish_date") or "")[:4],
+            # or "" 只兜 falsy：publish_date 为整数（如 20240101）时值仍是 int，
+            # int[:4] 抛 TypeError 穿透整条下载链路，故先 str 归一
+            "year": str(base.get("publish_date") or "")[:4],
             "cover_url": fix_cover_url(album_info.get("cover") or ""),
             # /krm/audio 无音轨号/碟号字段（实测 base/album_info 均无），
             # 显式置 0 不写入；专辑歌手用歌曲作者近似（酷狗无独立专辑歌手字段）
@@ -815,6 +842,8 @@ class KuGouClient:
                 "page": 1, "pagesize": 3,
             }, timeout=10)
             for au in (body2.get("data") or {}).get("lists") or []:
+                if not isinstance(au, dict):
+                    continue
                 try:
                     author_id = int(au.get("AuthorId") or 0)
                 except (TypeError, ValueError):
@@ -1101,7 +1130,12 @@ class KuGouClient:
         collected: list[dict] = []
         total = 0
         empty_retry_done = False           # sort=1 偶发空页（实测），回退 sort=2 重试一次
-        while len(collected) < limit:
+        seen_pids: set[int] = set()        # 去重（顺带修上游重复项）
+        # 页数硬上限：本页所有 specialid 都无法转 int 时 collected 不增长、
+        # has_next 恒真，三个退出条件同时失效 → page 无限自增且每轮一次真实
+        # 网络请求（Web 端点无限转圈并持续冲击上游）。50 页 × 30 条 = 1500 条
+        max_pages = 50
+        while len(collected) < limit and page <= offset // page_size + max_pages:
             bust = bool(empty_retry_done)   # 重试请求绕过服务端 2 分钟响应缓存
             body = self._request("/top/playlist", {
                 "page": page, "pagesize": page_size,
@@ -1130,6 +1164,9 @@ class KuGouClient:
                     pid = int(it.get("specialid"))
                 except (TypeError, ValueError):
                     continue
+                if pid in seen_pids:
+                    continue
+                seen_pids.add(pid)
                 collected.append({
                     "id": pid,
                     "name": str(it.get("specialname") or ""),

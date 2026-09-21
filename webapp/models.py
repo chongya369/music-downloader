@@ -147,31 +147,15 @@ class Song(db.Model):
     # 记录用哪个账号下载的（用于本月下载额度统计）
     account_id = db.Column(db.Integer, nullable=True)
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "platform": self.platform,
-            "platform_name": PLATFORM_NAMES.get(self.platform, self.platform),
-            "name": self.name,
-            "artists": self.artists,
-            "album": self.album,
-            "duration_ms": self.duration_ms,
-            "quality": self.quality,
-            "file_path": self.file_path,
-            "file_size": self.file_size,
-            "playlist_id": self.playlist_id,
-            "playlist_name": self.playlist.name if self.playlist else self.source_name,
-            "downloaded_at": self.downloaded_at.strftime("%Y-%m-%d %H:%M:%S") if self.downloaded_at else None,
-            "status": self.status,
-            "error_msg": self.error_msg,
-            "account_id": self.account_id,
-        }
-
 
 class DownloadTask(db.Model):
     """下载任务（实时进度跟踪）
 
-    status: pending / downloading / done / failed
+    status: pending / downloading / paused / done / failed / skipped
+        pending       已入队待处理
+        downloading   正在处理
+        paused        被用户暂停（可通过「继续」恢复；.part 断点保留）
+        done / failed / skipped  终态
     fee: 网易云歌曲费用类型 0=免费 1=VIP 4=购买专辑 8=低音质免费
     platform: 平台标识（netease / qq / kugou）
     """
@@ -183,7 +167,7 @@ class DownloadTask(db.Model):
     artists = db.Column(db.String(300), default="")
     playlist_id = db.Column(db.Integer, nullable=True)
     playlist_name = db.Column(db.String(200), default="")
-    status = db.Column(db.String(20), default="pending")   # pending/downloading/done/failed
+    status = db.Column(db.String(20), default="pending")   # pending/downloading/paused/done/failed/skipped
     progress = db.Column(db.Integer, default=0)            # 0-100
     error_msg = db.Column(db.String(500), default="")
     account_id = db.Column(db.Integer, nullable=True)      # 本次下载用的账号
@@ -210,9 +194,27 @@ class DownloadTask(db.Model):
         }
 
 
+# ======================================================================
+# 下载任务状态集合
+# ----------------------------------------------------------------------
+# 历史上这两个集合的字面量散落在 task_manager / routes 的 8 处查询里，
+# 新增状态（paused）时极易漏改，故统一收敛到此处单独定义：
+#   - 漏改去重查询 → 同一首歌被重复入队下载
+#   - 漏改 get_active_tasks → 任务从界面消失，用户无法继续/删除
+# 新增在途状态时只改这里即可。
+# ======================================================================
+
+# 在途任务状态总集（含 paused）：去重查询、任务列表展示用。
+# 语义：三者都表示"这首歌已被安排下载"，同一 (song_id, platform) 不应重复入队。
+ACTIVE_TASK_STATUSES = ("pending", "downloading", "paused")
+
+# 需要 worker 推进的状态（不含 paused）：启动恢复重建队列、判断"是否有活跃任务"用。
+# paused 是用户显式状态，重启后刻意不重新入队，等用户点「继续」。
+RUNNABLE_TASK_STATUSES = ("pending", "downloading")
+
+
 class Setting(db.Model):
     """配置项 key-value 存储"""
-    __tablename__ = "settings"
     key = db.Column(db.String(100), primary_key=True)
     value = db.Column(db.Text, default="")
 
@@ -292,7 +294,9 @@ DEFAULT_SETTINGS = {
     "web_port": "*:45600",
     "output_dir": "downloads",
     # 音质档位按平台独立设置（空串=未单独设置，读取时回退旧全局 level 兼容迁移）
-    # 档位值沿用网易云语义：standard/exhigh/lossless/hires
+    # 档位值沿用网易云语义：standard/exhigh/lossless/hires 为三平台公共档；
+    # QQ 独有 jymaster(臻品母带)/ogg640；网易云独有 jymaster/jyeffect/dolby/
+    # vivid/sky（后四档不进降级链）；合法值域见 routes/api.py 的 _VALID_LEVELS
     "level_netease": "",
     "level_qq": "",
     "level_kugou": "",
@@ -539,7 +543,10 @@ def init_db(app, db_path: str = "downloads.db") -> None:
     abs_db_path.parent.mkdir(parents=True, exist_ok=True)
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{abs_db_path.as_posix()}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    event.listen(Engine, "connect", _set_sqlite_pragma)
+    # 幂等保护：同进程多次 init_db()（测试/多 app）会重复注册 connect 监听，
+    # 每次建立连接都会重复执行 PRAGMA
+    if not event.contains(Engine, "connect", _set_sqlite_pragma):
+        event.listen(Engine, "connect", _set_sqlite_pragma)
     db.init_app(app)
 
     with app.app_context():
@@ -581,6 +588,10 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         if inspector.has_table("playlists") and _column_exists(inspector, "playlists", "platform"):
             with db.engine.begin() as conn:
                 conn.execute(text("UPDATE playlists SET platform = 'netease' WHERE platform IS NULL OR platform = ''"))
+        # accounts 与其余三表对齐：残留 NULL/空 platform 归一到 netease
+        if inspector.has_table("accounts") and _column_exists(inspector, "accounts", "platform"):
+            with db.engine.begin() as conn:
+                conn.execute(text("UPDATE accounts SET platform = 'netease' WHERE platform IS NULL OR platform = ''"))
         # 写入缺失的默认配置
         for key, value in DEFAULT_SETTINGS.items():
             if not db.session.get(Setting, key):

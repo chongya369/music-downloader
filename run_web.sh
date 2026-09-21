@@ -110,8 +110,7 @@ done
 
 if [ "$MISSING_DEPS" -eq 1 ]; then
     echo "[信息] 安装缺失依赖（首次运行较慢）..."
-    .venv/bin/python -m pip install -r requirements.txt
-    if [ $? -ne 0 ]; then
+    if ! .venv/bin/python -m pip install -r requirements.txt; then
         echo "[错误] 依赖安装失败"
         exit 1
     fi
@@ -120,15 +119,16 @@ else
     echo "[信息] 所有依赖已就绪"
 fi
 
-# 检测内置 API 二进制（0.2.0+）
-API_BIN="api/ncm-api-linux-x64"
-if [ -f "$API_BIN" ]; then
-    chmod +x "$API_BIN"
-    echo "[信息] API 二进制就绪: $API_BIN"
-else
-    echo "[警告] 缺少 API 二进制: $API_BIN"
-    echo "[警告] 发现页等功能将不可用。请从官方 Release 下载后放回 api/ 目录"
-fi
+# 检测内置 API 二进制（0.2.0+）：三平台对齐（ncm / qqmusic / kugou，
+# 与 run_web.bat 及 build.py 的 linux 文件名保持一致）
+for api_bin in "api/ncm-api-linux-x64" "api/qqmusic-api-linux-x64" "api/kugou_api_linux"; do
+    if [ -f "$api_bin" ]; then
+        chmod +x "$api_bin" || true   # 只读文件系统（fpk 场景）下 chmod 失败不阻断
+        echo "[信息] API 二进制就绪: $api_bin"
+    else
+        echo "[警告] 缺少 API 二进制: $api_bin (对应平台功能不可用)"
+    fi
+done
 
 echo ""
 echo "============================================"
