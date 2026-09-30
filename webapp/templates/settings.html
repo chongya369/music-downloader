@@ -218,6 +218,18 @@
                         </div>
                     </div>
                     <div class="col-md-6">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="filename_include_album" value="true">
+                            <label class="form-check-label">文件名包含专辑（歌手 - 歌名 [专辑].ext，区分同名不同版本）</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" name="overwrite_existing" value="true">
+                            <label class="form-check-label">同名文件已存在时覆盖重新下载（默认跳过）</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
                         <label class="form-label">单文件重试次数</label>
                         <input type="number" class="form-control" name="max_retries" min="1" max="10" value="3">
                     </div>

@@ -574,10 +574,11 @@ class TaskManager:
         with self.app.app_context():
             output_dir = Setting.get("output_dir", "downloads")
             max_retries = _setting_int("max_retries", 3)
+            overwrite = Setting.get("overwrite_existing", "false") == "true"
         p = Path(output_dir)
         if not p.is_absolute():
             p = _ROOT / output_dir
-        return Downloader(output_dir=p, max_retries=max_retries)
+        return Downloader(output_dir=p, max_retries=max_retries, overwrite=overwrite)
 
     # ------------------------------------------------------------------
     # 同步歌单
@@ -1520,9 +1521,12 @@ class TaskManager:
             if _source_artists.strip() else ""
         primary_artist = sanitize_filename(primary_artist) if primary_artist else "群星"
 
-        # 下载文件（文件名保留全部歌手：build_filename(artists, sname)）
+        # 下载文件（文件名保留全部歌手：build_filename(artists, sname)；
+        # filename_include_album 开启时附加专辑名，同歌手同名不同版本
+        # 不再生成同名文件互相冲突/被同名跳过误判为已下载）
         downloader = self._get_downloader()
-        filename = build_filename(artists, sname, ext)
+        include_album = Setting.get("filename_include_album", "true") == "true"
+        filename = build_filename(artists, sname, ext, album_name if include_album else "")
 
         last = {"pct": -1, "ts": 0.0}
 
