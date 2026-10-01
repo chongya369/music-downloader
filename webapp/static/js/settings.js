@@ -62,6 +62,8 @@ async function loadSettings() {
 
         form.write_metadata.checked = s.write_metadata === "true";
         form.write_lyric.checked = s.write_lyric === "true";
+        form.filename_include_album.checked = s.filename_include_album !== "false";
+        form.overwrite_existing.checked = s.overwrite_existing === "true";
         form.auto_sync_enabled.checked = s.auto_sync_enabled === "true";
     } catch (e) {
         showToast(e.message, "错误");
@@ -106,6 +108,8 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         sync_jitter: form.sync_jitter.value,
         write_metadata: form.write_metadata.checked ? "true" : "false",
         write_lyric: form.write_lyric.checked ? "true" : "false",
+        filename_include_album: form.filename_include_album.checked ? "true" : "false",
+        overwrite_existing: form.overwrite_existing.checked ? "true" : "false",
         auto_sync_enabled: form.auto_sync_enabled.checked ? "true" : "false",
     };
 

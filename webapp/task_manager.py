@@ -570,14 +570,23 @@ class TaskManager:
         p.set_custom_base_url(custom_url)
         return p
 
-    def _get_downloader(self) -> Downloader:
+    def _get_downloader(self) -> tuple[Downloader, bool]:
+        """构建下载器与文件名专辑开关
+
+        Returns:
+            (Downloader, include_album)。worker 线程无 app context，
+            两个设置必须在唯一的 context 块里一并读出，
+            裸调 Setting.get 会抛 RuntimeError（见 PR #7 评论）
+        """
         with self.app.app_context():
             output_dir = Setting.get("output_dir", "downloads")
             max_retries = _setting_int("max_retries", 3)
+            overwrite = Setting.get("overwrite_existing", "false") == "true"
+            include_album = Setting.get("filename_include_album", "true") == "true"
         p = Path(output_dir)
         if not p.is_absolute():
             p = _ROOT / output_dir
-        return Downloader(output_dir=p, max_retries=max_retries)
+        return Downloader(output_dir=p, max_retries=max_retries, overwrite=overwrite), include_album
 
     # ------------------------------------------------------------------
     # 同步歌单
@@ -1520,9 +1529,14 @@ class TaskManager:
             if _source_artists.strip() else ""
         primary_artist = sanitize_filename(primary_artist) if primary_artist else "群星"
 
-        # 下载文件（文件名保留全部歌手：build_filename(artists, sname)）
-        downloader = self._get_downloader()
-        filename = build_filename(artists, sname, ext)
+        # 下载文件（文件名保留全部歌手：build_filename(artists, sname)；
+        # filename_include_album 开启时附加专辑名，同歌手同名不同版本
+        # 不再生成同名文件互相冲突/被同名跳过误判为已下载。
+        # include_album 由 _get_downloader 在 app context 内读出带回——
+        # 本函数运行于 worker 线程，context 已在 _process_task 内退出，
+        # 此处不可再裸调 Setting.get）
+        downloader, include_album = self._get_downloader()
+        filename = build_filename(artists, sname, ext, album_name if include_album else "")
 
         last = {"pct": -1, "ts": 0.0}
 

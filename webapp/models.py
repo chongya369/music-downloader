@@ -297,6 +297,10 @@ DEFAULT_SETTINGS = {
     # Web 服务监听地址（host:port，* 表示监听所有网卡）
     "web_port": "*:45600",
     "output_dir": "downloads",
+    # 文件名包含专辑名（歌手 - 歌名 [专辑].ext）：同歌手同名不同版本可共存
+    "filename_include_album": "true",
+    # 同名文件已存在时覆盖重新下载（关闭时跳过下载并按成功处理）
+    "overwrite_existing": "false",
     # 音质档位按平台独立设置（空串=未单独设置，读取时回退旧全局 level 兼容迁移）
     # 档位值沿用网易云语义：standard/exhigh/lossless/hires 为三平台公共档；
     # QQ 独有 jymaster(臻品母带)/ogg640；网易云独有 jymaster/jyeffect/dolby/
