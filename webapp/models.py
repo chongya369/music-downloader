@@ -31,6 +31,8 @@ def vip_text_for(platform: str, vip_type: int) -> str:
     """会员类型文本（按平台区分）
 
     - netease: 0=非会员, 11=黑胶VIP, 12=SVIP
+      （注意：SVIP 识别依赖 /vip/info 的 redplus 包，account.vipType 对
+      SVIP 账号恒返 11，不可作为档位判据）
     - qq: 0=非会员, 1-8=绿钻VIP等级
     - kugou: 0=非会员, 1=VIP会员（client.get_user_info 按 is_vip 归一为 0/1）
     - 其他平台: 透传数字

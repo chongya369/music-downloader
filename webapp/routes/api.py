@@ -131,15 +131,20 @@ def _refresh_account_info(acc: Account, cookie: str | None = None) -> str:
                 logger.warning("网易云 Cookie 未生效(profile=null): %s", acc.name)
                 return "Cookie 未生效，请重新扫码获取"
             # 昵称权威字段在 profile.nickname（account 无 nickname，userName
-            # 是登录名非昵称）；会员类型用 account.vipType（经典 0/11/12 语义，
-            # 与 vip_text_for 展示映射表一致。实测 profile.vipType=110、
-            # /vip/info 的 vipCode=100/300/220，均不在映射表内，弃用）
+            # 是登录名非昵称）。⚠️ account.vipType 不可信：新版黑胶 SVIP 账号
+            # 该字段恒返 11（上游老编码已弃用），SVIP 标识仅在 profile.vipType=110
+            # 与 /vip/info 的 redplus 包（vipCode=300）中，故此处先按 account.vipType
+            # 兜底，再在下方用 vip_package=="redplus" 修正为 12
             acc.nickname = (p.get("nickname") or "").strip() or (a.get("userName") or "")
             acc.vip_type = int(a.get("vipType") or 0)
             acc.last_check_at = datetime.now()
         # 获取会员到期时间（接口失败则不更新该字段）
         vip_info = client.get_vip_info()
         if vip_info:
+            # SVIP 修正：redplus = 黑胶SVIP（vipCode=300）。account.vipType 对
+            # SVIP 账号恒返 11，若不修正会错误显示为「黑胶VIP」
+            if vip_info.get("vip_package") == "redplus":
+                acc.vip_type = 12
             expire_ms = vip_info.get("expire_time")
             if expire_ms:
                 try:

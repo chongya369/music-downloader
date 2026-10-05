@@ -335,11 +335,15 @@ class NeteaseClient:
             }
         注意 vipCode（100/220/300）与 account.vipType（0/11/12）是两套编码，
         前者不用于展示映射；此处返回的 vip_type 仅供内部参考。
+        ⚠️ account.vipType 不可信：新版黑胶 SVIP 账号该字段恒返 11（上游老编码
+        已弃用），SVIP 标识仅存在于 redplus 包（vipCode=300）。调用方（webapp
+        刷新账号信息）须用 vip_package=="redplus" 修正 vip_type=12。
         选择策略：遍历 redplus(SVIP) / associator(黑胶VIP) / musicPackage(音乐包)，
         取到期时间最晚的会员（用户可能同时持有多种权益，最晚到期时间才是实际失效时间）
 
         Returns:
-            {"vip_type": int, "expire_time": int(ms)|None}
+            {"vip_type": int, "expire_time": int(ms)|None, "vip_package": str}
+            vip_package: 命中的包名 "redplus"/"associator"/"musicPackage"，无会员为 ""
             expire_time 为 None 表示无到期信息（未开通/永久/接口失败）
             接口失败返回 {}
         """
@@ -357,6 +361,7 @@ class NeteaseClient:
         #   实际失效时间应取最晚的，而非按类型优先级取第一个）
         best_vip_code = 0
         best_expire_ms = None
+        best_package = ""
         for key in ("redplus", "associator", "musicPackage"):
             pkg = data.get(key) or {}
             vip_code = int(pkg.get("vipCode") or 0)
@@ -372,19 +377,22 @@ class NeteaseClient:
             if best_expire_ms is None or expire_ms > best_expire_ms:
                 best_vip_code = vip_code
                 best_expire_ms = expire_ms
+                best_package = key
 
         if best_expire_ms is not None:
-            return {"vip_type": best_vip_code, "expire_time": best_expire_ms}
+            return {"vip_type": best_vip_code, "expire_time": best_expire_ms,
+                    "vip_package": best_package}
 
         # vipCode > 0 但均无有效到期时间（永久/未真正开通），按类型优先级返回
         for key in ("redplus", "associator", "musicPackage"):
             pkg = data.get(key) or {}
             vip_code = int(pkg.get("vipCode") or 0)
             if vip_code > 0:
-                return {"vip_type": vip_code, "expire_time": None}
+                return {"vip_type": vip_code, "expire_time": None,
+                        "vip_package": key}
 
         # 无任何会员
-        return {"vip_type": 0, "expire_time": None}
+        return {"vip_type": 0, "expire_time": None, "vip_package": ""}
 
     def get_all_toplists(self) -> list[dict]:
         """获取所有官方榜单列表"""
