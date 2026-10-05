@@ -89,6 +89,8 @@ python -m venv .venv
 | `kugou_api_base_url` | `http://127.0.0.1:45603` | 自定义酷狗音乐 API 服务 URL，`use_custom_kugou_api_url` 为 `true` 时生效 |
 | `web_port` | `*:45600` | Web 服务监听地址（`host:port` 格式，如 `*:45600` 或 `127.0.0.1:45600`，`*` 表示所有网卡，修改后需重启服务） |
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录；fnOS 网关模式首启自动固定到数据卷绝对路径） |
+| `filename_include_album` | `true` | 文件名包含专辑名（`歌手 - 歌名 [专辑].ext`），避免同歌手同名不同版本（录音室/Live）互相冲突 |
+| `overwrite_existing` | `false` | 同名文件已存在时是否覆盖重新下载（`false` = 跳过下载并按成功记录） |
 | `level_netease` | （空） | 网易云音质（高→低）：sky / jymaster / vivid / dolby / jyeffect / hires / lossless / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
 | `level_qq` | （空） | QQ 音乐音质（高→低）：jymaster / hires / lossless / ogg640 / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
 | `level_kugou` | （空） | 酷狗音乐音质（高→低）：hires / lossless / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |

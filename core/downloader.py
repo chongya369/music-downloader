@@ -120,11 +120,18 @@ def _fit_path(path: Path, max_path_len: int = 240) -> Path:
     return path
 
 
-def build_filename(artist: str, title: str, ext: str) -> str:
-    """生成文件名：歌手 - 歌名.ext"""
+def build_filename(artist: str, title: str, ext: str, album: str = "") -> str:
+    """生成文件名：歌手 - 歌名.ext；专辑非空时为 歌手 - 歌名 [专辑].ext
+
+    专辑参与命名：同歌手同名不同版本（录音室/Live/翻唱）仅靠「歌手 - 歌名」
+    无法区分，会生成同名文件互相覆盖，或被"同名已存在跳过"误判为已下载
+    """
     artist = sanitize_filename(artist) if artist else "未知歌手"
     title = sanitize_filename(title) if title else "未知歌曲"
-    return f"{artist} - {title}.{(ext or 'mp3').lower()}"
+    name = f"{artist} - {title}"
+    if album and album.strip():
+        name = f"{name} [{sanitize_filename(album)}]"
+    return f"{name}.{(ext or 'mp3').lower()}"
 
 
 class Downloader:
