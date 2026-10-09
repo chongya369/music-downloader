@@ -130,6 +130,22 @@ document.getElementById("settings-form").addEventListener("submit", async functi
     }
 });
 
+// 迁移存量文件到「歌手 / 专辑」结构（手动触发：移动用户文件须显式确认，
+// 不做启动自动迁移；幂等可重复，已在原地的自动跳过）
+document.getElementById("btn-migrate-layout").addEventListener("click", async function() {
+    if (!confirm("将把已下载的存量文件搬入「歌手 / 专辑」目录。\n只搬位置不改文件名，已在原地的自动跳过；文件较多时可能耗时较长，继续？")) return;
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const data = await api("/api/settings/migrate-layout", { method: "POST", timeout: 120000 });
+        showToast(data.msg, "迁移");
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+    }
+});
+
 // 自定义URL切换
 function toggleCustomUrl() {
     const useCustom = document.getElementById("use-custom-api-url").checked;

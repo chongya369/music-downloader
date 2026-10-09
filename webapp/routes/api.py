@@ -923,6 +923,28 @@ def get_settings():
     return jsonify({"code": 0, "data": data})
 
 
+@api_bp.route("/settings/migrate-layout", methods=["POST"])
+def settings_migrate_layout():
+    """手动触发 dir_layout 存量文件迁移（仅管理员，移动用户文件须显式确认）
+
+    把 /歌手/ 下的存量文件搬入 /歌手/专辑/ 目录：只搬位置不改文件名，
+    已在新结构的自动跳过（幂等，可重复执行）。要求当前结构为 artist_album。
+    """
+    err = _require_admin()
+    if err:
+        return err
+    from migrate_layout import run as run_dir_layout_migration
+    try:
+        result = run_dir_layout_migration(current_app._get_current_object())
+    except Exception as e:
+        logger.exception("dir_layout 迁移执行失败")
+        return jsonify({"code": 1, "msg": f"迁移执行失败：{e}"})
+    if result is None:
+        return jsonify({"code": 1, "msg": "目录结构不是「歌手 / 专辑」模式，请先保存该结构后再迁移"})
+    moved, skipped, failed, total = result
+    return jsonify({"code": 0, "msg": f"迁移完成：移动 {moved} / 跳过 {skipped} / 失败 {failed}（共 {total} 条）"})
+
+
 # 数值型设置项的合法区间（web_port 是 host:port 字符串，刻意不在表内）
 _NUMERIC_SETTINGS = {
     "ncm_api_port":             (1024, 65535),

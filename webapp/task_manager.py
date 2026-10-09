@@ -1544,7 +1544,6 @@ class TaskManager:
         # 本函数运行于 worker 线程，context 已在 _process_task 内退出，
         # 此处不可再裸调 Setting.get）
         downloader, include_album, dir_layout = self._get_downloader()
-        filename = build_filename(artists, sname, ext, album_name if include_album else "")
 
         # 子目录：artist = /歌手/（旧版结构）；artist_album = /歌手/专辑 (年份)/。
         # 专辑名缺失（单曲/EP）用歌名当专辑目录——各平台单曲的专辑字段通常
@@ -1556,8 +1555,18 @@ class TaskManager:
             if (year or "").strip():
                 album_dir = f"{album_dir} ({year.strip()})"
             sub_dir = f"{primary_artist}/{album_dir}"
+            # 专辑目录内文件名只保留「音轨号 - 歌名」（beets/Picard 等曲库
+            # 管理的通行做法：目录已承载歌手/专辑信息，文件名靠音轨号在
+            # 同专辑内消歧）；取不到音轨号时退化为纯歌名
+            try:
+                track_no = int(meta.get("track_no") or 0)
+            except (TypeError, ValueError):
+                track_no = 0
+            prefix = f"{track_no:02d} - " if track_no > 0 else ""
+            filename = f"{prefix}{sanitize_filename(sname)}.{(ext or 'mp3').lower()}"
         else:
             sub_dir = primary_artist
+            filename = build_filename(artists, sname, ext, album_name if include_album else "")
 
         last = {"pct": -1, "ts": 0.0}
 
