@@ -64,6 +64,9 @@ async function loadSettings() {
         form.write_lyric.checked = s.write_lyric === "true";
         form.filename_include_album.checked = s.filename_include_album !== "false";
         form.overwrite_existing.checked = s.overwrite_existing === "true";
+        form.dir_layout.value = s.dir_layout || "artist_album";
+        toggleFilenameAlbumRow();
+        refreshMigrateHint();
         form.auto_sync_enabled.checked = s.auto_sync_enabled === "true";
     } catch (e) {
         showToast(e.message, "错误");
@@ -110,6 +113,7 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         write_lyric: form.write_lyric.checked ? "true" : "false",
         filename_include_album: form.filename_include_album.checked ? "true" : "false",
         overwrite_existing: form.overwrite_existing.checked ? "true" : "false",
+        dir_layout: form.dir_layout.value,
         auto_sync_enabled: form.auto_sync_enabled.checked ? "true" : "false",
     };
 
@@ -125,6 +129,47 @@ document.getElementById("settings-form").addEventListener("submit", async functi
         refreshKugouStatus();
     } catch (e) {
         showToast(e.message, "错误");
+    }
+});
+
+// 「文件名包含专辑」仅对旧版「歌手」结构有意义：结构切换时显隐，
+// 避免设置页出现与当前结构无关的选项
+function toggleFilenameAlbumRow() {
+    const layout = document.getElementById("settings-form").dir_layout.value;
+    document.getElementById("row-filename-album").style.display = layout === "artist" ? "" : "none";
+}
+document.querySelector('select[name="dir_layout"]').addEventListener("change", toggleFilenameAlbumRow);
+
+// 旧结构文件检测提示条：有存量才显示迁移入口（默认隐藏，保持页面简洁）
+async function refreshMigrateHint() {
+    const hint = document.getElementById("migrate-hint");
+    try {
+        const data = await api("/api/settings/migrate-layout");
+        if ((data.data?.needs || 0) > 0) {
+            document.getElementById("migrate-count").textContent = data.data.needs;
+            hint.classList.remove("d-none");
+        } else {
+            hint.classList.add("d-none");
+        }
+    } catch (e) {
+        hint.classList.add("d-none");  // 检测失败不打扰用户
+    }
+}
+
+// 迁移存量文件到「歌手 / 专辑」结构（手动触发：移动用户文件须显式确认，
+// 不做启动自动迁移；幂等可重复，已在原地的自动跳过）
+document.getElementById("btn-migrate-layout").addEventListener("click", async function() {
+    if (!confirm("将把已下载的存量文件搬入「歌手 / 专辑」目录。\n只搬位置不改文件名，已在原地的自动跳过；文件较多时可能耗时较长，继续？")) return;
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const data = await api("/api/settings/migrate-layout", { method: "POST", timeout: 120000 });
+        showToast(data.msg, "迁移");
+        refreshMigrateHint();  // 迁移后重新检测（全部归位则提示条消失）
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
     }
 });
 

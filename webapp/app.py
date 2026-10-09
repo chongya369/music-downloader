@@ -200,6 +200,10 @@ if GATEWAY_SOCKET and os.environ.get("APP_DATA_DIR"):
 app.register_blueprint(views_bp)
 app.register_blueprint(api_bp, url_prefix="/api")
 
+# 注：dir_layout 存量文件迁移不做自动执行（移动用户文件必须显式确认），
+# 由设置页「迁移存量文件」按钮经 /api/settings/migrate-layout 手动触发，
+# 见 webapp/migrate_layout.py 与 routes/api.py
+
 # 初始化任务管理器
 task_manager = TaskManager(app)
 app.config["TASK_MANAGER"] = task_manager

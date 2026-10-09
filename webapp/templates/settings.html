@@ -217,16 +217,30 @@
                             <label class="form-check-label">嵌入歌词（LRC 带时间轴）</label>
                         </div>
                     </div>
-                    <div class="col-md-6">
+                    <div class="col-md-6" id="row-filename-album" style="display:none">
                         <div class="form-check">
                             <input type="checkbox" class="form-check-input" name="filename_include_album" value="true">
-                            <label class="form-check-label">文件名包含专辑（歌手 - 歌名 [专辑].ext，区分同名不同版本）</label>
+                            <label class="form-check-label">文件名包含专辑（歌手 - 歌名 [专辑].ext）</label>
                         </div>
                     </div>
                     <div class="col-md-6">
                         <div class="form-check">
                             <input type="checkbox" class="form-check-input" name="overwrite_existing" value="true">
                             <label class="form-check-label">同名文件已存在时覆盖重新下载（默认跳过）</label>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">下载目录结构</label>
+                        <select class="form-select" name="dir_layout">
+                            <option value="artist_album">歌手 / 专辑（年份）/ 歌曲名</option>
+                            <option value="artist">歌手 / 歌曲名（旧版结构）</option>
+                        </select>
+                        <div class="form-text">新结构下文件名为「歌名-歌曲ID」；单曲无专辑名时用歌名当专辑目录；切换只影响新下载</div>
+                        <div class="alert alert-warning py-2 px-3 mt-2 mb-0 d-none" id="migrate-hint">
+                            <div class="small mb-1">检测到 <span id="migrate-count">0</span> 个旧结构文件未迁移</div>
+                            <button type="button" class="btn btn-sm btn-warning" id="btn-migrate-layout">
+                                <i class="bi bi-folder-symlink"></i> 迁移到「歌手 / 专辑」结构
+                            </button>
                         </div>
                     </div>
                     <div class="col-md-6">

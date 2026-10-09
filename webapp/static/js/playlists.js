@@ -622,7 +622,8 @@ async function loadSearchResults() {
                 const statusText = s.downloaded
                     ? '<span class="badge bg-secondary">已下载</span>'
                     : '<span class="badge bg-light text-dark">未下载</span>';
-                const btnDisabled = s.downloaded ? "disabled" : "";
+                // 已下载不再禁用按钮：点击走二次确认 + force 重新下载
+                const btnCls = s.downloaded ? "btn-outline-secondary" : "btn-outline-primary";
                 return `
                     <tr>
                         <td>${(curPage - 1) * limit + idx + 1}</td>
@@ -632,9 +633,10 @@ async function loadSearchResults() {
                         <td>${feeText}</td>
                         <td>${statusText}</td>
                         <td>
-                            <button class="btn btn-sm btn-outline-primary btn-dl-single" ${btnDisabled}
+                            <button class="btn btn-sm ${btnCls} btn-dl-single"
                                 data-id="${s.id}" data-name="${escapeHtml(s.name)}"
-                                data-artists="${escapeHtml(s.artists)}" data-fee="${s.fee}">
+                                data-artists="${escapeHtml(s.artists)}" data-fee="${s.fee}"
+                                data-downloaded="${s.downloaded ? "1" : "0"}">
                                 <i class="bi bi-download"></i>
                             </button>
                         </td>
@@ -669,12 +671,17 @@ function bindSingleDownload() {
             const name = this.dataset.name;
             const artists = this.dataset.artists;
             const fee = parseInt(this.dataset.fee) || 0;
+            let force = false;
+            if (this.dataset.downloaded === "1") {
+                if (!confirm(`《${name}》已下载过，重新下载？`)) return;
+                force = true;
+            }
             this.disabled = true;
             this.innerHTML = '<span class="loading-spinner"></span>';
             try {
                 const data = await api("/api/discover/download-song", {
                     method: "POST",
-                    body: JSON.stringify({ song_id: songId, name, artists, fee, platform: _currentPlatform }),
+                    body: JSON.stringify({ song_id: songId, name, artists, fee, platform: _currentPlatform, force }),
                 });
                 showToast(data.msg, "下载");
                 // 更新按钮状态
