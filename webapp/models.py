@@ -303,6 +303,12 @@ DEFAULT_SETTINGS = {
     "filename_include_album": "true",
     # 同名文件已存在时覆盖重新下载（关闭时跳过下载并按成功处理）
     "overwrite_existing": "false",
+    # 下载目录结构：artist = /歌手/歌曲；artist_album = /歌手/专辑 (年份)/歌曲
+    # （专辑名缺失的单曲/EP 用歌名当专辑目录；(年份) 仅 artist_album 模式附加，
+    # 用于区分同名不同版本的专辑/EP；切换只影响新下载，存量由一次性迁移搬移）
+    "dir_layout": "artist_album",
+    # dir_layout 存量文件迁移标记：首次启动执行一次，完成（或已尝试）即置 true
+    "dir_layout_migrated": "false",
     # 音质档位按平台独立设置（空串=未单独设置，读取时回退旧全局 level 兼容迁移）
     # 档位值沿用网易云语义：standard/exhigh/lossless/hires 为三平台公共档；
     # QQ 独有 jymaster(臻品母带)/ogg640；网易云独有 jymaster/jyeffect/dolby/

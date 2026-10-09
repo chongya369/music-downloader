@@ -179,8 +179,9 @@ async function loadSongs(page = 1) {
         }
 
         if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">无记录</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">无记录</td></tr>';
             renderPagination(0, 1);
+            updateBatchBar();
             return;
         }
 
@@ -224,14 +225,22 @@ async function loadSongs(page = 1) {
                 // 仅按 id 重试会误命中另一平台的同号歌
                 actions.push(`<button class="btn btn-sm btn-outline-warning btn-retry" data-id="${s.id}" data-platform="${escapeHtml(platform)}"><i class="bi bi-arrow-clockwise"></i> 重试</button>`);
             }
+            if (s.status === "success") {
+                // 重新下载：force 通道跳过后端已下载拦截（点击时有二次确认）
+                actions.push(`<button class="btn btn-sm btn-outline-secondary btn-redownload"
+                    data-id="${escapeHtml(String(s.id))}" data-platform="${escapeHtml(platform)}"
+                    data-name="${escapeHtml(s.name)}" data-artists="${escapeHtml(s.artists)}"
+                    title="重新下载"><i class="bi bi-arrow-repeat"></i></button>`);
+            }
             actions.push(`<button class="btn btn-sm btn-outline-danger btn-delete-song" data-id="${s.pk}"
                 data-status="${s.status}"
                 data-name="${escapeHtml(s.name)}"
                 data-artists="${escapeHtml(s.artists)}"><i class="bi bi-trash"></i></button>`);
             return `
                 <tr>
+                    <td><input type="checkbox" class="row-check" value="${s.pk}" data-status="${s.status}"></td>
                     <td><span class="badge" style="${platformStyle}">${escapeHtml(platformName)}</span></td>
-                    <td>${escapeHtml(s.name)}</td>
+                    <td>${escapeHtml(s.name)}${s.album ? `<br><small class="text-muted">${escapeHtml(s.album)}</small>` : ""}</td>
                     <td>${escapeHtml(s.artists)}</td>
                     <td><small class="text-muted">${escapeHtml(s.playlist_name || '--')}</small></td>
                     <td>${s.quality || '--'}</td>
@@ -244,6 +253,8 @@ async function loadSongs(page = 1) {
         }).join("");
 
         renderPagination(data.total, data.pages);
+        document.getElementById("select-all").checked = false;
+        updateBatchBar();
         bindSongEvents();
     } catch (e) {
         showToast(e.message, "错误");
@@ -340,10 +351,78 @@ function bindSongEvents() {
             bootstrap.Modal.getOrCreateInstance(document.getElementById("fail-reason-modal")).show();
         });
     });
+
+    document.querySelectorAll(".btn-redownload").forEach(el => {
+        el.addEventListener("click", async function() {
+            const { id, platform, name, artists } = this.dataset;
+            if (!confirm(`《${name}》已下载过，重新下载？`)) return;
+            this.disabled = true;
+            try {
+                // fee 未知按 VIP 传：VIP 账号能下免费歌，按免费传则 VIP 歌会被卡
+                const data = await api("/api/discover/download-song", {
+                    method: "POST",
+                    body: JSON.stringify({ song_id: id, name, artists, fee: 1, platform, force: true }),
+                });
+                showToast(data.msg, "重新下载");
+            } catch (e) {
+                showToast(e.message, "错误");
+                this.disabled = false;
+            }
+        });
+    });
+}
+
+// ============================================================
+// 批量选择与批量删除
+// ============================================================
+// 事件委托挂在 tbody 上：列表每次重渲染，逐个绑定会丢失
+function updateBatchBar() {
+    const checked = document.querySelectorAll(".row-check:checked");
+    document.getElementById("batch-count").textContent = checked.length;
+    document.getElementById("btn-batch-delete").disabled = checked.length === 0;
+}
+
+document.getElementById("song-tbody").addEventListener("change", e => {
+    if (e.target.classList.contains("row-check")) updateBatchBar();
+});
+
+document.getElementById("select-all").addEventListener("change", function() {
+    document.querySelectorAll(".row-check").forEach(c => { c.checked = this.checked; });
+    updateBatchBar();
+});
+
+document.getElementById("btn-batch-delete").addEventListener("click", function() {
+    const boxes = [...document.querySelectorAll(".row-check:checked")];
+    if (!boxes.length) return;
+    const pks = boxes.map(c => parseInt(c.value));
+    if (boxes.some(c => c.dataset.status === "success")) {
+        // 含成功记录：复用删除弹窗，可选是否连音乐文件一起删
+        document.getElementById("delete-song-name").textContent = `已选 ${pks.length} 条记录`;
+        document.getElementById("delete-song-artists").textContent = "包含成功记录，可选择是否同时删除音乐文件";
+        deleteTarget = { ids: pks };
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("delete-song-modal")).show();
+    } else {
+        if (!confirm(`确定删除选中的 ${pks.length} 条记录？`)) return;
+        handleBatchDelete(pks, false);
+    }
+});
+
+async function handleBatchDelete(pks, deleteFile) {
+    try {
+        const data = await api("/api/songs/batch-delete", {
+            method: "POST",
+            body: JSON.stringify({ pks, delete_file: deleteFile }),
+        });
+        showToast(data.msg, "批量删除");
+        loadSongs(currentPage);
+    } catch (e) {
+        showToast(e.message, "错误");
+    }
 }
 
 // 删除下载记录（deleteFile=true 时同时删除本地音乐文件）
-let deleteTarget = null; // 待删除记录 {id}
+// deleteTarget：单删 {id} / 批删 {ids: [...]}
+let deleteTarget = null;
 
 async function handleDeleteSong(id, deleteFile) {
     try {
@@ -359,12 +438,14 @@ async function handleDeleteSong(id, deleteFile) {
 // 删除确认弹窗按钮（弹窗为静态节点，绑定一次即可）
 document.getElementById("btn-delete-record-only").addEventListener("click", function() {
     bootstrap.Modal.getOrCreateInstance(document.getElementById("delete-song-modal")).hide();
-    if (deleteTarget) handleDeleteSong(deleteTarget.id, false);
+    if (deleteTarget?.ids) handleBatchDelete(deleteTarget.ids, false);
+    else if (deleteTarget) handleDeleteSong(deleteTarget.id, false);
     deleteTarget = null;
 });
 document.getElementById("btn-delete-with-file").addEventListener("click", function() {
     bootstrap.Modal.getOrCreateInstance(document.getElementById("delete-song-modal")).hide();
-    if (deleteTarget) handleDeleteSong(deleteTarget.id, true);
+    if (deleteTarget?.ids) handleBatchDelete(deleteTarget.ids, true);
+    else if (deleteTarget) handleDeleteSong(deleteTarget.id, true);
     deleteTarget = null;
 });
 

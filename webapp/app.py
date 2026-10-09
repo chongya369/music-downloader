@@ -200,6 +200,15 @@ if GATEWAY_SOCKET and os.environ.get("APP_DATA_DIR"):
 app.register_blueprint(views_bp)
 app.register_blueprint(api_bp, url_prefix="/api")
 
+# dir_layout=artist_album 存量文件一次性迁移（/歌手/ → /歌手/专辑/）。
+# 必须在 TaskManager 启动前执行：迁移与下载 worker 都会动下载目录，
+# 先搬完再开下载避免竞态。任何异常只记日志，不影响启动
+try:
+    from migrate_layout import run as _run_dir_layout_migration
+    _run_dir_layout_migration(app)
+except Exception:
+    logger.exception("dir_layout 存量迁移异常（不影响启动）")
+
 # 初始化任务管理器
 task_manager = TaskManager(app)
 app.config["TASK_MANAGER"] = task_manager

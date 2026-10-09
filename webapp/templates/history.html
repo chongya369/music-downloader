@@ -87,10 +87,17 @@
     <!-- 列表 -->
     <div class="card">
         <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="small text-muted">已选 <span id="batch-count">0</span> 条</span>
+                <button class="btn btn-sm btn-outline-danger" id="btn-batch-delete" disabled>
+                    <i class="bi bi-trash"></i> 批量删除
+                </button>
+            </div>
             <div class="table-responsive">
                 <table class="table table-hover align-middle">
                     <thead>
                         <tr>
+                            <th width="36"><input type="checkbox" id="select-all" title="全选本页"></th>
                             <th width="80">平台</th>
                             <th>歌曲</th>
                             <th>歌手</th>
@@ -103,7 +110,7 @@
                         </tr>
                     </thead>
                     <tbody id="song-tbody">
-                        <tr><td colspan="9" class="text-center text-muted">加载中...</td></tr>
+                        <tr><td colspan="10" class="text-center text-muted">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>

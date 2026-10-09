@@ -188,7 +188,11 @@ class Downloader:
     def target_path(self, sub_dir: str | None, filename: str) -> Path:
         base = self.output_dir
         if sub_dir:
-            base = base / sanitize_filename(sub_dir)
+            # 支持多级子目录（dir_layout=artist_album 时为 "歌手/专辑"）：
+            # 必须逐段清洗——整体 sanitize 会把 "/" 替换成 "_" 压平为一级
+            for seg in sub_dir.split("/"):
+                if seg.strip():
+                    base = base / sanitize_filename(seg)
             base.mkdir(parents=True, exist_ok=True)
         path = base / filename
         # 路径长度保护：自动截断过长的文件名

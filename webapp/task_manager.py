@@ -570,12 +570,12 @@ class TaskManager:
         p.set_custom_base_url(custom_url)
         return p
 
-    def _get_downloader(self) -> tuple[Downloader, bool]:
-        """构建下载器与文件名专辑开关
+    def _get_downloader(self) -> tuple[Downloader, bool, str]:
+        """构建下载器与文件名/目录相关设置
 
         Returns:
-            (Downloader, include_album)。worker 线程无 app context，
-            两个设置必须在唯一的 context 块里一并读出，
+            (Downloader, include_album, dir_layout)。worker 线程无 app
+            context，全部设置必须在唯一的 context 块里一并读出，
             裸调 Setting.get 会抛 RuntimeError（见 PR #7 评论）
         """
         with self.app.app_context():
@@ -583,10 +583,12 @@ class TaskManager:
             max_retries = _setting_int("max_retries", 3)
             overwrite = Setting.get("overwrite_existing", "false") == "true"
             include_album = Setting.get("filename_include_album", "true") == "true"
+            dir_layout = Setting.get("dir_layout", "artist_album")
         p = Path(output_dir)
         if not p.is_absolute():
             p = _ROOT / output_dir
-        return Downloader(output_dir=p, max_retries=max_retries, overwrite=overwrite), include_album
+        return (Downloader(output_dir=p, max_retries=max_retries, overwrite=overwrite),
+                include_album, dir_layout)
 
     # ------------------------------------------------------------------
     # 同步歌单
@@ -1013,7 +1015,8 @@ class TaskManager:
         )
         return {"enqueued": enqueued, "excluded": excluded, "skipped": skipped, "total": total}
 
-    def download_single_song(self, song_id: str, name: str, artists: str, fee: int = 0, platform: str = "netease") -> bool:
+    def download_single_song(self, song_id: str, name: str, artists: str, fee: int = 0,
+                             platform: str = "netease", force: bool = False) -> bool:
         """下载单首歌曲（用户主动选择，不应用排除过滤）
 
         Args:
@@ -1022,9 +1025,11 @@ class TaskManager:
             artists: 歌手名
             fee: 费用类型（0=免费 1=VIP 4=购买专辑 8=低音质免费）
             platform: 平台标识，默认 netease
+            force: 已下载成功仍重新入队（前端二次确认后使用；
+                活跃任务仍拦截，防止重复入队）
 
         Returns:
-            True=已入队，False=已存在或失败
+            True=已入队，False=已下载（force=False 时）或正在下载中
         """
         # 白名单收敛（防御绕过路由直达本方法的调用方）：脏平台值不落库
         platform = platform or "netease"
@@ -1032,9 +1037,12 @@ class TaskManager:
             platform = "netease"
         song_id = str(song_id)
         with self.app.app_context(), _enqueue_lock:
-            existing = Song.query.filter_by(id=song_id, platform=platform, status="success").first()
-            if existing:
-                return False
+            # force 重新下载仅跳过"已下载成功"拦截；下方活跃任务拦截
+            # 对 force 同样生效（避免同一首歌并发下载两次）
+            if not force:
+                existing = Song.query.filter_by(id=song_id, platform=platform, status="success").first()
+                if existing:
+                    return False
             pending = DownloadTask.query.filter(
                 DownloadTask.song_id == song_id,
                 DownloadTask.platform == platform,
@@ -1532,11 +1540,24 @@ class TaskManager:
         # 下载文件（文件名保留全部歌手：build_filename(artists, sname)；
         # filename_include_album 开启时附加专辑名，同歌手同名不同版本
         # 不再生成同名文件互相冲突/被同名跳过误判为已下载。
-        # include_album 由 _get_downloader 在 app context 内读出带回——
+        # 三个设置均由 _get_downloader 在 app context 内读出带回——
         # 本函数运行于 worker 线程，context 已在 _process_task 内退出，
         # 此处不可再裸调 Setting.get）
-        downloader, include_album = self._get_downloader()
+        downloader, include_album, dir_layout = self._get_downloader()
         filename = build_filename(artists, sname, ext, album_name if include_album else "")
+
+        # 子目录：artist = /歌手/（旧版结构）；artist_album = /歌手/专辑 (年份)/。
+        # 专辑名缺失（单曲/EP）用歌名当专辑目录——各平台单曲的专辑字段通常
+        # 就等于歌名，取不到专辑数据时同样成立。(年份) 仅 artist_album 模式
+        # 附加，用于区分同名不同版本的专辑/EP；存量迁移目录无年份（Song 表
+        # 不存年份），与新下载的带年份目录共存
+        if dir_layout == "artist_album":
+            album_dir = (album_name or "").strip() or sname
+            if (year or "").strip():
+                album_dir = f"{album_dir} ({year.strip()})"
+            sub_dir = f"{primary_artist}/{album_dir}"
+        else:
+            sub_dir = primary_artist
 
         last = {"pct": -1, "ts": 0.0}
 
@@ -1559,7 +1580,7 @@ class TaskManager:
         try:
             outcome = downloader.download(
                 url=url,
-                sub_dir=primary_artist,
+                sub_dir=sub_dir,
                 filename=filename,
                 expected_size=size,
                 progress_callback=progress_cb,

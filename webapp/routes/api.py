@@ -10,6 +10,7 @@
 - POST   /api/sync-all            同步所有已启用歌单
 - GET    /api/songs               分页查询下载历史
 - DELETE /api/songs/<pk>          删除记录（?delete_file=1 删文件并级联删除所有关联记录）
+- POST   /api/songs/batch-delete  批量删除记录（{"pks":[...], "delete_file":bool}）
 - POST   /api/retry               重试失败歌曲（支持单首/全部，可带 platform 限定平台）
 - GET    /api/tasks               获取当前活跃任务进度
 - POST   /api/tasks/<pk>/pause    暂停指定下载任务（保留 .part 断点）
@@ -596,26 +597,23 @@ def delete_all_failed_songs():
     })
 
 
-@api_bp.route("/songs/<int:pk>", methods=["DELETE"])
-def delete_song(pk: int):
-    """删除下载记录（按 download_tasks.pk 删除）
+def _delete_song_record(pk: int, delete_file: bool) -> tuple[bool, str]:
+    """删除单条下载记录的核心逻辑（单条删除与批量删除共用）
 
-    可选 query 参数：
-        delete_file=1  同时删除本地音乐文件，并级联删除该歌曲在所有歌单的关联记录
-
-    行为说明：
-    - 仅删记录：删除该条 download_tasks 记录；若该歌曲 (song_id, platform)
-      没有其他 done 任务引用，则一并删除 songs 表记录，使重新下载不再被
-      "已下载"去重拦截；
-    - delete_file=1：先删本地文件，再级联删除同 (song_id, platform) 的所有
-      download_tasks 记录（done/failed/skipped）及 songs 表记录；
-      文件删除失败则整体中断，数据库不动。
-    - 两种模式均要求该歌曲无未结束任务（pending/downloading/paused），避免与
-      下载中的 worker 竞态（任务行/Song 行被删后 worker 状态更新落空）。
+    Returns:
+        (是否删除成功, 提示消息)。语义与 DELETE /api/songs/<pk> 完全一致：
+        - 仅删记录：删除该条 download_tasks 记录；若该歌曲 (song_id, platform)
+          没有其他 done 任务引用，则一并删除 songs 表记录，使重新下载不再被
+          "已下载"去重拦截；
+        - delete_file=True：先删本地文件，再级联删除同 (song_id, platform) 的
+          所有 download_tasks 记录（done/failed/skipped）及 songs 表记录；
+          文件删除失败则整体中断，数据库不动。
+        - 两种模式均要求该歌曲无未结束任务（pending/downloading/paused），
+          避免与下载中的 worker 竞态（任务行/Song 行被删后 worker 状态更新落空）。
     """
     task = DownloadTask.query.get(pk)
     if not task:
-        return jsonify({"code": 1, "msg": "记录不存在"})
+        return False, "记录不存在"
 
     # 前置阻断：该歌曲存在未结束的任务（含本记录自身）时禁止删除，
     # 两种模式共用——级联删除会删掉进行中的任务行，仅删记录则本行
@@ -629,10 +627,8 @@ def delete_song(pk: int):
         # 按实际状态区分提示：paused 任务并非"正在下载"，
         # 笼统说"正在下载中"会让用户困惑该去哪里处理
         if active.status == "paused":
-            return jsonify({"code": 1, "msg": "该歌曲存在已暂停的下载任务，请先在「下载任务」中继续或删除后再删除记录"})
-        return jsonify({"code": 1, "msg": "该歌曲正在下载中，请等待完成后再删除"})
-
-    delete_file = request.args.get("delete_file") in ("1", "true", "True")
+            return False, "该歌曲存在已暂停的下载任务，请先在「下载任务」中继续或删除后再删除记录"
+        return False, "该歌曲正在下载中，请等待完成后再删除"
 
     song = Song.query.filter_by(id=task.song_id, platform=task.platform).first()
 
@@ -645,7 +641,7 @@ def delete_song(pk: int):
         else:
             ok, err = _delete_song_file(song.file_path)
             if err:
-                return jsonify({"code": 1, "msg": f"删除音乐文件失败：{err}，记录未删除"})
+                return False, f"删除音乐文件失败：{err}，记录未删除"
             file_msg = "和音乐文件" if ok else "（音乐文件已不存在）"
 
         # 级联删除：该歌曲在所有歌单的关联任务记录 + songs 表记录
@@ -660,7 +656,7 @@ def delete_song(pk: int):
 
         logger.info("级联删除下载记录: pk=%s %s - %s (song_id=%s, platform=%s, 共%d条, 删文件=%s)",
                     pk, *log_ctx, deleted_rows, delete_file)
-        return jsonify({"code": 0, "msg": f"已删除 {deleted_rows} 条关联记录{file_msg}"})
+        return True, f"已删除 {deleted_rows} 条关联记录{file_msg}"
 
     # ---- 仅删除记录：单条删除 ----
 
@@ -686,7 +682,53 @@ def delete_song(pk: int):
 
     logger.info("删除下载记录: pk=%s %s - %s (song_id=%s, platform=%s)",
                 pk, *log_ctx)
-    return jsonify({"code": 0, "msg": "已删除"})
+    return True, "已删除"
+
+
+@api_bp.route("/songs/<int:pk>", methods=["DELETE"])
+def delete_song(pk: int):
+    """删除下载记录（按 download_tasks.pk 删除）
+
+    可选 query 参数：
+        delete_file=1  同时删除本地音乐文件，并级联删除该歌曲在所有歌单的关联记录
+
+    行为说明见 _delete_song_record（单条/批量删除共用）。
+    """
+    delete_file = request.args.get("delete_file") in ("1", "true", "True")
+    ok, msg = _delete_song_record(pk, delete_file)
+    return jsonify({"code": 0 if ok else 1, "msg": msg})
+
+
+@api_bp.route("/songs/batch-delete", methods=["POST"])
+def batch_delete_songs():
+    """批量删除下载记录
+
+    请求体：{"pks": [task.pk, ...], "delete_file": bool}
+    逐条复用单删逻辑——文件删除不可回滚，不做整批事务，单条失败
+    （如该歌曲正在下载）跳过并继续其余；上限 500 条防误传超大列表。
+    """
+    data = _json_body()
+    pks = data.get("pks")
+    if not isinstance(pks, list) or not pks:
+        return jsonify({"code": 1, "msg": "缺少 pks 列表"})
+    delete_file = data.get("delete_file") in (True, "true", 1, "1")
+
+    deleted, first_err = 0, ""
+    for raw in pks[:500]:
+        try:
+            pk = int(raw)
+        except (TypeError, ValueError):
+            continue
+        ok, msg = _delete_song_record(pk, delete_file)
+        if ok:
+            deleted += 1
+        elif not first_err:
+            first_err = msg
+
+    msg = f"已删除 {deleted} 条"
+    if first_err:
+        msg += f"（部分未删除：{first_err}）"
+    return jsonify({"code": 0, "deleted": deleted, "msg": msg})
 
 
 def _resolve_output_dir() -> Path:
@@ -1811,8 +1853,11 @@ def discover_album_download():
 def discover_download_song():
     """下载单首歌曲（用户主动选择，不应用排除过滤）
 
-    请求体：{"song_id":"123" 或 "003rJSwm3TechU", "name":"...", "artists":"...", "fee":0, "platform":...}
+    请求体：{"song_id":"123" 或 "003rJSwm3TechU", "name":"...", "artists":"...",
+            "fee":0, "platform":..., "force":false}
     song_id 字符串透传：netease 为数字 ID，QQ 为 songmid（非数字字符串）
+    force=true 时已下载成功的歌曲仍重新入队（前端二次确认后使用），
+    正在下载中的任务仍会被拦截
     """
     data = _json_body()
     song_id = data.get("song_id")
@@ -1820,14 +1865,16 @@ def discover_download_song():
     name = (data.get("name") or "").strip()
     artists = (data.get("artists") or "").strip()
     fee = _safe_int(data.get("fee", 0), 0, lo=0, hi=100)
+    force = data.get("force") in (True, "true", 1, "1")
     if not song_id:
         return jsonify({"code": 1, "msg": "缺少 song_id"})
 
     tm = _get_task_manager()
-    ok = tm.download_single_song(song_id, name, artists, fee, platform=_req_platform())
+    ok = tm.download_single_song(song_id, name, artists, fee, platform=_req_platform(), force=force)
     if ok:
         return jsonify({"code": 0, "msg": f"已加入下载队列: {name}"})
-    return jsonify({"code": 1, "msg": "该歌曲已下载或正在下载中"})
+    # force 时 success 拦截已跳过，返回 False 只可能是活跃任务拦截
+    return jsonify({"code": 1, "msg": "该歌曲正在下载中" if force else "该歌曲已下载或正在下载中"})
 
 
 # ======================================================================

@@ -230,6 +230,14 @@
                         </div>
                     </div>
                     <div class="col-md-6">
+                        <label class="form-label">下载目录结构</label>
+                        <select class="form-select" name="dir_layout">
+                            <option value="artist_album">歌手 / 专辑（年份）/ 歌曲名</option>
+                            <option value="artist">歌手 / 歌曲名（旧版结构）</option>
+                        </select>
+                        <div class="form-text">单曲无专辑名时用歌名当专辑目录；切换只影响新下载，已有文件不自动搬迁</div>
+                    </div>
+                    <div class="col-md-6">
                         <label class="form-label">单文件重试次数</label>
                         <input type="number" class="form-control" name="max_retries" min="1" max="10" value="3">
                     </div>

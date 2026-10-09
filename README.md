@@ -91,6 +91,7 @@ python -m venv .venv
 | `output_dir` | `downloads` | 下载输出目录（相对路径基于项目根目录；fnOS 网关模式首启自动固定到数据卷绝对路径） |
 | `filename_include_album` | `true` | 文件名包含专辑名（`歌手 - 歌名 [专辑].ext`），避免同歌手同名不同版本（录音室/Live）互相冲突 |
 | `overwrite_existing` | `false` | 同名文件已存在时是否覆盖重新下载（`false` = 跳过下载并按成功记录） |
+| `dir_layout` | `artist_album` | 下载目录结构：`artist_album` = `歌手/专辑（年份）/`（单曲无专辑名时用歌名当专辑目录，`(年份)` 仅此模式附加用于区分同名不同版本）；`artist` = `歌手/`（旧版结构）。切换只影响新下载，首次启动会把存量文件一次性搬入新结构 |
 | `level_netease` | （空） | 网易云音质（高→低）：sky / jymaster / vivid / dolby / jyeffect / hires / lossless / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
 | `level_qq` | （空） | QQ 音乐音质（高→低）：jymaster / hires / lossless / ogg640 / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
 | `level_kugou` | （空） | 酷狗音乐音质（高→低）：hires / lossless / exhigh / standard（空=未单独设置，回退旧全局 `level`，其缺省为 exhigh） |
