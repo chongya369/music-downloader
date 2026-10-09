@@ -1555,15 +1555,11 @@ class TaskManager:
             if (year or "").strip():
                 album_dir = f"{album_dir} ({year.strip()})"
             sub_dir = f"{primary_artist}/{album_dir}"
-            # 专辑目录内文件名只保留「音轨号 - 歌名」（beets/Picard 等曲库
-            # 管理的通行做法：目录已承载歌手/专辑信息，文件名靠音轨号在
-            # 同专辑内消歧）；取不到音轨号时退化为纯歌名
-            try:
-                track_no = int(meta.get("track_no") or 0)
-            except (TypeError, ValueError):
-                track_no = 0
-            prefix = f"{track_no:02d} - " if track_no > 0 else ""
-            filename = f"{prefix}{sanitize_filename(sname)}.{(ext or 'mp3').lower()}"
+            # 专辑目录内文件名为「歌名-歌曲ID」：目录已承载歌手/专辑信息，
+            # 歌曲ID 平台内唯一，天然消除一切同名冲突（含同专辑同名曲、
+            # 同名不同版本 EP），可视为文件名层面的终极去重
+            filename = (f"{sanitize_filename(sname)}-{sanitize_filename(str(sid))}"
+                        f".{(ext or 'mp3').lower()}")
         else:
             sub_dir = primary_artist
             filename = build_filename(artists, sname, ext, album_name if include_album else "")

@@ -240,7 +240,9 @@ async function loadSongs(page = 1) {
                 <tr>
                     <td><input type="checkbox" class="row-check" value="${s.pk}" data-status="${s.status}"></td>
                     <td><span class="badge" style="${platformStyle}">${escapeHtml(platformName)}</span></td>
-                    <td>${escapeHtml(s.name)}${s.album ? `<br><small class="text-muted">${escapeHtml(s.album)}</small>` : ""}</td>
+                    <td>${s.file_path
+                        ? `<span title="${escapeHtml(s.file_path)}">${escapeHtml(s.name)}</span>`
+                        : escapeHtml(s.name)}${s.album ? `<br><small class="text-muted">${escapeHtml(s.album)}</small>` : ""}</td>
                     <td>${escapeHtml(s.artists)}</td>
                     <td><small class="text-muted">${escapeHtml(s.playlist_name || '--')}</small></td>
                     <td>${s.quality || '--'}</td>

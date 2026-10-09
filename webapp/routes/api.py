@@ -923,17 +923,27 @@ def get_settings():
     return jsonify({"code": 0, "data": data})
 
 
-@api_bp.route("/settings/migrate-layout", methods=["POST"])
+@api_bp.route("/settings/migrate-layout", methods=["GET", "POST"])
 def settings_migrate_layout():
-    """手动触发 dir_layout 存量文件迁移（仅管理员，移动用户文件须显式确认）
+    """dir_layout 存量迁移：GET 查询待迁移数量（设置页提示条用）；
+    POST 手动执行迁移（仅管理员，移动用户文件须显式确认）
 
     把 /歌手/ 下的存量文件搬入 /歌手/专辑/ 目录：只搬位置不改文件名，
-    已在新结构的自动跳过（幂等，可重复执行）。要求当前结构为 artist_album。
+    已在新结构的自动跳过（幂等，可重复执行）。POST 要求当前结构为
+    artist_album。
     """
+    from migrate_layout import count_pending, run as run_dir_layout_migration
+    if request.method == "GET":
+        try:
+            needs = count_pending(current_app._get_current_object())
+        except Exception as e:
+            logger.exception("dir_layout 待迁移统计失败")
+            return jsonify({"code": 1, "msg": str(e)})
+        return jsonify({"code": 0, "data": {"needs": needs}})
+
     err = _require_admin()
     if err:
         return err
-    from migrate_layout import run as run_dir_layout_migration
     try:
         result = run_dir_layout_migration(current_app._get_current_object())
     except Exception as e:
