@@ -9,7 +9,6 @@ import argparse
 import atexit
 import logging
 import os
-import shutil
 import sys
 import threading
 from pathlib import Path
@@ -167,19 +166,11 @@ def _resolve_secret_key() -> str:
 
 app.config["SECRET_KEY"] = _resolve_secret_key()
 
-# 旧库迁移：数据位置被指定、且老库仍在程序目录时，自动搬迁（含 SQLite 附属文件）
-_old_db = _ROOT / "downloads.db"
-if _old_db.exists() and not DB_PATH.exists():
-    try:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)   # init_db 之前目标目录可能尚不存在
-        shutil.move(str(_old_db), str(DB_PATH))
-        for _suffix in ("-journal", "-wal", "-shm"):
-            _side = _ROOT / f"downloads.db{_suffix}"
-            if _side.exists():
-                _side.replace(DB_PATH.with_name(DB_PATH.name + _suffix))
-        logger.info("已迁移旧数据库: %s -> %s", _old_db, DB_PATH)
-    except OSError as e:
-        logger.warning("旧数据库迁移失败，将使用新库启动: %s", e)
+# 旧库迁移：数据位置被指定、且老库仍在程序目录时，自动搬迁（含 SQLite
+# 附属文件）。搬迁失败 → 回滚 + 拒绝启动（db_migrate 内 SystemExit），
+# 不再静默降级新空库（静默降级曾是"升级后被强制改密"的数据漂移根因）
+from db_migrate import migrate_old_db
+migrate_old_db(_ROOT, DB_PATH)
 
 init_db(app, str(DB_PATH))
 logger.info("数据库文件: %s", DB_PATH)

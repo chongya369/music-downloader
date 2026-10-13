@@ -10,7 +10,7 @@ from datetime import datetime
 from flask import Blueprint, render_template, redirect, url_for, request, session
 
 from auth import login_required, admin_required, current_user
-from models import User, db, PLATFORM_NAMES
+from models import User, db, PLATFORM_NAMES, DEFAULT_ADMIN_PASSWORD
 
 views_bp = Blueprint("views", __name__)
 
@@ -124,6 +124,15 @@ def login():
             _clear_login_failures(key)
             session["uid"] = user.id
             user.last_login_at = datetime.now()
+            # F4 存量默认口令补置：仅 admin 账号——口令仍为公开默认值时补置
+            # 首登强制改密（覆盖升级前从未改密的存量管理员）。置位一次后靠
+            # flag 短路。判断用明文比较而非 check_password(DEFAULT)：上一行
+            # check_password(password) 已通过 ⇒ hash 对应明文即 password，
+            # password != 默认值时二次校验恒 False（冗余 scrypt），两者等价。
+            # 普通用户不在检测范围（零额外开销）。
+            if user.is_admin and not user.must_change_password \
+                    and password == DEFAULT_ADMIN_PASSWORD:
+                user.must_change_password = True
             db.session.commit()
             # 支持 next 参数跳回原页面（urlsplit 校验 scheme/netloc 为空，
             # 覆盖协议相对与反斜杠/控制字符变体，防开放重定向 #8）
@@ -161,6 +170,9 @@ def change_password():
         user.set_password(new_pwd)
         user.must_change_password = False
         db.session.commit()
+        # 身份已验证（旧密码校验通过）即清登录限速计数：避免此前同用户名+IP
+        # 累积的失败记录在改密后立即登录时误伤（「失败次数过多」）
+        _clear_login_failures(_login_key(user.username))
         return redirect(url_for("views.dashboard"))
     return render_template("change_password.html", user=user)
 

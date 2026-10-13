@@ -208,4 +208,4 @@ chmod +x build_linux.sh && ./build_linux.sh
 
 ## 版本
 
-当前版本：**0.7.6**（见 [version.txt](version.txt)，更新日志见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+当前版本：**0.7.7**（见 [version.txt](version.txt)，更新日志见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）

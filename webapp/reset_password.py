@@ -29,7 +29,7 @@ for p in (str(_ROOT), str(_WEBAPP)):
         sys.path.insert(0, p)
 
 from flask import Flask
-from models import init_db, User, db
+from models import init_db, User, db, DEFAULT_ADMIN_PASSWORD
 
 # 数据库位置与主程序同一套规则：--data-dir > APP_DATA_DIR 环境变量 > 缺省(项目根)
 _parser = argparse.ArgumentParser(description="重置 Web 登录密码")
@@ -58,7 +58,9 @@ if not _db_file.is_file():
 init_db(app, str(_db_file))
 
 DEFAULT_USERNAME = "admin"
-DEFAULT_PASSWORD = "admin123"
+# 默认口令引用 models 常量（单一来源）；注：重置为该公开默认值后，admin
+# 账号下次登录会被 F4 检测重新置位强制改密（符合"公开默认口令必须改"语义）
+DEFAULT_PASSWORD = DEFAULT_ADMIN_PASSWORD
 
 
 def reset(username: str, new_password: str) -> None:
