@@ -79,7 +79,8 @@ icon.ico
 # Repo-local docs are not needed in the container
 docs/
 README.md
-version.txt
+# version.txt 必须留在镜像内：webapp/version.py 从项目根读它，
+# 缺失则版本号回落 "0.0.0"（页面页脚、日志、账号导出文件全部显示 0.0.0）
 
 # Docker / compose meta
 Dockerfile

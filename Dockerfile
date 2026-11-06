@@ -121,6 +121,10 @@ RUN mkdir -p /data /app/downloads && chown -R deen:deen /data /app/downloads
 COPY --chown=deen:deen api/ /app/api/
 COPY --chown=deen:deen core/ /app/core/
 COPY --chown=deen:deen webapp/ /app/webapp/
+# version.txt 放在最后：版本号只在发版时变，置于三份大 COPY 之后可让
+# 改版本号时 api/ core/ webapp/ 三层缓存仍然命中。webapp/version.py
+# 按项目根（/app）解析该文件，缺失则版本号回落 "0.0.0"。
+COPY --chown=deen:deen version.txt /app/version.txt
 
 # Make the three API binaries executable. They live in /app/api/ — the Python
 # code looks them up via the project root (see core/providers/_proc.py), so no
