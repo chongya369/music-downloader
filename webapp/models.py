@@ -9,6 +9,7 @@
 """
 
 from datetime import datetime
+import logging
 from pathlib import Path
 
 from sqlalchemy import event, inspect, text
@@ -17,6 +18,13 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 db = SQLAlchemy()
+# 与 app.py 的 "webapp" logger 同名共享 handler；被 reset_password.py 等单独
+# import 时 root logger 未配置则走 lastResort(stderr)，不落盘但不报错
+logger = logging.getLogger("webapp")
+
+# 初始管理员默认口令（公开于源码/README）：admin 账号登录时若仍命中此值，
+# 会被补置首登强制改密（routes/views.py login），避免公开默认口令长期存续
+DEFAULT_ADMIN_PASSWORD = "admin123"
 
 # 支持的音乐平台
 PLATFORMS = ["netease", "qq", "kugou"]
@@ -622,9 +630,18 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         # 初始化默认管理员账号（仅当 users 表为空时）
         if not User.query.first():
             admin = User(username="admin", is_admin=True, enabled=True)
-            admin.set_password("admin123")
+            admin.set_password(DEFAULT_ADMIN_PASSWORD)
             # 默认口令公开于源码/README：首登强制修改，改完才可使用其他功能
             admin.must_change_password = True
             db.session.add(admin)
             db.session.commit()
             print("[init_db] 已创建初始管理员账号：admin / admin123（首次登录须修改密码）")
+            # 空 users 建 admin = 强制改密的唯一触发点。若是旧版本升级后出现，
+            # 说明数据目录未跟随升级（原数据库未被加载）。升级为 WARNING 级
+            # 主动诊断标记（webapp.log 可 grep「数据落点漂移」）。
+            logger.warning(
+                "[init_db] users 表为空，已创建初始管理员 admin/%s 并置首登强制改密。"
+                "若是旧版本升级后出现本日志，说明数据目录未跟随升级（数据落点漂移），"
+                "原数据库未被加载！当前数据库: %s",
+                DEFAULT_ADMIN_PASSWORD, db_path,
+            )

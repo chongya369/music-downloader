@@ -2,14 +2,16 @@
 
 本目录提供 `Dockerfile` 和 `docker-compose.yml`，一键打包运行 Deen 音乐下载器。
 
+> 相关文档：[README](README.md) · [初次使用教程](docs/初次使用教程.md) · [常见问题](docs/常见问题.md) · [技术文档](docs/技术文档.md)
+
 ## 国内镜像源（默认）
 
 为加速国内构建，`Dockerfile` 默认把 apt 和 pip 源替换为：
 
-| 类型 | 默认源 | 说明 |
-|------|--------|------|
-| apt | `mirrors.aliyun.com` | Debian 完整镜像，安全/CVE 覆盖一致 |
-| pip | `https://mirrors.aliyun.com/pypi/simple` | 阿里云 PyPI 镜像 |
+| 类型  | 默认源                                      | 说明                      |
+| --- | ---------------------------------------- | ----------------------- |
+| apt | `mirrors.aliyun.com`                     | Debian 完整镜像，安全/CVE 覆盖一致 |
+| pip | `https://mirrors.aliyun.com/pypi/simple` | 阿里云 PyPI 镜像             |
 
 海外用户构建时如需恢复官方源：
 
@@ -40,11 +42,11 @@ docker compose logs -f
 
 ## 数据持久化
 
-| 挂载点 | 用途 |
-|--------|------|
-| `/data` | SQLite（账号/歌单/任务/设置）+ 日志 + ncm-api 临时缓存 |
-| `/app/downloads` | 下载的音乐文件 |
-| `/app/logs` | 日志webapp.log |
+| 挂载点              | 用途                                     |
+| ---------------- | -------------------------------------- |
+| `/data`          | SQLite（账号/歌单/任务/设置）+ 日志 + ncm-api 临时缓存 |
+| `/app/downloads` | 下载的音乐文件                                |
+| `/app/logs`      | 日志webapp.log                           |
 
 如需把下载目录落到宿主机可见位置，编辑 `docker-compose.yml`：
 

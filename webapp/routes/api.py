@@ -44,6 +44,7 @@ from sqlalchemy import func
 
 from auth import current_user
 from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for, ACTIVE_TASK_STATUSES
+from routes.views import _clear_login_failures, _login_key
 from core.providers.base import MusicProvider
 from core.providers.netease.client import OFFICIAL_TOPLISTS
 from core.providers.netease.parse_links import parse_playlist_id
@@ -1865,6 +1866,8 @@ def change_my_password():
     user.set_password(new_pwd)
     user.must_change_password = False
     db.session.commit()
+    # 身份已验证即清登录限速计数（与 views.change_password 行为对齐）
+    _clear_login_failures(_login_key(user.username))
     logger.info("用户 %s 修改了自己的密码", user.username)
     return jsonify({"code": 0, "msg": "密码已修改"})
 
