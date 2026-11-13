@@ -55,6 +55,12 @@ api/web/
 api/.kugou_gcid_cache.json
 api/data/
 
+# Windows API builds — the Linux image never runs them (~120 MB).
+# The Dockerfile COPYs the whole api/ dir, so excluding them here is what
+# keeps the Windows executables out of the Linux image.
+api/*-win-x64.exe
+api/*_win.exe
+
 # Env files
 .env
 .env.*

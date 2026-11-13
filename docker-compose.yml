@@ -57,7 +57,6 @@ services:
       # 应用数据目录（与 Dockerfile 中 ENV APP_DATA_DIR=/data 保持一致，
       # 此处显式再写一遍便于后续修改默认位置）。
       APP_DATA_DIR: /data
-      DATA_DIR: /data
       # 时区：日志时间戳 + APScheduler 触发时刻 + 数据库默认时间字段
       TZ: Asia/Shanghai
       # Flask session 签名密钥（覆盖默认值；生产环境务必改成强随机字符串）
