@@ -117,3 +117,4 @@ release.bat
 # Local compose test volumes (created by docker compose up)
 deen-data/
 deen-downloads/
+deen-logs/

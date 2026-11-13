@@ -1,0 +1,190 @@
+# Docker 镜像构建与发布
+#
+# 与 build.yml（Windows / Linux / fnOS 产物 + GitHub Release）并列，
+# 单独负责容器镜像。两者共用同一触发条件：tag 推送或手动触发。
+#
+# 架构说明：仓库内三个 Go API 二进制（ncm / qqmusic / kugou）只有 x86-64
+# 版本，无 arm64 变体，故只构建 linux/amd64。多架构需先补 arm64 二进制。
+name: Docker Image
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '镜像标签（留空则用 version.txt）'
+        required: false
+        type: string
+      push:
+        description: '是否推送到 Docker Hub'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  # 镜像仓库名。默认取 github.repository（fork 即 <你的账号>/music-downloader）。
+  # 若要推到与 docker-compose.yml 一致的 chongya369/deen-music-downloader，
+  # 在仓库 Settings → Variables 增设 DOCKER_IMAGE 变量即可。
+  #
+  # 注意：此处不要带 registry 前缀。buildx 对 "user/repo" 这种裸名字会当成
+  # 私有 registry 主机（报 lookup <user> no such host），必须补全成
+  # "docker.io/user/repo"。规范化在 Resolve tags 步骤里做，结果写入
+  # steps.ver.outputs.image，后续步骤一律用它。
+  IMAGE_NAME: ${{ vars.DOCKER_IMAGE || github.repository }}
+
+jobs:
+  build:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tags
+        id: ver
+        run: |
+          VERSION=$(tr -d '[:space:]' < version.txt)
+          SHA=$(git rev-parse --short HEAD)
+          INPUT_TAG='${{ inputs.tag }}'
+          # tag 推送时用 git tag 名作标签；手动触发时用输入值；都没有则用版本号
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="$VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # 规范化镜像名：buildx 把 "user/repo" 裸名字当成私有 registry 主机，
+          # 会报 "lookup <user> no such host"。若第一段（registry 主机部分）
+          # 含 "." 或 ":" 则视为已带 registry 域名（含端口），否则补 docker.io/。
+          # 仓库名规范要求全小写（github.repository 常带大写用户名，
+          # 如 "TTcheng/music-downloader" 会被拒 "repository name must be
+          # lowercase"），故统一转小写。
+          RAW_IMAGE='${{ env.IMAGE_NAME }}'
+          FIRST_SEG="${RAW_IMAGE%%/*}"
+          case "$FIRST_SEG" in
+            localhost) IMAGE="$RAW_IMAGE" ;;
+            *.*|*:*)   IMAGE="$RAW_IMAGE" ;;
+            *)         IMAGE="docker.io/$RAW_IMAGE" ;;
+          esac
+          IMAGE="$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "构建标签: $TAG (version=$VERSION, sha=$SHA)"
+          echo "镜像名: $IMAGE"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 是否推送：tag 推送或手动触发勾选了 push 才推；但 Docker Hub 凭据
+      # 缺失时降级为「只构建 + 验证 + 存 artifact」，不让构建因缺凭据而失败。
+      # 凭据在仓库 Secrets 里配置（DOCKERHUB_USERNAME / DOCKERHUB_TOKEN）。
+      - name: Decide publish
+        id: pub
+        env:
+          WANT_PUSH: ${{ github.event_name == 'push' || inputs.push }}
+          HAS_CREDS: ${{ secrets.DOCKERHUB_USERNAME != '' && (secrets.DOCKERHUB_TOKEN != '' || secrets.DOCKERHUB_TOKET != '') }}
+        run: |
+          if [ "$WANT_PUSH" = "true" ] && [ "$HAS_CREDS" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [ "$WANT_PUSH" = "true" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::未配置 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN，跳过推送，仅构建并校验"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to Docker Hub
+        if: steps.pub.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # DOCKERHUB_TOKEN 为准；兼容拼写少一个 E 的 DOCKERHUB_TOKET
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKERHUB_TOKET }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ steps.pub.outputs.publish == 'true' }}
+          load: ${{ steps.pub.outputs.publish != 'true' }}
+          tags: |
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.tag }}
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.version }}
+            ${{ steps.ver.outputs.image }}:${{ steps.ver.outputs.sha }}
+            ${{ steps.ver.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 防回归断言：镜像内缺少 version.txt 时 webapp/version.py 会回落
+      # "0.0.0"，页面页脚与启动日志全部显示 0.0.0（历史 bug）。
+      # 构建产物必须能读出与 version.txt 一致的版本号。
+      # 仅在本地构建（未推送）时执行——推送后镜像已进 registry，
+      # 此时再跑会依赖本地是否有该镜像。
+      - name: Verify version inside image
+        if: steps.pub.outputs.publish != 'true'
+        env:
+          IMAGE_TAG: ${{ steps.ver.outputs.tag }}
+          IMAGE_NAME: ${{ steps.ver.outputs.image }}
+          EXPECTED_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # 用 heredoc 而非 python -c：YAML 块标量的前导缩进会原样传进
+          # python -c，直接触发 IndentationError。
+          cat > /tmp/verify_version.py <<'PYEOF'
+          import os
+          import sys
+
+          sys.path.insert(0, "/app/webapp")
+          from version import get_version
+
+          v = get_version()
+          expected = os.environ["EXPECTED_VERSION"]
+          print("镜像内版本号:", repr(v))
+          if v == "0.0.0":
+              sys.exit("FAIL: 镜像内 version.txt 缺失，版本号回落 0.0.0")
+          if v != expected:
+              sys.exit("FAIL: 版本号与 version.txt 不一致: %r != %r" % (v, expected))
+          print("OK")
+          PYEOF
+          docker run --rm \
+            -v /tmp/verify_version.py:/tmp/verify_version.py:ro \
+            -e EXPECTED_VERSION="$EXPECTED_VERSION" \
+            --entrypoint python \
+            "$IMAGE_NAME:$IMAGE_TAG" \
+            /tmp/verify_version.py
+
+      - name: Inspect image
+        if: steps.pub.outputs.publish != 'true'
+        env:
+          IMAGE_TAG: ${{ steps.ver.outputs.tag }}
+          IMAGE_NAME: ${{ steps.ver.outputs.image }}
+        run: |
+          docker image inspect "$IMAGE_NAME:$IMAGE_TAG" \
+            --format 'ID={{.Id}} 架构={{.Architecture}}  大小={{.Size}}'
+
+      # 不推送时把镜像导出成 tar 存为 artifact，方便本地取用验证
+      - name: Save image tar
+        if: steps.pub.outputs.publish != 'true'
+        env:
+          IMAGE_TAG: ${{ steps.ver.outputs.tag }}
+          IMAGE_NAME: ${{ steps.ver.outputs.image }}
+        run: |
+          docker save "$IMAGE_NAME:$IMAGE_TAG" \
+            | gzip > "deen-music-downloader-$IMAGE_TAG.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.pub.outputs.publish != 'true'
+        with:
+          name: deen-music-downloader-docker-${{ steps.ver.outputs.tag }}
+          path: deen-music-downloader-*.tar.gz
+          if-no-files-found: error
