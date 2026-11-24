@@ -27,6 +27,8 @@
 
 数据库与下载目录自动落在 fnOS 持久化数据卷，升级覆盖安装数据不丢失。
 
+fnOS 统一网关会在转发前校验 NAS 登录态并注入 `X-Trim-*` 用户头，应用据此**免密登录**（免二次输入密码，含手机 App 经 fn connect 中转访问）：宿主账号名需与 fnOS 用户名一致，未匹配时回退到应用自身登录页。网关模式下不显示「退出登录」（登出会被下一请求立即自动登录）。
+
 ### 方式二：Release 可执行文件
 
 1. 下载对应平台 zip（`deen-music-downloader-<版本号>-win-x64.zip` / `deen-music-downloader-<版本号>-linux-x64.zip`）并解压
@@ -138,4 +140,4 @@ chmod +x build_linux.sh && ./build_linux.sh
 
 ## 版本
 
-当前版本：**0.7.8**（见 [version.txt](version.txt)，更新日志见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）
+当前版本：**0.7.9**（见 [version.txt](version.txt)，更新日志见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）

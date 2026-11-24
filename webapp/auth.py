@@ -5,12 +5,44 @@
 - API 请求未登录：返回 401 JSON（前端 api() 拦截后跳转登录）
 """
 
+import logging
 from functools import wraps
 from typing import Optional
 
 from flask import session, redirect, url_for, request, jsonify
 
 from models import User
+
+logger = logging.getLogger("webapp")
+
+
+def gateway_auto_login() -> bool:
+    """网关模式专用：用统一网关注入的可信头建立宿主会话（免密 SSO）
+
+    调用前提：仅 app.py 在 GATEWAY_SOCKET（Unix Socket）模式下注册调用。
+    TCP 模式绝不可调用——否则客户端可伪造 X-Trim-Username 提权。
+    统一网关在转发前已校验 fnOS 会话并注入以下头（见飞牛《统一网关》）：
+    X-Trim-Userid / X-Trim-Isadmin / X-Trim-Username。
+
+    返回 True 表示本次新建了会话；头缺失、用户不存在或被禁用时不做任何事
+    （落回常规登录页），返回 False。
+    """
+    if session.get("uid"):
+        return False
+    username = (request.headers.get("X-Trim-Username") or "").strip()
+    userid = (request.headers.get("X-Trim-Userid") or "").strip()
+    if not username or not userid:
+        return False
+    user = User.query.filter_by(username=username).first()
+    if not user or not user.enabled:
+        # DEBUG 级：未映射用户每次请求都会走到这里，避免噪声
+        logger.debug("网关免密登录跳过：fnOS 用户 %s(uid=%s) 无对应宿主账号或已禁用",
+                     username, userid)
+        return False
+    session["uid"] = user.id
+    logger.info("网关免密登录：fnOS 用户 %s(uid=%s) -> 宿主账号 %s",
+                username, userid, user.username)
+    return True
 
 
 def login_required(allow_api_login: bool = False):

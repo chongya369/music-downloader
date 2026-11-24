@@ -68,11 +68,19 @@
                             <li><a class="dropdown-item" href="{{ url_for('views.users') }}">
                                 <i class="bi bi-people"></i> 用户管理
                             </a></li>
+                            {% endif %}
+                            {% if is_gateway %}
+                            <li><span class="dropdown-item-text text-muted small">
+                                <i class="bi bi-shield-check"></i> 飞牛账号免密登录
+                            </span></li>
+                            {% else %}
+                            {% if current_user.is_admin %}
                             <li><hr class="dropdown-divider"></li>
                             {% endif %}
                             <li><a class="dropdown-item" href="{{ url_for('views.logout') }}">
                                 <i class="bi bi-box-arrow-right"></i> 退出登录
                             </a></li>
+                            {% endif %}
                         </ul>
                     </li>
                 </ul>

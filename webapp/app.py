@@ -56,7 +56,7 @@ def _parse_data_dir_arg(argv=None):
     return args
 
 
-from flask import Flask
+from flask import Flask, request
 
 from models import init_db, Setting
 from task_manager import TaskManager
@@ -84,6 +84,30 @@ if GATEWAY_PREFIX:
     # 网关前缀模式的登录 cookie 绑定到前缀路径，避免被同域其他应用读取
     app.config["SESSION_COOKIE_PATH"] = GATEWAY_PREFIX
 
+# 网关免密登录：飞牛 App 内嵌 WebView 经 fn connect 中转打开时，iframe 中的
+# 业务 cookie 可能被第三方策略丢弃，导致登录后会话无法保持。统一网关已校验
+# fnOS 会话并注入 X-Trim-* 可信头，故在网关模式下据其自动建立宿主会话。
+# 仅在 Unix Socket 网关模式注册；TCP 模式（本地/Windows/Docker）绝不可信任
+# 这些头——客户端可自行伪造，启用即等于提权漏洞（serve() 为 socket/TCP 二选一）。
+if GATEWAY_SOCKET:
+    from auth import gateway_auto_login
+
+    _gateway_header_probe_done = False
+
+    @app.before_request
+    def _gateway_auto_login_hook():
+        global _gateway_header_probe_done
+        if not _gateway_header_probe_done:
+            # 首请求一次性自检：确认网关确实注入鉴权头（部署后日志可查）
+            _gateway_header_probe_done = True
+            if request.headers.get("X-Trim-Username"):
+                logger.info("网关鉴权头就绪（X-Trim-Username=%s），免密登录启用",
+                            request.headers.get("X-Trim-Username"))
+            else:
+                logger.warning("网关模式未见 X-Trim-* 头：免密登录不可用"
+                               "（请确认请求经统一网关转发）")
+        gateway_auto_login()
+
 
 @app.context_processor
 def inject_version():
@@ -100,6 +124,13 @@ def inject_user_flag():
     except Exception:       # 无请求上下文等场景下渲染模板不该炸
         user = None
     return {"is_admin": bool(user and user.is_admin)}
+
+
+@app.context_processor
+def inject_gateway_flag():
+    """网关模式下模板隐藏「退出登录」：免密 SSO 下登出会被下一请求立即
+    自动登录回来，保留入口只会造成「点了没反应」的困惑。"""
+    return {"is_gateway": bool(GATEWAY_SOCKET)}
 
 
 @app.context_processor
