@@ -1,62 +1,13 @@
-// 歌单管理页逻辑（我的歌单 + 多平台发现）
+// 歌单管理页逻辑（我的歌单 + 三平台共用的歌曲搜索）
 
-let myPlaylistIds = new Set();  // 已关注歌单 ID 集合，用于发现页标记"已添加"
 let defaultPlaylistLimit = 50;  // 添加歌单时的默认下载数量（来自设置）
 
-// ==================================================================
-// 平台状态管理（配置驱动，与模板 window._AVAILABLE_PLATFORMS 对应）
-// ==================================================================
-let _currentPlatform = "netease";
-let _platformState = {};
+// 平台列表（模板注入的 window._AVAILABLE_PLATFORMS，配置驱动）
+const _PLATFORMS = Array.isArray(window._AVAILABLE_PLATFORMS) ? window._AVAILABLE_PLATFORMS : [];
 
-function getPlatformState(platform) {
-    if (!_platformState[platform]) {
-        _platformState[platform] = {
-            subtab: "toplists",
-            hotPage: 1,
-            searchState: { keyword: "", type: "song", limit: 50, page: 1 },
-        };
-    }
-    return _platformState[platform];
-}
-
-function _saveCurrentPlatformState() {
-    const state = getPlatformState(_currentPlatform);
-    state.subtab = _discoverState.subtab;
-    state.hotPage = _discoverState.hotPage;
-    state.searchState = { ..._searchState };
-}
-
-function _restorePlatformState(platform) {
-    const state = getPlatformState(platform);
-    _discoverState.subtab = state.subtab;
-    _discoverState.hotPage = state.hotPage;
-    _searchState = { ...state.searchState };
-
-    // 切换子标签激活态
-    document.querySelectorAll("#discover-subtabs .nav-link").forEach(n => {
-        n.classList.toggle("active", n.dataset.subtab === state.subtab);
-    });
-    document.querySelectorAll("#tab-discover [id^='subtab-']").forEach(el => el.classList.add("d-none"));
-    document.getElementById("subtab-" + state.subtab).classList.remove("d-none");
-
-    // 同步搜索框与表格显示状态
-    document.getElementById("search-type").value = _searchState.type;
-    document.getElementById("search-keyword").value = _searchState.keyword;
-    const isAlbum = _searchState.type === "album";
-    document.getElementById("search-result-song").classList.toggle("d-none", isAlbum);
-    document.getElementById("search-result-album").classList.toggle("d-none", !isAlbum);
-    document.getElementById("btn-search-download-all").style.display = isAlbum ? "none" : "";
-
-    // 加载当前子标签内容
-    if (state.subtab === "toplists") {
-        loadToplists();
-    } else if (state.subtab === "hot") {
-        loadCategories();
-        loadHotPlaylists();
-    } else if (state.subtab === "search") {
-        loadSearchResults();
-    }
+function platformName(key) {
+    const p = _PLATFORMS.find(x => x.key === key);
+    return p ? p.name : key;
 }
 
 // 加载默认下载数量配置
@@ -79,38 +30,20 @@ document.getElementById("add-modal").addEventListener("show.bs.modal", function(
 });
 
 // ==================================================================
-// 标签页切换
+// 标签页切换（我的歌单 / 歌曲搜索）
 // ==================================================================
 document.querySelectorAll("#playlist-tabs .nav-link").forEach(el => {
     el.addEventListener("click", function(e) {
         e.preventDefault();
-        const tab = this.dataset.tab;
-        // 切换激活态
+        const isMine = this.dataset.tab === "mine";
         document.querySelectorAll("#playlist-tabs .nav-link").forEach(n => n.classList.remove("active"));
         this.classList.add("active");
-        if (tab === "mine") {
-            document.getElementById("tab-mine").classList.remove("d-none");
-            document.getElementById("tab-discover").classList.add("d-none");
-            // 切回时重新拉取，保证发现页/弹窗新添加的歌单立即可见
+        document.getElementById("tab-mine").classList.toggle("d-none", !isMine);
+        document.getElementById("tab-search").classList.toggle("d-none", isMine);
+        // 切回「我的歌单」时重新拉取，保证弹窗新添加的歌单立即可见；
+        // 「歌曲搜索」只切换显示、不重发请求，保留上次结果
+        if (isMine) {
             loadPlaylists();
-            return;
-        }
-        // 平台 tab
-        const platform = this.dataset.platform;
-        if (platform) {
-            const showingDiscover = document.getElementById("tab-mine").classList.contains("d-none");
-            // 已在当前平台的发现页则无需重复加载
-            if (platform === _currentPlatform && showingDiscover) {
-                return;
-            }
-            // 保存当前平台状态
-            _saveCurrentPlatformState();
-            _currentPlatform = platform;
-            // 隐藏 mine，显示 discover
-            document.getElementById("tab-mine").classList.add("d-none");
-            document.getElementById("tab-discover").classList.remove("d-none");
-            // 恢复该平台状态
-            _restorePlatformState(platform);
         }
     });
 });
@@ -123,8 +56,6 @@ async function loadPlaylists() {
         const data = await api("/api/playlists");
         const tbody = document.getElementById("playlist-tbody");
         const list = data.data;
-
-        myPlaylistIds = new Set((list || []).map(p => p.id));
 
         if (!list || list.length === 0) {
             tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无关注的歌单，点击右上角添加</td></tr>';
@@ -235,7 +166,7 @@ function bindPlaylistEvents() {
     });
 }
 
-// 添加歌单（我的歌单弹窗 + 发现页共用）
+// 添加歌单（我的歌单弹窗使用）
 async function addPlaylist(source, type, limit, platform = "netease") {
     return await api("/api/playlists", {
         method: "POST",
@@ -268,211 +199,67 @@ document.getElementById("btn-add-confirm").addEventListener("click", async funct
 });
 
 // ==================================================================
-// 发现页
+// 歌曲搜索（三平台共用一套界面，平台由下拉框选择）
 // ==================================================================
 
-// 发现页状态：当前子标签、当前页码
-let _discoverState = {
-    subtab: "toplists",   // toplists / hot
-    hotPage: 1,           // 热门歌单当前页
-};
-
-// 子标签切换
-document.querySelectorAll("#discover-subtabs .nav-link").forEach(el => {
-    el.addEventListener("click", function(e) {
-        e.preventDefault();
-        const subtab = this.dataset.subtab;
-        _discoverState.subtab = subtab;
-        document.querySelectorAll("#discover-subtabs .nav-link").forEach(n => n.classList.remove("active"));
-        this.classList.add("active");
-        document.getElementById("subtab-toplists").classList.add("d-none");
-        document.getElementById("subtab-hot").classList.add("d-none");
-        document.getElementById("subtab-search").classList.add("d-none");
-        document.getElementById("subtab-" + subtab).classList.remove("d-none");
-        // 首次切到排行榜时加载
-        if (subtab === "toplists" && !window._toplistsLoaded) {
-            window._toplistsLoaded = true;
-            loadToplists();
-        }
-        // 首次切到热门歌单时加载分类并加载第一页
-        if (subtab === "hot" && !window._hotLoaded) {
-            window._hotLoaded = true;
-            loadCategories();
-            loadHotPlaylists();
-        }
-    });
-});
-
-async function loadCategories() {
-    try {
-        const data = await api("/api/discover/categories?platform=" + _currentPlatform);
-        const sel = document.getElementById("discover-cat");
-        const cats = data.data || [];
-        sel.innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
-    } catch (e) {
-        console.error("加载分类失败:", e);
-    }
-}
-
-async function loadToplists() {
-    const grid = document.getElementById("toplist-grid");
-    grid.innerHTML = '<div class="col-12 text-center text-muted"><span class="loading-spinner"></span> 加载中...</div>';
-    try {
-        const data = await api("/api/discover/toplists?platform=" + _currentPlatform);
-        const list = data.data || [];
-        if (list.length === 0) {
-            grid.innerHTML = '<div class="col-12 text-center text-muted">暂无数据</div>';
-            return;
-        }
-        grid.innerHTML = list.map(t => renderCard(t, "official", "toplist")).join("");
-        bindAddButtons();
-    } catch (e) {
-        grid.innerHTML = `<div class="col-12 text-center text-danger">加载失败: ${escapeHtml(e.message)}</div>`;
-    }
-}
-
-async function loadHotPlaylists() {
-    const grid = document.getElementById("hot-grid");
-    const cat = document.getElementById("discover-cat").value;
-    const limit = parseInt(document.getElementById("discover-limit").value);
-    const order = document.getElementById("discover-order").value;
-    const page = _discoverState.hotPage;
-    document.getElementById("hot-title").textContent = (cat === "全部" ? "热门歌单" : cat + "歌单") + "（" + (order === "hot" ? "热门" : "最新") + "）";
-
-    grid.innerHTML = '<div class="col-12 text-center text-muted"><span class="loading-spinner"></span> 加载中...</div>';
-    try {
-        const data = await api(`/api/discover/playlists?cat=${encodeURIComponent(cat)}&limit=${limit}&order=${order}&page=${page}&platform=${_currentPlatform}`);
-        const list = data.data || [];
-        const total = data.total || 0;
-        const pages = data.pages || 0;
-        const curPage = data.page || 1;
-
-        if (list.length === 0) {
-            grid.innerHTML = '<div class="col-12 text-center text-muted">暂无数据</div>';
-        } else {
-            grid.innerHTML = list.map(p => renderCard(p, "user", "hot")).join("");
-            bindAddButtons();
-        }
-        // 更新翻页控件
-        updatePagination(curPage, pages, total);
-    } catch (e) {
-        grid.innerHTML = `<div class="col-12 text-center text-danger">加载失败: ${escapeHtml(e.message)}</div>`;
-        updatePagination(1, 0, 0);
-    }
-}
-
-function updatePagination(curPage, totalPages, total) {
-    const info = document.getElementById("hot-page-info");
-    const prev = document.getElementById("btn-hot-prev");
-    const next = document.getElementById("btn-hot-next");
-    info.textContent = `第 ${curPage} 页 / 共 ${totalPages} 页（总 ${total} 个）`;
-    prev.disabled = curPage <= 1;
-    next.disabled = curPage >= totalPages || totalPages === 0;
-}
-
-function renderCard(item, type, source) {
-    const added = myPlaylistIds.has(item.id);
-    // 非歌曲类榜单（专辑/有声/MV 销量榜，后端 get_toplists 返回 addable=false）
-    // 置灰添加按钮；严格等判定保证无该字段的平台（网易云/酷狗）不受影响
-    const notAddable = source === "toplist" && item.addable === false;
-    const playCount = item.play_count ? formatPlayCount(item.play_count) : "";
-    const cover = item.cover_img_url
-        ? `<img src="${escapeHtml(item.cover_img_url)}" class="card-img-top discover-cover" alt="${escapeHtml(item.name)}">`
-        : `<div class="discover-cover-placeholder"><i class="bi bi-music-note-beamed"></i></div>`;
-    const meta = source === "toplist"
-        ? (notAddable ? "非歌曲榜" : (item.update_frequency || "排行榜"))
-        : (playCount ? "播放 " + playCount : "歌单");
-    return `
-        <div class="col-lg-2 col-md-3 col-sm-4 col-6">
-            <div class="card discover-card h-100">
-                ${cover}
-                <div class="card-body p-2">
-                    <h6 class="card-title text-truncate mb-1" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</h6>
-                    <small class="text-muted d-block text-truncate">${meta}</small>
-                </div>
-                <div class="card-footer p-2 text-center">
-                    <button class="btn btn-sm ${added || notAddable ? 'btn-secondary' : 'btn-outline-primary'} w-100 btn-add-discover"
-                        data-id="${item.id}" data-name="${escapeHtml(item.name)}" data-type="${type}"
-                        ${added || notAddable ? 'disabled' : ''}
-                        ${notAddable ? 'title="该榜单为专辑/非歌曲类榜单，无歌曲列表"' : ''}>
-                        ${added ? '<i class="bi bi-check2"></i> 已添加'
-                            : (notAddable ? '<i class="bi bi-slash-circle"></i> 非歌曲榜'
-                                : '<i class="bi bi-plus"></i> 添加')}
-                    </button>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-function formatPlayCount(n) {
-    if (n >= 100000000) return (n / 100000000).toFixed(1) + "亿";
-    if (n >= 10000) return (n / 10000).toFixed(1) + "万";
-    return String(n);
-}
-
-function bindAddButtons() {
-    document.querySelectorAll(".btn-add-discover").forEach(el => {
-        el.addEventListener("click", async function() {
-            if (this.disabled) return;
-            const id = this.dataset.id;
-            const name = this.dataset.name;
-            const type = this.dataset.type;
-            this.disabled = true;
-            this.innerHTML = '<span class="loading-spinner"></span>';
-            try {
-                const data = await addPlaylist(id, type, defaultPlaylistLimit, _currentPlatform);
-                showToast(data.msg, "添加成功");
-                this.className = "btn btn-sm btn-secondary w-100";
-                this.innerHTML = '<i class="bi bi-check2"></i> 已添加';
-                myPlaylistIds.add(parseInt(id));
-            } catch (e) {
-                showToast(e.message, "添加失败");
-                this.disabled = false;
-                this.innerHTML = '<i class="bi bi-plus"></i> 添加';
-            }
-        });
-    });
-}
-
-// 筛选/数量变更时回到第 1 页
-document.getElementById("discover-cat").addEventListener("change", () => { _discoverState.hotPage = 1; });
-document.getElementById("discover-order").addEventListener("change", () => { _discoverState.hotPage = 1; });
-document.getElementById("discover-limit").addEventListener("change", () => { _discoverState.hotPage = 1; loadHotPlaylists(); });
-
-// 查询按钮：回到第 1 页重新查询
-document.getElementById("btn-discover-search").addEventListener("click", () => {
-    _discoverState.hotPage = 1;
-    loadHotPlaylists();
-});
-
-// 翻页按钮
-document.getElementById("btn-hot-prev").addEventListener("click", () => {
-    if (_discoverState.hotPage > 1) {
-        _discoverState.hotPage--;
-        loadHotPlaylists();
-    }
-});
-document.getElementById("btn-hot-next").addEventListener("click", () => {
-    _discoverState.hotPage++;
-    loadHotPlaylists();
-});
-
-// 初始化：加载我的歌单 + 默认下载数量
-loadPlaylists();
-loadDefaultPlaylistLimit();
-
-// ==================================================================
-// 搜索歌手
-// ==================================================================
-
-// 搜索状态：当前关键词、类型、每页数量、页码
+// 搜索状态：表单即状态（平台/关键词/类型/每页共享一份，不再按平台记忆）
 let _searchState = {
+    platform: document.getElementById("search-platform").value || "netease",
     keyword: "",
     type: "song",     // song | artist | album
     limit: 50,
     page: 1,
 };
+
+// 请求序号：切换平台/重复搜索时递增，响应回来若序号已变则丢弃（防旧平台
+// 的慢响应覆盖新平台结果，酷狗聚合搜索尤其慢）
+let _searchSeq = 0;
+// 请求在途标记：期间禁用搜索/全部下载/翻页，避免重复提交
+let _searchBusy = false;
+// 最近一次分页数据（单一数据源：忙碌态切换后据此重算按钮禁用态，
+// 避免「请求结束时 updateSearchPagination 已按忙碌态算过一次」导致翻页永久禁用）
+let _pageState = { curPage: 1, pages: 0, total: 0 };
+
+function _setSearchBusy(busy) {
+    _searchBusy = busy;
+    document.getElementById("btn-search").disabled = busy;
+    document.getElementById("btn-search-download-all").disabled = busy;
+    const prev = document.getElementById("btn-search-prev");
+    const next = document.getElementById("btn-search-next");
+    prev.disabled = busy || _pageState.curPage <= 1;
+    next.disabled = busy || _pageState.curPage >= _pageState.pages || _pageState.pages === 0;
+}
+
+// 清空结果区（同步执行，不等新响应）：切换平台/类型时立即调用，
+// 避免「下拉已切到 B 平台、表格还是 A 平台数据」时点下载导致错平台入队
+function _resetSearchView(text = "输入关键词后点击搜索") {
+    const row = (colspan) => `<tr><td colspan="${colspan}" class="text-center text-muted">${text}</td></tr>`;
+    document.getElementById("search-tbody-song").innerHTML = row(7);
+    document.getElementById("search-tbody-album").innerHTML = row(6);
+    document.getElementById("search-title").textContent = "搜索结果";
+    document.getElementById("search-title-album").textContent = "搜索结果";
+    updateSearchPagination(1, 0, 0);
+}
+
+// 作废在途请求（递增序号 + 解除忙碌态），供切换平台时使用
+function _invalidateSearch() {
+    _searchSeq++;
+    _setSearchBusy(false);
+}
+
+// 切换平台：作废旧请求 → 清空结果 → 有关键词则按新平台重搜
+document.getElementById("search-platform").addEventListener("change", function() {
+    const platform = this.value;
+    if (platform === _searchState.platform) return;
+    _searchState.platform = platform;
+    _searchState.page = 1;
+    _invalidateSearch();
+    _resetSearchView();
+    document.getElementById("search-title").textContent = `搜索结果（${platformName(platform)}）`;
+    if (_searchState.keyword) {
+        loadSearchResults();
+    }
+});
 
 // 同步每页数量下拉框到状态
 document.getElementById("search-limit").addEventListener("change", function() {
@@ -480,10 +267,14 @@ document.getElementById("search-limit").addEventListener("change", function() {
     _searchState.page = 1;
 });
 
-// 搜索按钮
+// 搜索按钮（以表单当前值提交）
 document.getElementById("btn-search").addEventListener("click", () => {
+    if (_searchBusy) return;
     const kw = document.getElementById("search-keyword").value.trim();
     if (!kw) { showToast("请输入搜索关键词"); return; }
+    _searchState.platform = document.getElementById("search-platform").value;
+    _searchState.type = document.getElementById("search-type").value;
+    _searchState.limit = parseInt(document.getElementById("search-limit").value) || 50;
     _searchState.keyword = kw;
     _searchState.page = 1;
     loadSearchResults();
@@ -501,46 +292,47 @@ document.getElementById("search-keyword").addEventListener("keypress", function(
 document.getElementById("search-type").addEventListener("change", function() {
     _searchState.type = this.value;
     _searchState.page = 1;
-    // 切换表格显示
     const isAlbum = this.value === "album";
     document.getElementById("search-result-song").classList.toggle("d-none", isAlbum);
     document.getElementById("search-result-album").classList.toggle("d-none", !isAlbum);
-    // "全部下载"按钮仅歌曲模式显示
+    // "全部下载"按钮仅歌曲/歌手模式显示
     document.getElementById("btn-search-download-all").style.display = isAlbum ? "none" : "";
-    // 重置分页
-    updateSearchPagination(1, 0, 0);
-    // 清空结果
-    document.getElementById("search-tbody-song").innerHTML = '<tr><td colspan="7" class="text-center text-muted">输入关键词后点击搜索</td></tr>';
-    document.getElementById("search-tbody-album").innerHTML = '<tr><td colspan="6" class="text-center text-muted">输入关键词后点击搜索</td></tr>';
+    _invalidateSearch();
+    _resetSearchView();
 });
 
-// 全部下载（应用排除过滤，仅歌曲模式，下载当前页）
+// 全部下载（应用排除过滤，仅歌曲/歌手模式，下载当前页）
 document.getElementById("btn-search-download-all").addEventListener("click", async function() {
     const kw = _searchState.keyword;
     if (!kw) { showToast("请先输入搜索关键词"); return; }
+    if (_searchBusy) return;
+    const platform = _searchState.platform;
     const limit = _searchState.limit;
     const offset = (_searchState.page - 1) * limit;
+    if (!confirm(`将在【${platformName(platform)}】下载当前页搜索结果（第 ${_searchState.page} 页），并应用排除关键字过滤。确定继续？`)) return;
     const btn = this;
     btn.disabled = true;
     btn.innerHTML = '<span class="loading-spinner"></span> 下载中...';
     try {
         const data = await api("/api/discover/search-download", {
             method: "POST",
-            body: JSON.stringify({ keyword: kw, limit, offset, platform: _currentPlatform }),
+            body: JSON.stringify({ keyword: kw, limit, offset, platform }),
         });
         showToast(data.msg, "下载结果");
-        // 下载后刷新当前页状态
-        loadSearchResults();
+        // 下载后刷新当前页状态（等刷新结束，避免按钮文案与忙碌态错位）
+        await loadSearchResults();
     } catch (e) {
         showToast(e.message, "错误");
     } finally {
-        btn.disabled = false;
+        // 成功/失败都要恢复文案：否则会一直停在 spinner + 「下载中...」
         btn.innerHTML = '<i class="bi bi-cloud-arrow-down"></i> 全部下载';
+        btn.disabled = _searchBusy;   // 刷新仍在途时保持禁用
     }
 });
 
 // 分页：上一页
 document.getElementById("btn-search-prev").addEventListener("click", () => {
+    if (_searchBusy) return;
     if (_searchState.page > 1) {
         _searchState.page--;
         loadSearchResults();
@@ -549,6 +341,7 @@ document.getElementById("btn-search-prev").addEventListener("click", () => {
 
 // 分页：下一页
 document.getElementById("btn-search-next").addEventListener("click", () => {
+    if (_searchBusy) return;
     _searchState.page++;
     loadSearchResults();
 });
@@ -558,9 +351,11 @@ async function loadSearchResults() {
     const keyword = _searchState.keyword;
     const type = _searchState.type;
     const limit = _searchState.limit;
+    const platform = _searchState.platform;
     const page = _searchState.page;
     const offset = (page - 1) * limit;
     const isAlbum = type === "album";
+    const seq = ++_searchSeq;
 
     // 同步下拉框状态（防止外部调用未同步）
     document.getElementById("search-type").value = type;
@@ -570,15 +365,17 @@ async function loadSearchResults() {
 
     const tbody = document.getElementById(isAlbum ? "search-tbody-album" : "search-tbody-song");
     const titleEl = document.getElementById(isAlbum ? "search-title-album" : "search-title");
-    titleEl.textContent = `搜索结果: ${keyword}（第 ${page} 页）`;
+    titleEl.textContent = `搜索结果: ${keyword}（${platformName(platform)} · 第 ${page} 页）`;
     const colspan = isAlbum ? 6 : 7;
     tbody.innerHTML = `<tr><td colspan="${colspan}" class="text-center text-muted"><span class="loading-spinner"></span> 搜索中...</td></tr>`;
+    _setSearchBusy(true);
 
     try {
         const data = await api("/api/discover/search", {
             method: "POST",
-            body: JSON.stringify({ keyword, type, limit, offset, platform: _currentPlatform }),
+            body: JSON.stringify({ keyword, type, limit, offset, platform }),
         });
+        if (seq !== _searchSeq) return;   // 过期响应：丢弃，不写 DOM
         const d = data.data || {};
         const list = d.items || [];
         const total = d.total || 0;
@@ -613,7 +410,7 @@ async function loadSearchResults() {
                     </tr>
                 `;
             }).join("");
-            bindAlbumDownload();
+            bindAlbumDownload(platform);
         } else {
             tbody.innerHTML = list.map((s, idx) => {
                 const feeText = s.fee === 1
@@ -641,27 +438,32 @@ async function loadSearchResults() {
                     </tr>
                 `;
             }).join("");
-            bindSingleDownload();
+            bindSingleDownload(platform);
         }
         updateSearchPagination(curPage, pages, total);
     } catch (e) {
+        if (seq !== _searchSeq) return;   // 过期请求的错误同样忽略
         tbody.innerHTML = `<tr><td colspan="${colspan}" class="text-center text-danger">搜索失败: ${escapeHtml(e.message)}</td></tr>`;
         updateSearchPagination(1, 0, 0);
+    } finally {
+        if (seq === _searchSeq) _setSearchBusy(false);
     }
 }
 
-// 更新搜索分页控件
+// 更新搜索分页控件（同时记录分页数据，供忙碌态切换后重算）
 function updateSearchPagination(curPage, totalPages, total) {
+    _pageState = { curPage, pages: totalPages, total };
     const info = document.getElementById("search-page-info");
     const prev = document.getElementById("btn-search-prev");
     const next = document.getElementById("btn-search-next");
     info.textContent = `第 ${curPage} 页 / 共 ${totalPages} 页（总 ${total} 个）`;
-    prev.disabled = curPage <= 1;
-    next.disabled = curPage >= totalPages || totalPages === 0;
+    prev.disabled = _searchBusy || curPage <= 1;
+    next.disabled = _searchBusy || curPage >= totalPages || totalPages === 0;
 }
 
-// 单首下载（不受排除过滤限制）
-function bindSingleDownload() {
+// 单首下载（不受排除过滤限制）；platform 取自渲染这批结果的平台，
+// 不读当前下拉值，避免「切换平台后点旧行」造成错平台入队
+function bindSingleDownload(platform) {
     document.querySelectorAll(".btn-dl-single").forEach(el => {
         el.addEventListener("click", async function() {
             if (this.disabled) return;
@@ -674,7 +476,7 @@ function bindSingleDownload() {
             try {
                 const data = await api("/api/discover/download-song", {
                     method: "POST",
-                    body: JSON.stringify({ song_id: songId, name, artists, fee, platform: _currentPlatform }),
+                    body: JSON.stringify({ song_id: songId, name, artists, fee, platform }),
                 });
                 showToast(data.msg, "下载");
                 // 更新按钮状态
@@ -694,7 +496,7 @@ function bindSingleDownload() {
 }
 
 // 专辑下载（下载整张专辑，应用排除过滤）
-function bindAlbumDownload() {
+function bindAlbumDownload(platform) {
     document.querySelectorAll(".btn-dl-album").forEach(el => {
         el.addEventListener("click", async function() {
             if (this.disabled) return;
@@ -707,7 +509,7 @@ function bindAlbumDownload() {
             try {
                 const data = await api("/api/discover/album-download", {
                     method: "POST",
-                    body: JSON.stringify({ album_id: albumId, album_name: albumName, platform: _currentPlatform }),
+                    body: JSON.stringify({ album_id: albumId, album_name: albumName, platform }),
                 });
                 showToast(data.msg, "专辑下载");
                 this.className = "btn btn-sm btn-secondary btn-dl-album";
@@ -721,3 +523,7 @@ function bindAlbumDownload() {
         });
     });
 }
+
+// 初始化：加载我的歌单 + 默认下载数量
+loadPlaylists();
+loadDefaultPlaylistLimit();

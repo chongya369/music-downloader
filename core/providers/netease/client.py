@@ -53,24 +53,6 @@ def _join_artist_names(items) -> str:
     return "/".join(names)
 
 
-# 官方常驻榜单 ID
-OFFICIAL_TOPLISTS = {
-    19723756: "飙升榜",
-    3779629: "新歌榜",
-    3778678: "热歌榜",
-    2884035: "原创榜",
-    10520166: "电音榜",
-    60198: "ACG新歌榜",
-    60131: "欧美热歌榜",
-    180106: "UK排行榜周榜",
-    27135204: "美国Billboard周榜",
-    3812895: "Beatport全球电子舞曲榜",
-    71385702: "KTV嗨榜",
-    71384007: "法国 NRJ Vos Hits 周榜",
-    112504: "日本Oricon周榜",
-    112463: "iTunes榜",
-}
-
 # 音质等级 -> NeteaseCloudMusicApi level 参数值
 # 前 5 档为普通档（走 /song/url/v1 试听接口，现状零回归）；
 # 后 5 档为高级权益档（试听接口无 url 时逐歌调 /song/download/url/v1 补链）
@@ -393,29 +375,6 @@ class NeteaseClient:
 
         # 无任何会员
         return {"vip_type": 0, "expire_time": None, "vip_package": ""}
-
-    def get_all_toplists(self) -> list[dict]:
-        """获取所有官方榜单列表"""
-        result = self._request("/toplist")
-        if result.get("code") != 200:
-            logger.error("获取榜单列表失败: %s", result.get("msg"))
-            return []
-        return [
-            {
-                "id": item.get("id"),
-                "name": item.get("name") or "",
-                "description": item.get("description") or "",
-                "update_frequency": item.get("updateFrequency") or "",
-                "cover_img_url": (
-                    item.get("picUrl")
-                    or item.get("coverImgUrl")
-                    or item.get("coverUrl")
-                    or ""
-                ),
-            }
-            for item in result.get("list") or []
-            if isinstance(item, dict)
-        ]
 
     def get_playlist_detail(self, playlist_id: int, limit: int = 200) -> dict:
         """获取歌单/榜单详情，包含歌曲列表
@@ -758,98 +717,6 @@ class NeteaseClient:
                 "fee": _to_int(s.get("fee")),
             })
         return out
-
-    # ------------------------------------------------------------------
-    # 发现接口（排行榜 / 热门歌单 / 分类）
-    # ------------------------------------------------------------------
-    def get_toplists(self) -> list[dict]:
-        """获取所有官方排行榜列表
-
-        Returns:
-            [{"id","name","description","update_frequency","cover_img_url"}, ...]
-        """
-        result = self._request("/toplist")
-        if result.get("code") != 200:
-            logger.error("获取排行榜列表失败: %s", result.get("msg"))
-            return []
-        return [
-            {
-                "id": item.get("id"),
-                "name": item.get("name") or "",
-                "description": item.get("description") or "",
-                "update_frequency": item.get("updateFrequency") or "",
-                "cover_img_url": (
-                    item.get("picUrl")
-                    or item.get("coverImgUrl")
-                    or item.get("coverUrl")
-                    or ""
-                ),
-                "track_count": _to_int(item.get("trackCount")),
-            }
-            for item in result.get("list") or []
-            if isinstance(item, dict)
-        ]
-
-    def get_hot_playlists(self, cat: str = "全部", limit: int = 30, order: str = "hot", offset: int = 0) -> tuple[list[dict], int]:
-        """获取热门/分类歌单（支持分页）
-
-        Args:
-            cat: 分类名（全部/华语/流行/摇滚/电子/民谣/说唱/轻音乐/爵士等）
-            limit: 每页数量
-            order: 排序 hot(热门) / new(最新)
-            offset: 偏移量 = (page-1) * limit
-
-        Returns:
-            (playlists, total)：歌单列表和该分类下的歌单总数
-        """
-        params = {"cat": cat, "limit": limit, "order": order, "offset": offset}
-        result = self._request("/top/playlist", params=params)
-        if result.get("code") != 200:
-            logger.error("获取热门歌单失败: %s", result.get("msg"))
-            return [], 0
-        total = result.get("total", 0) or 0
-        playlists = [
-            {
-                "id": item.get("id"),
-                "name": item.get("name") or "",
-                "cover_img_url": (
-                    item.get("picUrl")
-                    or item.get("coverImgUrl")
-                    or item.get("coverUrl")
-                    or ""
-                ),
-                "play_count": _to_int(item.get("playCount")),
-                "track_count": _to_int(item.get("trackCount")),
-                "creator": ((item.get("creator") or {}).get("nickname") or "")
-                if isinstance(item.get("creator"), dict) else "",
-                "description": item.get("description") or "",
-            }
-            for item in result.get("playlists") or []
-            if isinstance(item, dict)
-        ]
-        return playlists, total
-
-    def get_playlist_categories(self) -> list[dict]:
-        """获取所有歌单分类
-
-        Returns:
-            [{"name","resource_type","category_group","hot"}, ...]
-        """
-        result = self._request("/playlist/catlist")
-        if result.get("code") != 200:
-            logger.error("获取歌单分类失败: %s", result.get("msg"))
-            return []
-        return [
-            {
-                "name": item.get("name") or "",
-                "resource_type": item.get("resourceType") or "",
-                "category_group": item.get("categoryGroup") or "",
-                "hot": item.get("hot", False),
-            }
-            for item in result.get("sub") or []
-            if isinstance(item, dict)
-        ]
-
 
 # ======================================================================
 # 扫码登录辅助

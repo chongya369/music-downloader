@@ -123,18 +123,6 @@ class KuGouProvider(MusicProvider):
         """获取专辑内歌曲（旁路代理）"""
         return self._ensure_client().get_album_songs(*args, **kwargs)
 
-    def get_toplists(self, *args, **kwargs):
-        """获取排行榜列表（旁路代理）"""
-        return self._ensure_client().get_toplists(*args, **kwargs)
-
-    def get_hot_playlists(self, *args, **kwargs):
-        """获取热门歌单（/top/playlist + 分类映射，旁路代理）"""
-        return self._ensure_client().get_hot_playlists(*args, **kwargs)
-
-    def get_playlist_categories(self, *args, **kwargs):
-        """获取歌单分类（/playlist/tags，旁路代理）"""
-        return self._ensure_client().get_playlist_categories(*args, **kwargs)
-
     def get_playlist_detail(self, *args, **kwargs):
         """获取榜单/歌单详情（rankid→榜单，specialid→gcid 曲目，旁路代理）"""
         return self._ensure_client().get_playlist_detail(*args, **kwargs)

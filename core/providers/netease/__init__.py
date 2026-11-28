@@ -7,7 +7,7 @@
 import logging
 
 from ..base import MusicProvider
-from .client import NeteaseClient, OFFICIAL_TOPLISTS
+from .client import NeteaseClient
 from ._transform import (
     transform_song_urls,
     transform_song_detail,
@@ -104,25 +104,9 @@ class NeteaseProvider(MusicProvider):
         """获取会员信息（旁路代理）"""
         return self._ensure_client().get_vip_info(*args, **kwargs)
 
-    def get_all_toplists(self, *args, **kwargs):
-        """获取官方榜单列表（旁路代理）"""
-        return self._ensure_client().get_all_toplists(*args, **kwargs)
-
-    def get_toplists(self, *args, **kwargs):
-        """获取排行榜列表（旁路代理）"""
-        return self._ensure_client().get_toplists(*args, **kwargs)
-
     def get_playlist_detail(self, *args, **kwargs):
         """获取歌单详情（旁路代理）"""
         return self._ensure_client().get_playlist_detail(*args, **kwargs)
-
-    def get_hot_playlists(self, *args, **kwargs):
-        """获取热门歌单（旁路代理）"""
-        return self._ensure_client().get_hot_playlists(*args, **kwargs)
-
-    def get_playlist_categories(self, *args, **kwargs):
-        """获取歌单分类（旁路代理）"""
-        return self._ensure_client().get_playlist_categories(*args, **kwargs)
 
     def search_albums(self, *args, **kwargs):
         """搜索专辑（旁路代理）"""

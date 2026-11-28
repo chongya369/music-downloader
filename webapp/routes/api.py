@@ -2,7 +2,6 @@
 
 接口列表（仅列常用主路径；完整路由见本文件 @api_bp.route 定义）：
 - GET    /api/playlists           获取关注的歌单列表
-- GET    /api/toplists            获取网易云所有官方榜单（供添加选择）
 - POST   /api/playlists           添加歌单（支持分享链接自动解析 ID）
 - PUT    /api/playlists/<pid>     更新歌单设置（启用/limit）
 - DELETE /api/playlists/<pid>     取消关注
@@ -47,7 +46,6 @@ from auth import current_user
 from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for, ACTIVE_TASK_STATUSES
 from routes.views import _clear_login_failures, _login_key
 from core.providers.base import MusicProvider
-from core.providers.netease.client import OFFICIAL_TOPLISTS
 from core.providers.netease.parse_links import parse_playlist_id
 from core.providers.kugou import bridge as kugou_bridge
 from core.providers.kugou.client import register_gcid
@@ -248,7 +246,7 @@ def _create_client(cookie: str = "", platform: str = "netease") -> MusicProvider
 
 
 def _get_client(platform: str = "netease") -> MusicProvider:
-    """用第一个启用的指定平台账号 cookie 创建 provider（用于发现页/添加歌单等公开接口）
+    """用第一个启用的指定平台账号 cookie 创建 provider（用于歌曲搜索/添加歌单等公开接口）
 
     无启用账号时用空 cookie。
     """
@@ -298,21 +296,6 @@ def get_playlists():
     """获取已关注的歌单列表"""
     playlists = Playlist.query.order_by(Playlist.created_at).all()
     return jsonify({"code": 0, "data": [p.to_dict() for p in playlists]})
-
-
-@api_bp.route("/toplists")
-def get_toplists():
-    """获取网易云所有官方榜单（从 API 实时拉取）"""
-    try:
-        client = _get_client()
-        lists = client.get_all_toplists()
-        if lists:
-            return jsonify({"code": 0, "data": lists})
-    except Exception as e:
-        logger.warning("从 API 获取榜单失败，返回本地常驻列表: %s", e)
-    # 回退到本地常驻列表
-    data = [{"id": k, "name": v, "description": "", "update_frequency": ""} for k, v in OFFICIAL_TOPLISTS.items()]
-    return jsonify({"code": 0, "data": data})
 
 
 @api_bp.route("/playlists", methods=["POST"])
@@ -1610,77 +1593,17 @@ def accounts_stats():
 
 
 # ======================================================================
-# 发现接口（排行榜 / 热门歌单 / 分类）
+# 歌曲搜索（三平台共用；平台由请求体 platform 指定）
 # ======================================================================
-@api_bp.route("/discover/toplists")
-def discover_toplists():
-    """获取官方排行榜列表"""
-    try:
-        client = _get_client(_req_platform())
-        lists = client.get_toplists()
-        return jsonify({"code": 0, "data": lists})
-    except Exception as e:
-        logger.exception("获取排行榜失败: %s", e)
-        return jsonify({"code": 1, "msg": str(e)})
-
-
-@api_bp.route("/discover/playlists")
-def discover_playlists():
-    """获取热门/分类歌单（支持分页）
-
-    参数：
-        cat: 分类名（默认"全部"）
-        limit: 每页数量（默认 20）
-        order: hot / new
-        page: 页码（从 1 开始，默认 1）
-    返回：
-        {data: [...], total, page, limit, pages}
-    """
-    cat = request.args.get("cat", "全部")
-    limit = _safe_int(request.args.get("limit", 20), 20, lo=1, hi=100)
-    order = request.args.get("order", "hot")
-    page = _safe_int(request.args.get("page", 1), 1, lo=1, hi=10000)
-    offset = (page - 1) * limit
-    try:
-        client = _get_client(_req_platform())
-        playlists, total = client.get_hot_playlists(cat=cat, limit=limit, order=order, offset=offset)
-        pages = (total + limit - 1) // limit if limit > 0 else 0
-        return jsonify({
-            "code": 0,
-            "data": playlists,
-            "total": total,
-            "page": page,
-            "limit": limit,
-            "pages": pages,
-        })
-    except Exception as e:
-        logger.exception("获取热门歌单失败: %s", e)
-        return jsonify({"code": 1, "msg": str(e)})
-
-
-@api_bp.route("/discover/categories")
-def discover_categories():
-    """获取所有歌单分类"""
-    try:
-        client = _get_client(_req_platform())
-        cats = client.get_playlist_categories()
-        # 只返回分类名列表，前端用
-        names = [c["name"] for c in cats if c.get("name")]
-        return jsonify({"code": 0, "data": names})
-    except Exception as e:
-        logger.exception("获取歌单分类失败: %s", e)
-        # 回退到常用分类
-        fallback = ["全部", "华语", "流行", "摇滚", "民谣", "电子", "说唱", "轻音乐", "爵士", "乡村", "古典"]
-        return jsonify({"code": 0, "data": fallback})
-
-
 @api_bp.route("/discover/search", methods=["POST"])
 def discover_search():
     """搜索歌曲或专辑（展示用，不下载，不应用排除过滤）
 
-    请求体：{"keyword":"周杰伦", "type":"song|artist|album", "limit":50, "offset":0}
+    请求体：{"keyword":"周杰伦", "type":"song|artist|album", "limit":50, "offset":0,
+              "platform":"netease|qq|kugou"}
         - type=song/artist: 搜索单曲（type=1）
         - type=album: 搜索专辑（type=10）
+        - platform 缺省/非法值回落 netease（_req_platform 白名单）
 
     返回歌曲模式：
         {"code":0, "data":{"items":[{"id","name","artists","album","fee","downloaded"}],

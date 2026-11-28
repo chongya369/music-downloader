@@ -147,7 +147,7 @@ _SONG_TTL = 3600          # 秒：曲目信息基本不变，1 小时足够
 _SONG_CACHE_MAX = 3000    # 容量上限（FIFO 淘汰），防榜单批量任务撑爆内存
 
 # 模块级榜单缓存：{base_url: {"list": [rank 条目], "ts": float}}
-# 供 get_toplists 与 get_playlist_detail 的 rankid 白名单校验共享
+# 供 get_playlist_detail 的 rankid 白名单校验使用
 _rank_cache: dict[str, dict] = {}
 _rank_cache_lock = threading.Lock()
 _RANK_TTL = 3600
@@ -161,11 +161,6 @@ _gcid_cache: dict[int, str] = {}
 _gcid_lock = threading.Lock()
 _GCID_CACHE_MAX = 20000   # 容量上限（FIFO 淘汰），防映射无限膨胀
 _gcid_file_loaded = False
-
-# 模块级歌单分类缓存：{base_url: {"map": {分类名: tag_id}, "ts": float}}
-_tags_cache: dict[str, dict] = {}
-_tags_lock = threading.Lock()
-_TAGS_TTL = 86400         # 分类基本不变，24h
 
 
 def _gcid_cache_file() -> "object":
@@ -1112,29 +1107,8 @@ class KuGouClient:
         return norms
 
     # ------------------------------------------------------------------
-    # 发现接口（仅榜单；歌单曲目接口不可用，接口文档 §6.3）
+    # 榜单清单（仅服务 get_playlist_detail 的 rankid 白名单校验）
     # ------------------------------------------------------------------
-    def get_toplists(self) -> list[dict]:
-        """获取所有排行榜列表（/rank/list，实测 57 个榜，扁平结构）
-
-        Returns:
-            [{"id"(rankid),"name","description","update_frequency",
-              "cover_img_url","track_count":0}, ...]
-            track_count 固定 0：上游无此字段，真实曲目数在
-            get_playlist_detail 走 /rank/audio 时以 total 回填
-        """
-        return [
-            {
-                "id": r.get("rankid"),
-                "name": r.get("rankname") or "",
-                "description": r.get("intro") or "",
-                "update_frequency": r.get("update_frequency") or "",
-                "cover_img_url": fix_cover_url(r.get("banner_9") or r.get("imgurl") or ""),
-                "track_count": 0,
-            }
-            for r in self._load_ranks()
-        ]
-
     def _load_ranks(self) -> list[dict]:
         """加载 /rank/list 榜单清单（模块级缓存，按 base_url 分桶）
 
@@ -1270,143 +1244,6 @@ class KuGouClient:
             "track_count": total or len(tracks),
             "tracks": tracks,
         }
-
-    def get_hot_playlists(self, cat: str = "全部", limit: int = 30,
-                          order: str = "hot", offset: int = 0) -> tuple[list[dict], int]:
-        """获取热门/分类歌单（/top/playlist，2026-09-04 实测匿名可用）
-
-        上游分页特性（实测）：返回条数不受 pagesize 完全控制——推荐流
-        （category_id=0）固定每页 35 条、分类页固定 30 条，故按分类选择
-        页宽（修复 #12：原一律按 30 计算，推荐流每页错位 5 条导致漏歌/
-        重复歌）、本地切片对齐 offset，不足一页且 has_next 时继续翻页补足；
-        实际响应条数与页宽常量不符时以实际条数为准（防上游再变）。
-        每条歌单的 specialid→gcid 映射在本方法内顺手持久化（后续
-        get_playlist_detail 取曲目依赖该映射）。
-
-        Args:
-            cat: 分类名（经 /playlist/tags 解析为 tag_id，未知名回退 0=全部）
-            limit: 每页数量
-            order: hot（sort=1）/ new（sort=2，按 publishtime 降序实测验证）
-            offset: 偏移量
-
-        Returns:
-            (playlists, total)：total 上游不提供，按 has_next 合成
-            （offset + 本页条数 + has_next 时补一页），仅支撑翻页控件
-        """
-        tags = self._load_playlist_tags()
-        category_id = tags.get(cat, 0)
-        sort = 1 if order != "new" else 2
-        # 修复 #12：推荐流（category_id=0）上游固定 35 条/页、分类页 30 条/页，
-        # 页码与页内偏移必须按对应页宽计算，否则网格错位（offset=30 时请求
-        # 上游第 2 页即条目 36-70，条目 31-35 永久漏掉）
-        page_size = 35 if category_id == 0 else 30
-        page = offset // page_size + 1
-        start = offset % page_size
-        collected: list[dict] = []
-        total = 0
-        empty_retry_done = False           # sort=1 偶发空页（实测），回退 sort=2 重试一次
-        seen_pids: set[int] = set()        # 去重（顺带修上游重复项）
-        # 页数硬上限：本页所有 specialid 都无法转 int 时 collected 不增长、
-        # has_next 恒真，三个退出条件同时失效 → page 无限自增且每轮一次真实
-        # 网络请求（Web 端点无限转圈并持续冲击上游）。50 页 × 30 条 = 1500 条
-        max_pages = 50
-        while len(collected) < limit and page <= offset // page_size + max_pages:
-            bust = bool(empty_retry_done)   # 重试请求绕过服务端 2 分钟响应缓存
-            body = self._request("/top/playlist", {
-                "page": page, "pagesize": page_size,
-                "sort": sort, "category_id": category_id,
-            }, bust_cache=bust)
-            if body.get("error_code") not in (0, None):
-                logger.warning("酷狗热门歌单获取失败: %s", body.get("errmsg"))
-                break
-            data = body.get("data") or {}
-            raw_list = data.get("special_list") or []
-            if not raw_list:
-                if not empty_retry_done and not collected:
-                    # 上游空页偶发（推荐流分页不稳定 + 服务端 2 分钟响应缓存），
-                    # 带 bust_cache 重试一次，仍空则按无数据返回
-                    empty_retry_done = True
-                    time.sleep(0.5)
-                    continue
-                break
-            _cache_gcid_mappings(raw_list)
-            # 实际条数与页宽常量不符（上游变更）：以实际条数更新页宽并告警，
-            # 后续页码/切片按实际网格对齐
-            if len(raw_list) != page_size:
-                logger.warning(
-                    "酷狗热门歌单分页实际条数与页宽不符(page=%s 预期%s 实际%s)，按实际条数对齐",
-                    page, page_size, len(raw_list))
-                page_size = max(len(raw_list), 1)
-            seg = raw_list[start:] if page == offset // page_size + 1 else raw_list
-            start = 0                      # 仅第一页需要切片对齐
-            for it in seg:
-                if len(collected) >= limit:
-                    break
-                try:
-                    pid = int(it.get("specialid"))
-                except (TypeError, ValueError):
-                    continue
-                if pid in seen_pids:
-                    continue
-                seen_pids.add(pid)
-                collected.append({
-                    "id": pid,
-                    "name": str(it.get("specialname") or ""),
-                    "cover_img_url": fix_cover_url(
-                        it.get("imgurl") or it.get("flexible_cover") or it.get("pic") or ""),
-                    "play_count": it.get("play_count") or 0,
-                    "track_count": 0,      # 上游列表不提供曲目数
-                    "creator": str(it.get("nickname") or it.get("singername") or ""),
-                    "description": str(it.get("intro") or ""),
-                })
-            has_next = data.get("has_next")
-            if len(collected) >= limit:
-                break
-            if not has_next:
-                break
-            page += 1
-        # total 合成：仅用于翻页控件（有无下一页 + 当前偏移）
-        total = offset + len(collected) + (page_size if has_next else 0) if collected else 0
-        return collected, total
-
-    def _load_playlist_tags(self) -> dict[str, int]:
-        """加载歌单分类名→tag_id 映射（/playlist/tags，24h 缓存）
-
-        data[] 为父子两层树（tag_name/tag_id + son[]），拍平两层。
-        """
-        key = self.base_url
-        with _tags_lock:
-            cached = _tags_cache.get(key)
-            if cached and time.time() - cached["ts"] < _TAGS_TTL:
-                return cached["map"]
-        body = self._request("/playlist/tags")
-        mapping: dict[str, int] = {}
-        for node in body.get("data") or []:
-            try:
-                mapping[str(node.get("tag_name"))] = int(node.get("tag_id"))
-            except (TypeError, ValueError):
-                continue
-            for son in node.get("son") or []:
-                try:
-                    mapping[str(son.get("tag_name"))] = int(son.get("tag_id"))
-                except (TypeError, ValueError):
-                    continue
-        if mapping:
-            with _tags_lock:
-                _tags_cache[key] = {"map": mapping, "ts": time.time()}
-        return mapping
-
-    def get_playlist_categories(self) -> list[dict]:
-        """获取所有歌单分类（/playlist/tags，2026-09-04 实测匿名可用）
-
-        Returns:
-            [{"name": 分类名}, ...]；"全部"固定在首位；解析失败回退 [{"name": "全部"}]
-        """
-        names = list(self._load_playlist_tags().keys())
-        if "全部" in names:
-            names.remove("全部")
-        names.insert(0, "全部")
-        return [{"name": n} for n in names]
 
     # ------------------------------------------------------------------
     # 账号信息

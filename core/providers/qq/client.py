@@ -97,15 +97,6 @@ _UA = (
 )
 
 
-def _fix_img_url(url: str) -> str:
-    """补全 QQ 图片协议前缀（上游常返回 //imgcache... 开头）"""
-    if not url:
-        return ""
-    if url.startswith("//"):
-        return "https:" + url
-    return url
-
-
 def _album_cover_url(album_mid: str) -> str:
     """由专辑 MID 拼标准封面 URL（歌曲对象不带封面，仅专辑 MID）"""
     if not album_mid:
@@ -803,84 +794,6 @@ class QqClient:
             "lrc": result.get("lyric") or "",
             "tlyric": result.get("trans") or "",
         }
-
-    # ------------------------------------------------------------------
-    # 发现接口（排行榜 / 推荐歌单）
-    # ------------------------------------------------------------------
-    def get_toplists(self) -> list[dict]:
-        """获取所有排行榜列表
-
-        Returns:
-            [{"id"(topId),"name","description","update_frequency",
-              "cover_img_url","track_count":0}, ...]
-            track_count 固定 0：上游 songList 仅为前 3 首预览，不能作曲目数；
-            真实曲目数在 get_playlist_detail 走 /top/{id}/detail 时以
-            total_num 回填
-        """
-        result = self._request("/top/get_category")
-        groups = result.get("group") or []
-        out = []
-        for g in groups:
-            for t in (g.get("toplist") or []):
-                # addable：预览条目是否含可下载歌曲标识。非歌曲类榜单（专辑/
-                # 有声/MV 销量榜）预览条目 id=0 且无 mid，详情接口顶层 songs
-                # 恒为空（2026-09-27 实测 23/75/134/201/502/506），前端据此
-                # 置灰添加按钮。预览为空属未知（如上游坏榜 138），保守视为
-                # 可添加，误判由 api.add_playlist 的 get_toplist_meta 守门兜底。
-                # 注意：toplist 条目的 songs 预览字段无既有消费先例，字段路径
-                # 以 2026-09-27 全量实测（46 榜）为基线，上游改版需重做实测。
-                preview = t.get("songs") or []
-                has_song = any(
-                    isinstance(s, dict) and (s.get("mid") or s.get("id"))
-                    for s in preview
-                )
-                out.append({
-                    "id": t.get("id"),
-                    "name": t.get("name") or t.get("title_detail") or "",
-                    "description": t.get("intro") or "",
-                    "update_frequency": t.get("period") or t.get("update_time") or "",
-                    "cover_img_url": _fix_img_url(t.get("head_pic_url") or t.get("front_pic_url") or ""),
-                    "track_count": 0,
-                    "addable": has_song or not preview,
-                })
-        return out
-
-    def get_hot_playlists(self, cat: str = "全部", limit: int = 30,
-                          order: str = "hot", offset: int = 0) -> tuple[list[dict], int]:
-        """获取热门歌单（降级：官方推荐歌单，无分类/分页能力）
-
-        新服务端移除了分类歌单浏览接口（旧 /getSongLists），此方法降级为
-        /recommend/get_recommend_songlist 单页结果；cat/order 参数保留
-        对齐签名但被忽略。翻页（offset>0）返回空页。
-
-        Returns:
-            (playlists, total)：歌单列表与总数（单页结果条数）
-        """
-        if offset > 0:
-            return [], 0
-        result = self._request("/recommend/get_recommend_songlist")
-        lst = result.get("songlists") or []
-        playlists = []
-        for item in lst[:limit]:
-            try:
-                pid = int(item.get("id"))
-            except (TypeError, ValueError):
-                continue
-            playlists.append({
-                # id 转 int：与 netease 数字 id 行为一致（前端数字比较逻辑兼容）
-                "id": pid,
-                "name": item.get("title") or "",
-                "cover_img_url": _fix_img_url(item.get("picurl") or ""),
-                "play_count": item.get("listennum") or 0,
-                "track_count": item.get("songnum") or 0,
-                "creator": item.get("creator_nick") or "",
-                "description": item.get("desc") or "",
-            })
-        return playlists, len(playlists)
-
-    def get_playlist_categories(self) -> list[dict]:
-        """获取歌单分类（降级：新服务端无分类接口，固定返回"全部"）"""
-        return [{"name": "全部"}]
 
     # ------------------------------------------------------------------
     # 歌单/榜单详情（分流）
