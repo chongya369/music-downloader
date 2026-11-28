@@ -1,3 +1,127 @@
 #!/bin/sh
-# 生命周期钩子（fnpack 打包检查要求存在）：卸载清理后，无需额外处理
+# Deen音乐下载器 - 卸载清理后钩子（fnOS 生命周期脚本，POSIX sh 兼容）
+#
+# 职责：purge 场景的兜底校验。uninstall_init 已承担主删除；若该阶段因
+# 链接失效、变量缺失或权限不足未能删净，本钩子再试一次，并把无法删除的
+# 用户数据目录通过 TRIM_TEMP_LOGFILE 明确告知用户（不静默）。
+#
+# 候选路径两个来源，均先解析为真实目录再过与 uninstall_init 相同的白名单：
+#   1) 仍然有效的 TRIM_* 变量（卸载后期可能已失效或缺失）
+#   2) TRIM_APPDEST_VOL（安装所在存储空间根）+ 固定子目录名重建的裸卷路径
+#      —— 不依赖 /var/apps/<appname> 链接是否还在
+set -u
+
+APP_NAME="deen-music-downloader"
+MODE=$(printf '%s' "${wizard_uninstall_data_mode:-}" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+_HARD_FAIL=""
+_SEEN=0
+
+user_msg() {
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$1" >> "$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+  fi
+  printf '%s\n' "$1" >&2
+}
+
+# 裸卷形态校验（与 uninstall_init 同款）：唯一准入条件
+safe_path() {
+  _p=${1:-}
+  if [ -z "$_p" ] || [ "$_p" = "/" ]; then
+    return 1
+  fi
+  _base=$(basename "$_p" 2>/dev/null) || return 1
+  if [ "$_base" != "$APP_NAME" ]; then
+    return 1
+  fi
+  _parent=$(basename "$(dirname "$_p" 2>/dev/null)" 2>/dev/null) || return 1
+  case "$_parent" in
+    @appcenter|@appconf|@appdata|@apptemp|@apphome) ;;
+    *) return 1 ;;
+  esac
+  _slashes=$(printf '%s' "$_p" | tr -cd '/')
+  if [ "${#_slashes}" -lt 3 ]; then
+    return 1
+  fi
+  return 0
+}
+
+# 解析为可安全删除的真实目录（stdout）；子项软链用 readlink -f 解析后复核
+# （<任意根>/<appname>/{var,etc,tmp,home,target}，不硬编码 /var/apps 前缀）
+resolve_path() {
+  _raw=${1:-}
+  while [ "${_raw%/}" != "$_raw" ]; do
+    _raw=${_raw%/}
+  done
+  if safe_path "$_raw"; then
+    printf '%s' "$_raw"
+    return 0
+  fi
+  if [ "$(basename "$(dirname "$_raw" 2>/dev/null)" 2>/dev/null)" = "$APP_NAME" ]; then
+    case "$(basename "$_raw" 2>/dev/null)" in
+      var|etc|tmp|home|target)
+        _real=$(readlink -f "$_raw" 2>/dev/null) || return 1
+        if [ -n "$_real" ] && safe_path "$_real"; then
+          printf '%s' "$_real"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  return 1
+}
+
+# 校验 + 删除 + 回查单条路径；失败按目录归属分流：
+# @appcenter 残留只提示（root 属主的程序目录，系统卸载负责），
+# 其余（数据 / 配置 / 临时 / 家目录）计入硬失败
+purge_one() {
+  _raw=${1:-}
+  [ -n "$_raw" ] || return 0
+  if ! _target=$(resolve_path "$_raw"); then
+    return 0
+  fi
+  _SEEN=1
+  [ -e "$_target" ] || return 0
+  rm -rf -- "$_target" 2>/dev/null || true
+  [ -e "$_target" ] || return 0
+  case "$(basename "$(dirname "$_target" 2>/dev/null)")" in
+    @appcenter)
+      user_msg "提示：程序目录仍存在（${_target}），由系统卸载流程清理"
+      ;;
+    *)
+      _HARD_FAIL="${_HARD_FAIL}${_target}
+"
+      ;;
+  esac
+  return 0
+}
+
+# 保存数据（含缺失 / 空 / 未知取值）：零操作
+if [ "$MODE" != "purge" ]; then
+  exit 0
+fi
+
+# 来源 1：仍有效的 TRIM_* 变量
+for _p in "${TRIM_APPDEST:-}" "${TRIM_PKGETC:-}" \
+          "${TRIM_PKGVAR:-}" "${TRIM_PKGTMP:-}" "${TRIM_PKGHOME:-}"; do
+  purge_one "$_p"
+done
+
+# 来源 2：安装卷根 + 固定子目录名（覆盖 /var/apps 链接已失效的场景）
+_vol="${TRIM_APPDEST_VOL:-}"
+case "$_vol" in
+  /*)
+    for _sub in @appcenter @appconf @appdata @apptemp @apphome; do
+      purge_one "${_vol}/${_sub}/${APP_NAME}"
+    done
+    ;;
+esac
+
+if [ -n "$_HARD_FAIL" ]; then
+  user_msg "应用已卸载，但以下数据目录未能删除，请手动清理：
+${_HARD_FAIL}"
+  exit 1
+fi
+if [ "$_SEEN" -ne 1 ]; then
+  user_msg "提示：未能定位应用数据目录，未执行删除；如需彻底清理请手动删除 @appdata/${APP_NAME}"
+fi
 exit 0

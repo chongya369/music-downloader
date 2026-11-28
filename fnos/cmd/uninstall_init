@@ -1,4 +1,199 @@
 #!/bin/sh
-# 生命周期钩子（fnpack 打包检查要求存在）：卸载前由 fnOS 经 main stop 停止应用，无需额外处理
-# 用户数据位于 TRIM_PKGVAR，是否保留由 fnOS 卸载流程决定
-exit 0
+# Deen音乐下载器 - 卸载前钩子（fnOS 生命周期脚本，POSIX sh 兼容）
+#
+# 数据处理方式由卸载向导 fnos/wizard/uninstall 收集，字段
+# wizard_uninstall_data_mode 取值 keep（默认）/ purge，以同名环境变量注入。
+# 除 purge 外的一切取值（缺失 / 空 / 未知 / 非法）都按「保存数据」处理
+# ——破坏性操作必须由用户显式选择，宁可多留数据，不可误删。
+#
+# purge 的清理范围严格限定在 fnOS 托管应用目录下的 deen-music-downloader
+# （连同文件夹本身）：@appcenter / @appconf / @appdata / @apptemp / @apphome。
+# 应用目录之外的路径（例如用户在设置页另行指定的下载目录）一律不动，
+# 也不解析数据库中的 output_dir。
+#
+# 两条防御性设计（对应方案 §6 E1/E2）：
+#  1) TRIM_* 可能是裸卷路径（/vol1/@appdata/<appname>），也可能是
+#     /var/apps/<appname>/var 这类软链。软链一律 readlink -f 解析为真实
+#     目录后再校验，绝不对链接本身执行 rm（避免 "rm -rf link/" 跟进目标）。
+#  2) 单个变量缺失 / 无法校验时只跳过该路径并告警，不整体中止——否则
+#     一个变量异常就会让「用户选择删除」变成什么都没删。安全边界不变：
+#     只有通过白名单校验的真实路径才会被删除。
+set -u
+
+APP_NAME="deen-music-downloader"
+# 归一化：去空白 + 转小写（容忍 " Purge " / "PURGE" 之类的平台写法差异）
+MODE=$(printf '%s' "${wizard_uninstall_data_mode:-}" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+
+# 用户可见信息：同时写 TRIM_TEMP_LOGFILE（fnOS 会在应用中心展示）与 stderr
+user_msg() {
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$1" >> "$TRIM_TEMP_LOGFILE" 2>/dev/null || true
+  fi
+  printf '%s\n' "$1" >&2
+}
+
+# 裸卷形态校验：只接受 <vol>/@app{center,conf,data,temp,home}/deen-music-downloader
+# 通过返回 0，任何一项不满足返回 1（这是删除的唯一准入条件）
+safe_path() {
+  _p=${1:-}
+  if [ -z "$_p" ] || [ "$_p" = "/" ]; then
+    return 1
+  fi
+  _base=$(basename "$_p" 2>/dev/null) || return 1
+  if [ "$_base" != "$APP_NAME" ]; then
+    return 1
+  fi
+  _parent=$(basename "$(dirname "$_p" 2>/dev/null)" 2>/dev/null) || return 1
+  case "$_parent" in
+    @appcenter|@appconf|@appdata|@apptemp|@apphome) ;;
+    *) return 1 ;;
+  esac
+  # 深度至少 3（形如 /vol1/@appdata/deen-music-downloader），挡掉根级误配
+  _slashes=$(printf '%s' "$_p" | tr -cd '/')
+  if [ "${#_slashes}" -lt 3 ]; then
+    return 1
+  fi
+  return 0
+}
+
+# 解析出可安全删除的真实目录路径（stdout）。失败返回 1。
+# 传入值先过 safe_path；否则仅当形如 <任意根>/<appname>/{var,etc,tmp,home,target}
+# 的子项软链时，用 readlink -f 解析软链，对解析结果重新校验——绝不删除链接本身。
+# 不硬编码 /var/apps 前缀：飞牛实际把 <appname> 放在该路径下，但按「父目录名为
+# appname」判定可同时兼容其他安装根，且便于本地模拟验证。
+resolve_path() {
+  _raw=${1:-}
+  while [ "${_raw%/}" != "$_raw" ]; do
+    _raw=${_raw%/}
+  done
+  if safe_path "$_raw"; then
+    printf '%s' "$_raw"
+    return 0
+  fi
+  if [ "$(basename "$(dirname "$_raw" 2>/dev/null)" 2>/dev/null)" = "$APP_NAME" ]; then
+    case "$(basename "$_raw" 2>/dev/null)" in
+      var|etc|tmp|home|target)
+        _real=$(readlink -f "$_raw" 2>/dev/null) || return 1
+        if [ -n "$_real" ] && safe_path "$_real"; then
+          printf '%s' "$_real"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  return 1
+}
+
+# 残留进程兜底：正常流程 fnOS 已先调用 main stop，此处只覆盖异常调用顺序。
+# 仅当 /proc 能证实该 pid 属于本应用时才发信号——pid 可能已被系统复用，
+# 盲目 kill 会误伤无关进程；无法确认时只告警。
+stop_leftover() {
+  if [ -z "${TRIM_PKGVAR:-}" ]; then
+    return 0
+  fi
+  _pidfile="$TRIM_PKGVAR/deen-music-downloader.pid"
+  if [ ! -f "$_pidfile" ]; then
+    return 0
+  fi
+  _pid=$(tr -cd '0-9' < "$_pidfile" 2>/dev/null)
+  if [ -z "$_pid" ]; then
+    return 0
+  fi
+  if ! kill -0 "$_pid" 2>/dev/null; then
+    return 0
+  fi
+  _owned=0
+  if [ -r "/proc/$_pid/cmdline" ]; then
+    if tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | grep -q "$APP_NAME"; then
+      _owned=1
+    fi
+  fi
+  if [ "$_owned" -ne 1 ] && [ -L "/proc/$_pid/exe" ]; then
+    case "$(readlink "/proc/$_pid/exe" 2>/dev/null)" in
+      *"$APP_NAME"*) _owned=1 ;;
+    esac
+  fi
+  if [ "$_owned" -ne 1 ]; then
+    user_msg "提示：pid $_pid 仍在运行但无法确认属于本应用，跳过终止（不影响数据清理）"
+    return 0
+  fi
+  kill "$_pid" 2>/dev/null || true
+  _i=0
+  while kill -0 "$_pid" 2>/dev/null && [ "$_i" -lt 5 ]; do
+    sleep 1
+    _i=$((_i + 1))
+  done
+  if kill -0 "$_pid" 2>/dev/null; then
+    kill -KILL "$_pid" 2>/dev/null || true
+  fi
+  return 0
+}
+
+do_purge() {
+  # 应用标识校验：路径拼接依赖 appname，标识不符即整体中止，不删任何文件
+  if [ -n "${TRIM_APPNAME:-}" ] && [ "${TRIM_APPNAME}" != "$APP_NAME" ]; then
+    user_msg "卸载中止：TRIM_APPNAME=${TRIM_APPNAME} 与预期 ${APP_NAME} 不符，未删除任何文件"
+    return 1
+  fi
+
+  # 兜底终止残留进程（正常流程此时已停）
+  stop_leftover
+
+  _pkgvar_seen=0
+  _hard_fail=""
+  for _pair in "TRIM_APPDEST=${TRIM_APPDEST:-}" \
+               "TRIM_PKGETC=${TRIM_PKGETC:-}" \
+               "TRIM_PKGVAR=${TRIM_PKGVAR:-}" \
+               "TRIM_PKGTMP=${TRIM_PKGTMP:-}" \
+               "TRIM_PKGHOME=${TRIM_PKGHOME:-}"; do
+    _name=${_pair%%=*}
+    _val=${_pair#*=}
+    if [ -z "$_val" ]; then
+      user_msg "提示：$_name 为空，跳过该路径"
+      continue
+    fi
+    if ! _target=$(resolve_path "$_val"); then
+      user_msg "提示：$_name=${_val} 未通过路径校验，已跳过（不会删除该路径）"
+      continue
+    fi
+    if [ "$_name" = "TRIM_PKGVAR" ]; then
+      _pkgvar_seen=1
+    fi
+    rm -rf -- "$_target" 2>/dev/null || true
+    if [ ! -e "$_target" ]; then
+      continue
+    fi
+    # @appcenter 为 root 属主的程序目录，残留属系统卸载职责：只提示不阻断
+    case "$(basename "$(dirname "$_target" 2>/dev/null)")" in
+      @appcenter)
+        user_msg "提示：程序目录未能删除（${_target}），将由系统卸载流程清理"
+        ;;
+      *)
+        _hard_fail="${_hard_fail}${_target}
+"
+        ;;
+    esac
+  done
+
+  if [ -n "$_hard_fail" ]; then
+    user_msg "卸载未完成，以下目录未能删除，请手动清理：
+${_hard_fail}"
+    return 1
+  fi
+  if [ "$_pkgvar_seen" -ne 1 ]; then
+    # 不阻断卸载：uninstall_callback 会用 TRIM_APPDEST_VOL 重建路径再兜底
+    user_msg "提示：未能定位应用数据目录（TRIM_PKGVAR），本次未删除数据；卸载完成后由清理钩子兜底"
+  fi
+  return 0
+}
+
+# 保存数据（含缺失 / 空 / 未知取值）：零写操作——不创建任何文件或标记，
+# 确保「完整保留应用数据」在应用侧没有任何副作用
+if [ "$MODE" != "purge" ]; then
+  exit 0
+fi
+
+if do_purge; then
+  exit 0
+fi
+exit 1

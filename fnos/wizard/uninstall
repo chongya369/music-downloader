@@ -1,0 +1,37 @@
+[
+  {
+    "stepTitle": "卸载选项",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "请选择卸载后如何处理本应用的数据。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_uninstall_data_mode",
+        "label": "数据处理方式",
+        "initValue": "keep",
+        "options": [
+          {
+            "label": "保存数据（推荐）：仅卸载应用，完整保留账号、歌单、设置与已下载的音乐",
+            "value": "keep"
+          },
+          {
+            "label": "删除数据：同时删除本应用的全部数据，操作不可恢复",
+            "value": "purge"
+          }
+        ],
+        "rules": [
+          {
+            "required": true,
+            "message": "请选择数据处理方式"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "选择「删除数据」将清除：账号与各平台 Cookie、歌单与同步任务、下载记录、全部设置、保存在应用数据目录内的已下载音乐、运行日志与 API 凭据，并把 deen-music-downloader 文件夹本身一并删除。你在设置页另行指定到应用目录之外的音乐文件不受影响。此操作不可恢复。"
+      }
+    ]
+  }
+]

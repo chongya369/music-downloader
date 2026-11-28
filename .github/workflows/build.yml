@@ -120,8 +120,14 @@ jobs:
           # API 二进制同样补执行位（Windows 提交丢失执行位；bridge 运行时
           # chmod 依赖安装目录归运行用户所有，打包期设置才是可靠层）
           chmod +x fpk/app/server/api/ncm-api-linux-x64 fpk/app/server/api/qqmusic-api-linux-x64 fpk/app/server/api/kugou_api_linux 2>/dev/null || true
-          # 3) 校验 wizard/ 目录存在（fnpack 打包检查要求）
-          test -d fpk/wizard || (mkdir -p fpk/wizard)
+          # 3) 校验 wizard/ 与卸载向导（fnpack 打包检查只要求目录存在，但
+          # 缺向导文件会静默退化为「永远保留数据」——此处 fail-loud）
+          if [ ! -d fpk/wizard ]; then
+            echo "ERROR: fpk/wizard missing (fnpack requires it)"; exit 1
+          fi
+          if [ ! -f fpk/wizard/uninstall ]; then
+            echo "ERROR: fpk/wizard/uninstall missing (uninstall data-choice wizard)"; exit 1
+          fi
 
       - name: Build .fpk with fnpack
         run: |
