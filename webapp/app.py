@@ -56,7 +56,7 @@ def _parse_data_dir_arg(argv=None):
     return args
 
 
-from flask import Flask, request
+from flask import Flask, request, session
 
 from models import init_db, Setting
 from task_manager import TaskManager
@@ -90,7 +90,7 @@ if GATEWAY_PREFIX:
 # 仅在 Unix Socket 网关模式注册；TCP 模式（本地/Windows/Docker）绝不可信任
 # 这些头——客户端可自行伪造，启用即等于提权漏洞（serve() 为 socket/TCP 二选一）。
 if GATEWAY_SOCKET:
-    from auth import gateway_auto_login
+    from auth import gateway_auto_login, gateway_identity_drift
 
     _gateway_header_probe_done = False
 
@@ -106,6 +106,12 @@ if GATEWAY_SOCKET:
             else:
                 logger.warning("网关模式未见 X-Trim-* 头：免密登录不可用"
                                "（请确认请求经统一网关转发）")
+        # P2：先做身份漂移校验——SSO 会话的飞牛身份变化时废弃旧会话，
+        # 否则旧会话会一直沿用前一个飞牛账号的宿主身份。
+        # strict 策略下返回 True 表示已抑制，本次不再自动登录；
+        # rebind 策略下会话已清空，随后的 auto_login 会按新身份重建。
+        if gateway_identity_drift():
+            return None
         gateway_auto_login()
 
 
@@ -128,9 +134,28 @@ def inject_user_flag():
 
 @app.context_processor
 def inject_gateway_flag():
-    """网关模式下模板隐藏「退出登录」：免密 SSO 下登出会被下一请求立即
-    自动登录回来，保留入口只会造成「点了没反应」的困惑。"""
-    return {"is_gateway": bool(GATEWAY_SOCKET)}
+    """注入网关相关模板变量（两个语义必须分开）
+
+    - is_gateway：部署级常量，表示"进程跑在飞牛统一网关（Unix Socket）下"，
+      供用户管理页的改名告警等"部署形态"判断使用；
+    - auth_source：会话级认证来源（"gateway"=本次由可信头免密建立，
+      "password"=用户手动输入账号密码）。模板据此决定显示「飞牛账号免密登录」
+      标记还是「退出登录」入口——旧实现用 is_gateway 判断，导致密码登录
+      的会话也被标成免密登录、且退出入口被隐藏；
+    - gateway_identity：当前请求的飞牛身份（仅网关模式可信），供用户管理页
+      「绑定到当前飞牛账号」使用；TCP 模式一律 None，绝不向模板暴露可伪造值。
+    """
+    identity = None
+    if GATEWAY_SOCKET:
+        identity = {
+            "username": (request.headers.get("X-Trim-Username") or "").strip(),
+            "uid": (request.headers.get("X-Trim-Userid") or "").strip(),
+        }
+    return {
+        "is_gateway": bool(GATEWAY_SOCKET),
+        "auth_source": session.get("auth_source"),
+        "gateway_identity": identity,
+    }
 
 
 @app.context_processor

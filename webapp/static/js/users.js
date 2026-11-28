@@ -8,7 +8,7 @@ async function loadUsers() {
         const list = data.data;
 
         if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无用户</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无用户</td></tr>';
             return;
         }
 
@@ -21,6 +21,20 @@ async function loadUsers() {
                 : '<span class="badge bg-danger">禁用</span>';
             const createTime = u.created_at || "—";
             const loginTime = u.last_login_at || "从未登录";
+            const fnosUid = u.fnos_uid || "";
+            // 飞牛绑定列：仅网关模式提供操作入口（TCP 模式无法验证身份，接口也会 403）
+            const fnosCell = !window.GATEWAY_MODE
+                ? '<span class="text-muted small">—</span>'
+                : (fnosUid
+                    ? `<span class="badge bg-success">UID ${escapeHtml(fnosUid)}</span>
+                       <button class="btn btn-sm btn-link text-danger p-0 ms-1 btn-unbind-fnos"
+                               data-id="${u.id}" data-username="${escapeHtml(u.username)}"
+                               title="解除绑定"><i class="bi bi-x-circle"></i></button>`
+                    : `<span class="text-muted small me-1">未绑定</span>
+                       <button class="btn btn-sm btn-outline-primary btn-bind-fnos"
+                               data-id="${u.id}" data-username="${escapeHtml(u.username)}">
+                           <i class="bi bi-link-45deg"></i> 绑定
+                       </button>`);
             return `
                 <tr>
                     <td>${u.id}</td>
@@ -29,8 +43,9 @@ async function loadUsers() {
                     <td>${statusText}</td>
                     <td><small class="text-muted">${createTime}</small></td>
                     <td><small class="text-muted">${loginTime}</small></td>
+                    <td>${fnosCell}</td>
                     <td>
-                        <button class="btn btn-sm btn-outline-primary btn-rename-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}">
+                        <button class="btn btn-sm btn-outline-primary btn-rename-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}" data-fnos-uid="${escapeHtml(fnosUid)}">
                             <i class="bi bi-pencil-square"></i> 改名
                         </button>
                         <button class="btn btn-sm btn-outline-warning btn-reset-pwd" data-id="${u.id}" data-username="${escapeHtml(u.username)}">
@@ -63,6 +78,16 @@ function bindEvents() {
             newInput.value = this.dataset.username;
             // 用 data 属性暂存目标用户 ID
             document.getElementById("btn-rename-user").dataset.userId = this.dataset.id;
+            // 已绑定飞牛 UID 的账号改名不影响免密登录，提示文案要跟着变
+            const boundUid = this.dataset.fnosUid || "";
+            const warnUnbound = document.getElementById("rename-warn-unbound");
+            const warnBound = document.getElementById("rename-warn-bound");
+            if (warnUnbound && warnBound) {
+                warnUnbound.classList.toggle("d-none", !!boundUid);
+                warnBound.classList.toggle("d-none", !boundUid);
+                const uidEl = document.getElementById("rename-bound-uid");
+                if (uidEl) uidEl.textContent = boundUid;
+            }
             bootstrap.Modal.getOrCreateInstance(modalEl).show();
         });
     });
@@ -89,6 +114,33 @@ function bindEvents() {
                     body: JSON.stringify({ enabled: newEnabled }),
                 });
                 showToast(newEnabled ? "已启用" : "已禁用");
+                loadUsers();
+            } catch (e) {
+                showToast(e.message, "错误");
+            }
+        });
+    });
+
+    // 绑定飞牛账号（预填当前访问身份的 UID，可改为手工输入）
+    document.querySelectorAll(".btn-bind-fnos").forEach(el => {
+        el.addEventListener("click", function() {
+            document.getElementById("bind-username").value = this.dataset.username;
+            const ident = window.GATEWAY_IDENTITY || {};
+            document.getElementById("bind-fnos-uid").value = ident.uid || "";
+            document.getElementById("btn-bind-fnos").dataset.userId = this.dataset.id;
+            bootstrap.Modal.getOrCreateInstance(document.getElementById("bind-fnos-modal")).show();
+        });
+    });
+
+    // 解除飞牛绑定
+    document.querySelectorAll(".btn-unbind-fnos").forEach(el => {
+        el.addEventListener("click", async function() {
+            const id = this.dataset.id;
+            const username = this.dataset.username;
+            if (!confirm(`确定解除「${username}」与飞牛账号的绑定吗？解除后该账号需手动输入密码登录。`)) return;
+            try {
+                await api(`/api/users/${id}/bind-fnos`, { method: "DELETE" });
+                showToast("已解除飞牛绑定");
                 loadUsers();
             } catch (e) {
                 showToast(e.message, "错误");
@@ -192,6 +244,28 @@ document.getElementById("btn-rename-user").addEventListener("click", async funct
         } else {
             loadUsers();
         }
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+// 确认绑定飞牛账号
+document.getElementById("btn-bind-fnos").addEventListener("click", async function() {
+    const userId = this.dataset.userId;
+    const uid = document.getElementById("bind-fnos-uid").value.trim();
+    const btn = this;
+    btn.disabled = true;
+    try {
+        // UID 留空时由服务端取当前请求的 X-Trim-Userid
+        const res = await api(`/api/users/${userId}/bind-fnos`, {
+            method: "POST",
+            body: JSON.stringify(uid ? { fnos_uid: uid } : {}),
+        });
+        showToast(res.msg || "已绑定", "成功");
+        bootstrap.Modal.getInstance(document.getElementById("bind-fnos-modal")).hide();
+        loadUsers();
     } catch (e) {
         showToast(e.message, "错误");
     } finally {

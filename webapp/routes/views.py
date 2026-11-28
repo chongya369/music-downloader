@@ -123,6 +123,13 @@ def login():
         if user and user.enabled and user.check_password(password):
             _clear_login_failures(key)
             session["uid"] = user.id
+            # 会话级认证来源：模板按此渲染「免密登录」标记与「退出登录」入口
+            session["auth_source"] = "password"
+            # 手动登录即视为用户明确要求建立会话：解除登出后的 SSO 抑制，
+            # 并清掉可能残留的飞牛身份字段（本会话不是网关建立的）
+            session.pop("sso_optout", None)
+            session.pop("fnos_uid", None)
+            session.pop("fnos_username", None)
             user.last_login_at = datetime.now()
             # F4 存量默认口令补置：仅 admin 账号——口令仍为公开默认值时补置
             # 首登强制改密（覆盖升级前从未改密的存量管理员）。置位一次后靠
@@ -179,8 +186,14 @@ def change_password():
 
 @views_bp.route("/logout")
 def logout():
-    """退出登录"""
+    """退出登录
+
+    网关模式下必须写入 sso_optout 抑制标记：同一个飞牛账号的下一次请求
+    会带可信头，若不抑制就会被 gateway_auto_login 立刻登回（点了没反应）。
+    抑制窗口 SSO_OPTOUT_TTL（30 分钟），之后自动恢复免密登录。
+    """
     session.clear()
+    session["sso_optout"] = time.time()
     return redirect(url_for("views.login"))
 
 

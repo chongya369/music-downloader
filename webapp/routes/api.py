@@ -33,6 +33,7 @@
 """
 
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,6 +58,32 @@ from core.providers.qq import bridge as qq_bridge
 
 api_bp = Blueprint("api", __name__)
 logger = logging.getLogger(__name__)
+
+# 网关模式（Unix Socket）：只有该模式下 X-Trim-* 头才可信。
+# 直接读环境变量而非 import app，避免与 app.py 形成循环导入。
+_GATEWAY_MODE = bool(os.environ.get("FNNAS_GATEWAY_SOCKET"))
+
+
+def _gateway_identity():
+    """当前请求的飞牛身份 {"uid","username"}；TCP 模式返回 None（头可伪造）"""
+    if not _GATEWAY_MODE:
+        return None
+    return {
+        "uid": (request.headers.get("X-Trim-Userid") or "").strip(),
+        "username": (request.headers.get("X-Trim-Username") or "").strip(),
+    }
+
+
+def _clean_fnos_uid(raw) -> str:
+    """飞牛 UID 归一：去空白、限长、拒控制字符（前端 maxlength 只是体验层）"""
+    uid = str(raw or "").strip()
+    if not uid:
+        return ""
+    if len(uid) > 32:
+        return ""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in uid):
+        return ""
+    return uid
 
 
 # ======================================================================
@@ -1939,3 +1966,74 @@ def delete_user(uid: int):
     db.session.commit()
     logger.info("删除用户: %s", user.username)
     return jsonify({"code": 0, "msg": f"用户 '{user.username}' 已删除"})
+
+
+@api_bp.route("/users/<int:uid>/bind-fnos", methods=["POST"])
+def bind_user_fnos(uid: int):
+    """把宿主账号绑定到飞牛用户 UID（仅管理员、仅网关模式）
+
+    请求体（可选）：{"fnos_uid":"1000"}
+    - 缺省取当前请求头 X-Trim-Userid（管理员在飞牛里打开本页即可一键绑定）；
+    - 显式传 fnos_uid 供"用户名与飞牛账号不同"或批量维护时手工绑定。
+
+    安全：TCP 模式下 X-Trim-* 头可被任意客户端伪造，故整体拒绝（403）——
+    否则等于把"冒领免密身份"的入口开放给公网。
+    """
+    err = _require_admin()
+    if err:
+        return err
+    ident = _gateway_identity()
+    if ident is None:
+        return jsonify({"code": 403, "msg": "仅飞牛网关模式下可绑定飞牛账号"}), 403
+    user = User.query.get(uid)
+    if not user:
+        return jsonify({"code": 1, "msg": "用户不存在"})
+
+    data = _json_body()
+    fnos_uid = _clean_fnos_uid(data.get("fnos_uid")) or _clean_fnos_uid(ident["uid"])
+    if not fnos_uid:
+        return jsonify({"code": 1, "msg": "未取得飞牛 UID，请手工填写"})
+
+    occupied = User.query.filter(User.fnos_uid == fnos_uid, User.id != user.id).first()
+    if occupied:
+        return jsonify({"code": 1,
+                        "msg": f"飞牛账号 UID {fnos_uid} 已绑定到用户 '{occupied.username}'"})
+
+    user.fnos_uid = fnos_uid
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"code": 1, "msg": "绑定关系已被占用，请刷新后重试"})
+
+    me = current_user()
+    logger.info("绑定飞牛账号: 用户 %s <- UID %s (操作人: %s)",
+                user.username, fnos_uid, me.username if me else "unknown")
+    return jsonify({"code": 0, "msg": f"已绑定到飞牛 UID {fnos_uid}", "data": user.to_dict()})
+
+
+@api_bp.route("/users/<int:uid>/bind-fnos", methods=["DELETE"])
+def unbind_user_fnos(uid: int):
+    """解除宿主账号与飞牛 UID 的绑定（仅管理员、仅网关模式）
+
+    解绑后该账号回退到"按用户名匹配"的存量逻辑；用户名与飞牛账号不一致时
+    需手动输入密码登录。
+    """
+    err = _require_admin()
+    if err:
+        return err
+    if _gateway_identity() is None:
+        return jsonify({"code": 403, "msg": "仅飞牛网关模式下可解除飞牛账号绑定"}), 403
+    user = User.query.get(uid)
+    if not user:
+        return jsonify({"code": 1, "msg": "用户不存在"})
+    if not user.fnos_uid:
+        return jsonify({"code": 0, "msg": "该用户未绑定飞牛账号", "data": user.to_dict()})
+
+    old_uid = user.fnos_uid
+    user.fnos_uid = None
+    db.session.commit()
+    me = current_user()
+    logger.info("解除飞牛绑定: 用户 %s 原 UID %s (操作人: %s)",
+                user.username, old_uid, me.username if me else "unknown")
+    return jsonify({"code": 0, "msg": "已解除飞牛账号绑定", "data": user.to_dict()})

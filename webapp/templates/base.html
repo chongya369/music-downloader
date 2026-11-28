@@ -69,7 +69,10 @@
                                 <i class="bi bi-people"></i> 用户管理
                             </a></li>
                             {% endif %}
-                            {% if is_gateway %}
+                            {# 按「会话认证来源」而非部署模式渲染：网关部署下也可能
+                               是用户手动输入密码登录（用户名与飞牛账号不一致时），
+                               此时应显示退出入口，不能误标为免密登录 #}
+                            {% if auth_source == 'gateway' %}
                             <li><span class="dropdown-item-text text-muted small">
                                 <i class="bi bi-shield-check"></i> 飞牛账号免密登录
                             </span></li>
@@ -77,6 +80,9 @@
                             {% if current_user.is_admin %}
                             <li><hr class="dropdown-divider"></li>
                             {% endif %}
+                            <li><span class="dropdown-item-text text-muted small">
+                                <i class="bi bi-key"></i> 账号密码登录
+                            </span></li>
                             <li><a class="dropdown-item" href="{{ url_for('views.logout') }}">
                                 <i class="bi bi-box-arrow-right"></i> 退出登录
                             </a></li>

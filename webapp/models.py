@@ -265,6 +265,10 @@ class User(db.Model):
     # 首登强制改密：仅 init_db 新建初始 admin 时置 True；改密/管理员重置
     # 后置 False。存量账号（旧库升级）默认 False，不会被强制。
     must_change_password = db.Column(db.Boolean, default=False, nullable=False)
+    # 飞牛统一网关身份绑定（仅网关模式有效）：fnOS 用户 UID 稳定不变，
+    # 作为免密登录的首选匹配键，避免宿主用户名/飞牛用户名任一侧改名导致
+    # SSO 断链。NULL = 未绑定（此时回退按用户名匹配，命中后自动回写本列）。
+    fnos_uid = db.Column(db.String(32), nullable=True)
 
     def set_password(self, raw: str) -> None:
         self.password_hash = generate_password_hash(raw)
@@ -279,6 +283,7 @@ class User(db.Model):
             "is_admin": self.is_admin,
             "enabled": self.enabled,
             "must_change_password": bool(self.must_change_password),
+            "fnos_uid": self.fnos_uid or "",
             "created_at": self.created_at.strftime("%Y-%m-%d %H:%M:%S") if self.created_at else None,
             "last_login_at": self.last_login_at.strftime("%Y-%m-%d %H:%M:%S") if self.last_login_at else None,
         }
@@ -627,6 +632,15 @@ def init_db(app, db_path: str = "downloads.db") -> None:
         if inspector.has_table("users") and not _column_exists(inspector, "users", "must_change_password"):
             with db.engine.begin() as conn:
                 conn.execute(text("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0 NOT NULL"))
+        # 兼容迁移：给旧 users 表补充 fnos_uid 列（飞牛 UID 绑定，默认 NULL）
+        if inspector.has_table("users") and not _column_exists(inspector, "users", "fnos_uid"):
+            with db.engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN fnos_uid VARCHAR(32)"))
+        # 一个飞牛账号只能绑定一个宿主账号；SQLite 唯一索引允许多个 NULL（未绑定）
+        if inspector.has_table("users") and _column_exists(inspector, "users", "fnos_uid"):
+            with db.engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_fnos_uid ON users (fnos_uid)"))
         # 初始化默认管理员账号（仅当 users 表为空时）
         if not User.query.first():
             admin = User(username="admin", is_admin=True, enabled=True)
