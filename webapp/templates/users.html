@@ -26,7 +26,7 @@
                         <th width="80">状态</th>
                         <th width="160">创建时间</th>
                         <th width="160">最近登录</th>
-                        <th width="280">操作</th>
+                        <th width="360">操作</th>
                     </tr>
                 </thead>
                 <tbody id="user-tbody">
@@ -91,6 +91,45 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button class="btn btn-warning" id="btn-reset-pwd">确认重置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 改名弹窗 -->
+<div class="modal fade" id="rename-user-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-pencil-square"></i> 修改用户名</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">当前用户名</label>
+                    <input type="text" class="form-control" id="rename-old-username" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">新用户名</label>
+                    <input type="text" class="form-control" id="rename-new-username"
+                           maxlength="50" placeholder="输入新的登录用户名">
+                </div>
+                {% if is_gateway %}
+                <div class="alert alert-warning py-2 mb-0 small">
+                    <i class="bi bi-shield-exclamation"></i>
+                    网关（飞牛免密登录）模式下，用户名同时用于匹配飞牛账号。
+                    修改后该账号的<strong>免密登录将失效</strong>，下次新建会话需手动输入新用户名与密码。
+                    建议与飞牛账号名保持一致。
+                </div>
+                {% else %}
+                <div class="form-text">
+                    修改后请使用新用户名登录；当前登录状态不会中断。
+                </div>
+                {% endif %}
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button class="btn btn-primary" id="btn-rename-user">确认修改</button>
             </div>
         </div>
     </div>

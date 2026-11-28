@@ -41,6 +41,7 @@ import json as _json
 
 from flask import Blueprint, current_app, jsonify, request, Response, session
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from auth import current_user
 from models import Account, Playlist, Setting, Song, DownloadTask, User, db, get_api_base_url, PLATFORMS, PLATFORM_NAMES, vip_text_for, ACTIVE_TASK_STATUSES
@@ -1915,8 +1916,10 @@ def update_user(uid: int):
     """更新用户信息（仅管理员）
 
     请求体（任选字段）：
-        {"is_admin":bool, "enabled":bool, "password":"新密码"}
-    注意：管理员可重置任意用户密码；当前用户不能取消自己的管理员身份
+        {"username":"新用户名", "is_admin":bool, "enabled":bool, "password":"新密码"}
+    注意：管理员可重置任意用户密码、可改任意用户（含自己）的用户名；
+    当前用户不能取消自己的管理员身份。改名不中断会话（会话键为 uid），
+    但网关模式下用户名是免密登录的匹配键，改名后该账号需手动登录。
     """
     err = _require_admin()
     if err:
@@ -1927,6 +1930,33 @@ def update_user(uid: int):
 
     data = _json_body()
     me = current_user()
+
+    # 修改用户名（管理员可改任意用户，含自己）
+    # 唯一约束兜底：先查重再 flush，避免并发改名撞名时 commit 抛 IntegrityError 500
+    if "username" in data:
+        new_name = str(data.get("username") or "").strip()
+        if not new_name:
+            return jsonify({"code": 1, "msg": "用户名不能为空"})
+        # 前端 maxlength 仅体验层；SQLite 不校验 VARCHAR(50)，必须后端拦
+        if len(new_name) > 50:
+            return jsonify({"code": 1, "msg": "用户名长度不能超过 50 个字符"})
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in new_name):
+            return jsonify({"code": 1, "msg": "用户名含非法字符"})
+        if new_name != user.username:
+            if User.query.filter(User.username == new_name, User.id != user.id).first():
+                return jsonify({"code": 1, "msg": f"用户名 '{new_name}' 已存在"})
+            old_name = user.username
+            user.username = new_name
+            try:
+                db.session.flush()
+            except IntegrityError:
+                # 并发竞态：查重与 flush 之间被他人抢占
+                db.session.rollback()
+                return jsonify({"code": 1, "msg": f"用户名 '{new_name}' 已被占用，请重试"})
+            # 旧用户名下的登录失败计数已无意义（10 分钟窗口外本会自失效）
+            _clear_login_failures(_login_key(old_name))
+            logger.info("用户改名: %s -> %s (操作人: %s)",
+                        old_name, new_name, me.username if me else "unknown")
 
     # 修改密码（管理员重置任意用户密码；重置即视为脱离默认密码态）
     if "password" in data:
@@ -1952,7 +1982,11 @@ def update_user(uid: int):
 
     db.session.commit()
     logger.info("更新用户: %s", user.username)
-    return jsonify({"code": 0, "msg": "用户信息已更新", "data": user.to_dict()})
+    payload = user.to_dict()
+    # is_self：前端据此决定是否整页刷新（顶部用户名由 base.html 服务端渲染，
+    # 改自己的名字后必须刷新才能看到新值）
+    payload["is_self"] = bool(me and me.id == user.id)
+    return jsonify({"code": 0, "msg": "用户信息已更新", "data": payload})
 
 
 @api_bp.route("/users/<int:uid>", methods=["DELETE"])

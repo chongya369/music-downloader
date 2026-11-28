@@ -30,6 +30,9 @@ async function loadUsers() {
                     <td><small class="text-muted">${createTime}</small></td>
                     <td><small class="text-muted">${loginTime}</small></td>
                     <td>
+                        <button class="btn btn-sm btn-outline-primary btn-rename-user" data-id="${u.id}" data-username="${escapeHtml(u.username)}">
+                            <i class="bi bi-pencil-square"></i> 改名
+                        </button>
                         <button class="btn btn-sm btn-outline-warning btn-reset-pwd" data-id="${u.id}" data-username="${escapeHtml(u.username)}">
                             <i class="bi bi-key"></i> 重置密码
                         </button>
@@ -51,6 +54,19 @@ async function loadUsers() {
 }
 
 function bindEvents() {
+    // 改名
+    document.querySelectorAll(".btn-rename-user").forEach(el => {
+        el.addEventListener("click", function() {
+            const modalEl = document.getElementById("rename-user-modal");
+            document.getElementById("rename-old-username").value = this.dataset.username;
+            const newInput = document.getElementById("rename-new-username");
+            newInput.value = this.dataset.username;
+            // 用 data 属性暂存目标用户 ID
+            document.getElementById("btn-rename-user").dataset.userId = this.dataset.id;
+            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+        });
+    });
+
     // 重置密码
     document.querySelectorAll(".btn-reset-pwd").forEach(el => {
         el.addEventListener("click", function() {
@@ -150,7 +166,47 @@ document.getElementById("btn-reset-pwd").addEventListener("click", async functio
     }
 });
 
+// 确认改名
+document.getElementById("btn-rename-user").addEventListener("click", async function() {
+    const userId = this.dataset.userId;
+    const oldName = document.getElementById("rename-old-username").value;
+    const newName = document.getElementById("rename-new-username").value.trim();
+    if (!newName) { showToast("请输入新用户名"); return; }
+    if (newName.length > 50) { showToast("用户名不能超过 50 个字符"); return; }
+    if (newName === oldName) { showToast("新用户名与当前用户名相同"); return; }
+    // 二次确认：改名立即影响该用户的登录名，避免误操作
+    if (!confirm(`确认将用户名「${oldName}」修改为「${newName}」吗？此操作立即生效。`)) return;
+
+    const btn = this;
+    btn.disabled = true;
+    try {
+        const res = await api(`/api/users/${userId}`, {
+            method: "PUT",
+            body: JSON.stringify({ username: newName }),
+        });
+        showToast("用户名已更新", "成功");
+        bootstrap.Modal.getInstance(document.getElementById("rename-user-modal")).hide();
+        // 改的是自己：顶部用户名由服务端渲染（base.html），必须整页刷新
+        if (res && res.data && res.data.is_self) {
+            location.reload();
+        } else {
+            loadUsers();
+        }
+    } catch (e) {
+        showToast(e.message, "错误");
+    } finally {
+        btn.disabled = false;
+    }
+});
+
 // escapeHtml 已收敛至全局 app.js（L8），此处不再定义本地副本。
+
+// 改名弹窗展开后聚焦新用户名输入框并全选，便于直接覆盖输入
+document.getElementById("rename-user-modal").addEventListener("shown.bs.modal", function() {
+    const el = document.getElementById("rename-new-username");
+    el.focus();
+    el.select();
+});
 
 // 初始化
 loadUsers();
